@@ -1,0 +1,143 @@
+name: Sync Nuvio releases
+
+# When a new Nuvio release appears (for example 1.1.0-beta.3), it:
+#   1. merges that exact release into your fork, keeping your Live TV changes
+#   2. builds the APK
+#   3. publishes a release in your fork with the same version number
+#
+# Needs a secret named SYNC_TOKEN: a personal access token (classic) with the
+# "repo" and "workflow" scopes.
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly check
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Mirror a specific Nuvio release tag (leave empty for the newest)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: NuvioMedia/NuvioTV
+  # "true" also mirrors beta releases; set to "false" for stable releases only.
+  INCLUDE_BETAS: "true"
+
+concurrency:
+  group: sync-nuvio-releases
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.latest.outputs.tag }}
+      prerelease: ${{ steps.latest.outputs.prerelease }}
+      new: ${{ steps.latest.outputs.new }}
+    steps:
+      - name: Look for a new Nuvio release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$INCLUDE_BETAS" = "true" ]; then
+            TAG=$(gh api "repos/$UPSTREAM/releases?per_page=10" --jq '[.[] | select(.draft == false)][0].tag_name')
+          else
+            TAG=$(gh api "repos/$UPSTREAM/releases/latest" --jq '.tag_name')
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Could not read Nuvio releases." >&2
+            exit 1
+          fi
+          PRE=$(gh api "repos/$UPSTREAM/releases/tags/$TAG" --jq '.prerelease')
+          echo "Newest Nuvio release: $TAG (prerelease: $PRE)"
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Already mirrored. Nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+
+  mirror:
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Merge the Nuvio release
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          # Fetch the release into a private ref so Nuvio's tag names don't clash with ours.
+          git fetch --no-tags upstream "+refs/tags/$TAG:refs/remotes/upstream/release"
+
+          if ! git merge --no-edit -m "Merge Nuvio $TAG" refs/remotes/upstream/release; then
+            echo "::error::Nuvio $TAG changed the same lines as your Live TV changes. Files in conflict:"
+            git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
+            git merge --abort
+            exit 1
+          fi
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Prepare properties and signing
+        run: |
+          touch local.properties local.dev.properties
+          cp keystore/livetv-fork.jks "$RUNNER_TEMP/key.jks"
+          {
+            echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/key.jks"
+            echo "NUVIO_RELEASE_KEY_ALIAS=livetv"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=livetvfork"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=livetvfork"
+          } >> "$GITHUB_ENV"
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleFullDebug --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          for f in $(find app/build/outputs/apk/full/debug -name "*.apk"); do
+            name=$(basename "$f" .apk)
+            cp "$f" "out/NuvioLiveTV-$TAG-${name#app-full-}.apk"
+          done
+          ls -la out
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ steps.merge.outputs.sha }}
+          name: Nuvio Live TV ${{ env.TAG }}
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          files: out/*.apk
+          body: |
+            Nuvio ${{ env.TAG }} with Live TV (multiple M3U/EPG sources, TiviMate-style guide).
+
+            Nuvio's changes in this version: https://github.com/${{ env.UPSTREAM }}/releases/tag/${{ env.TAG }}
