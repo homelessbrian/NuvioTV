@@ -33,6 +33,8 @@ jobs:
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
           TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
           SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
+          SIMKL_APP_NAME: ${{ secrets.SIMKL_APP_NAME }}
+          MDBLIST_CLIENT_ID: ${{ secrets.MDBLIST_CLIENT_ID }}
         run: |
           : > keys.properties
           add() { if [ -n "$2" ]; then echo "$1=$2" >> keys.properties; fi; }
@@ -56,6 +58,8 @@ jobs:
           add TRAKT_CLIENT_ID "$TRAKT_CLIENT_ID"
           add TRAKT_CLIENT_SECRET "$TRAKT_CLIENT_SECRET"
           add SIMKL_CLIENT_ID "$SIMKL_CLIENT_ID"
+          add SIMKL_APP_NAME "$SIMKL_APP_NAME"
+          add MDBLIST_CLIENT_ID "$MDBLIST_CLIENT_ID"
           # The build reads some values from each file, so write both.
           cp keys.properties local.properties
           cp keys.properties local.dev.properties
