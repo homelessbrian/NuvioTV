@@ -73,6 +73,9 @@ class LiveTvSettingsViewModel @Inject constructor(
     fun unhideAllGroups() = viewModelScope.launch { prefs.clearHiddenGroups() }
     fun clearFavorites() = viewModelScope.launch { prefs.clearFavorites() }
     fun clearRecent() = viewModelScope.launch { prefs.clearRecent() }
+    fun resetChannelEdits() = viewModelScope.launch { prefs.resetChannelEdits() }
+    fun resetGroupEdits() = viewModelScope.launch { prefs.resetGroupEdits() }
+    fun deleteCustomGroup(id: String) = viewModelScope.launch { prefs.deleteCustomGroup(id) }
 
     /** Readable name for a hidden channel key, even if its playlist is currently disabled. */
     fun channelLabel(key: String): String {
@@ -81,6 +84,8 @@ class LiveTvSettingsViewModel @Inject constructor(
     }
 
     fun groupLabel(id: String): String {
+        userState.value.customGroups.firstOrNull { it.id == id }?.let { return it.name }
+        userState.value.groupNames[id]?.let { return it }
         repository.channels.value.firstOrNull { it.groupId == id }?.let { return it.group }
         return id.substringAfter("::")
     }

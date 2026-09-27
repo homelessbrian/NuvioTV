@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -128,6 +130,9 @@ fun LiveTvGuideScreen(
     var menuTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var infoTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var searchOpen by remember { mutableStateOf(false) }
+    var textPrompt by remember { mutableStateOf<TextPrompt?>(null) }
+    var groupPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
+    var groupMenu by remember { mutableStateOf<ChannelGroup?>(null) }
     var gridFocused by remember { mutableStateOf(false) }
     var longPressFired by remember { mutableStateOf(false) }
     var numberBuffer by remember { mutableStateOf("") }
@@ -269,6 +274,7 @@ fun LiveTvGuideScreen(
         while (cursorMs < windowStart) windowStart -= SLOT_MS
     }
 
+    CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -472,7 +478,7 @@ fun LiveTvGuideScreen(
                     groupsOpen = false
                     scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                 },
-                onHideGroup = { g -> if (!g.special) viewModel.hideGroup(g.id) },
+                onGroupMenu = { g -> if (!g.special) groupMenu = g },
                 onClose = {
                     groupsOpen = false
                     scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
@@ -500,7 +506,36 @@ fun LiveTvGuideScreen(
                     if (viewModel.playCatchup(target.channel, program)) onOpenFullscreen()
                 },
                 onToggleFavorite = { viewModel.toggleFavorite(target.channel); menuTarget = null },
-                onMoveFavorite = { d -> viewModel.moveFavorite(target.channel, d) },
+                onMoveFavorite = { d ->
+                    viewModel.moveFavorite(target.channel, d)
+                    row = (row + d).coerceIn(0, (channels.size - 1).coerceAtLeast(0))
+                },
+                customGroupId = ui.selectedGroupId.takeIf { it.startsWith(ChannelGroup.CUSTOM_PREFIX) },
+                onMoveInGroup = { gid, d ->
+                    viewModel.moveInGroup(gid, target.channel, d)
+                    row = (row + d).coerceIn(0, (channels.size - 1).coerceAtLeast(0))
+                },
+                onRemoveFromGroup = { gid -> viewModel.removeFromGroup(gid, target.channel); menuTarget = null },
+                onAddToGroup = { menuTarget = null; groupPickerFor = target.channel },
+                onRename = {
+                    menuTarget = null
+                    textPrompt = TextPrompt(
+                        title = "Rename channel",
+                        initial = target.channel.name,
+                        hint = "Leave empty to use the playlist name",
+                        onConfirm = { viewModel.renameChannel(target.channel, it) }
+                    )
+                },
+                onRenumber = {
+                    menuTarget = null
+                    textPrompt = TextPrompt(
+                        title = "Channel number",
+                        initial = target.channel.number.toString(),
+                        hint = "Leave empty to use the playlist number",
+                        numeric = true,
+                        onConfirm = { viewModel.setChannelNumber(target.channel, it.trim().toIntOrNull()) }
+                    )
+                },
                 onHide = {
                     viewModel.hideChannel(target.channel)
                     menuTarget = null
@@ -526,6 +561,63 @@ fun LiveTvGuideScreen(
                     infoTarget = null
                     if (viewModel.playCatchup(target.channel, p)) onOpenFullscreen()
                 }
+            )
+        }
+        textPrompt?.let { prompt ->
+            TextInputDialog(
+                title = prompt.title,
+                initial = prompt.initial,
+                hint = prompt.hint,
+                confirmLabel = "Save",
+                numeric = prompt.numeric,
+                onDismiss = { textPrompt = null },
+                onConfirm = { value -> prompt.onConfirm(value); textPrompt = null }
+            )
+        }
+        groupPickerFor?.let { ch ->
+            GroupPickerDialog(
+                channel = ch,
+                groups = ui.customGroups,
+                onDismiss = { groupPickerFor = null },
+                onPick = { g -> viewModel.addToGroup(g.id, ch); groupPickerFor = null },
+                onNewGroup = {
+                    groupPickerFor = null
+                    textPrompt = TextPrompt(
+                        title = "New group",
+                        initial = "",
+                        hint = "Group name",
+                        onConfirm = { name -> viewModel.createGroupWith(name, ch) }
+                    )
+                }
+            )
+        }
+        groupMenu?.let { g ->
+            val isCustom = g.id.startsWith(ChannelGroup.CUSTOM_PREFIX)
+            ActionMenuDialog(
+                title = g.title,
+                actions = buildList {
+                    add("Rename group" to {
+                        groupMenu = null
+                        textPrompt = TextPrompt(
+                            title = "Rename group",
+                            initial = g.title,
+                            hint = if (isCustom) "Group name" else "Leave empty to use the playlist name",
+                            onConfirm = { viewModel.renameGroup(g.id, it) }
+                        )
+                    })
+                    add("Move up" to { viewModel.moveGroup(g.id, -1) })
+                    add("Move down" to { viewModel.moveGroup(g.id, 1) })
+                    add("New group" to {
+                        groupMenu = null
+                        textPrompt = TextPrompt(
+                            title = "New group", initial = "", hint = "Group name",
+                            onConfirm = { name -> viewModel.createGroupWith(name, null) }
+                        )
+                    })
+                    add("Hide group" to { viewModel.hideGroup(g.id); groupMenu = null })
+                    if (isCustom) add("Delete group" to { viewModel.deleteGroup(g.id); groupMenu = null })
+                },
+                onDismiss = { groupMenu = null }
             )
         }
         if (searchOpen) {
@@ -554,6 +646,7 @@ fun LiveTvGuideScreen(
                 LiveText(numberBuffer, size = 34.sp, weight = FontWeight.Bold)
             }
         }
+    }
     }
 }
 
@@ -617,9 +710,11 @@ private fun GuideHeader(
                 val p = block?.program
                 LiveText(
                     text = p?.title ?: channel.name,
+                    modifier = Modifier.fillMaxWidth(),
                     size = 28.sp,
                     weight = FontWeight.Bold,
-                    maxLines = 1
+                    maxLines = 1,
+                    marquee = true
                 )
                 Spacer(Modifier.height(6.dp))
                 if (block != null) {
@@ -715,8 +810,7 @@ private fun GuideRow(
     focusedBlock: GuideBlock?
 ) {
     val windowEnd = windowStart + WINDOW_MS
-    val accent = NuvioTheme.colors.Secondary
-    val onAccent = NuvioTheme.colors.OnSecondary
+    val cellShape = RoundedCornerShape(6.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -725,28 +819,26 @@ private fun GuideRow(
     ) {
         // Channel cell
         val channelFocused = focusColumn == GuideColumn.CHANNEL
+        val cell = liveCellColors(
+            focused = channelFocused,
+            idle = if (focusColumn != null) NuvioTheme.colors.SurfaceVariant else NuvioTheme.colors.Surface
+        )
         Row(
             modifier = Modifier
                 .width(channelColWidth)
                 .fillMaxHeight()
                 .padding(end = 3.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(
-                    when {
-                        channelFocused -> accent
-                        focusColumn != null -> NuvioTheme.colors.SurfaceVariant
-                        else -> NuvioTheme.colors.Surface
-                    }
-                )
+                .clip(cellShape)
+                .background(cell.background)
+                .border(2.dp, cell.border, cellShape)
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val textColor = if (channelFocused) onAccent else NuvioTheme.colors.TextPrimary
             if (settings.showChannelNumbers) {
                 LiveText(
                     channel.number.toString(),
                     modifier = Modifier.width(46.dp),
-                    color = if (channelFocused) onAccent else NuvioTheme.colors.TextSecondary,
+                    color = if (channelFocused) cell.text else NuvioTheme.colors.TextSecondary,
                     size = 15.sp,
                     weight = FontWeight.Medium
                 )
@@ -759,9 +851,10 @@ private fun GuideRow(
                 LiveText(
                     channel.name,
                     modifier = Modifier.weight(1f),
-                    color = textColor,
+                    color = cell.text,
                     size = 15.sp,
-                    weight = if (isPlaying) FontWeight.Bold else FontWeight.Normal
+                    weight = if (isPlaying) FontWeight.Bold else FontWeight.Normal,
+                    marquee = channelFocused
                 )
             } else {
                 Spacer(Modifier.weight(1f))
@@ -770,7 +863,7 @@ private fun GuideRow(
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,
-                    tint = if (channelFocused) onAccent else NuvioTheme.colors.Rating,
+                    tint = if (channelFocused && LocalLiveSolidHighlight.current) cell.text else NuvioTheme.colors.Rating,
                     modifier = Modifier.size(14.dp)
                 )
             }
@@ -791,7 +884,7 @@ private fun GuideRow(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 1.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(cellShape)
                         .background(NuvioTheme.colors.Surface.copy(alpha = 0.55f))
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.CenterStart
@@ -805,23 +898,22 @@ private fun GuideRow(
                 val live = now >= p.startMs && now < p.stopMs
                 val past = p.stopMs <= now
                 val isFocused = focusColumn == GuideColumn.PROGRAM && focusedBlock?.program == p
-                val bg = when {
-                    isFocused -> accent
-                    live -> NuvioTheme.colors.SurfaceVariant
-                    past -> NuvioTheme.colors.Surface.copy(alpha = 0.5f)
-                    else -> NuvioTheme.colors.Surface
-                }
+                val colors = liveCellColors(
+                    focused = isFocused,
+                    idle = when {
+                        live -> NuvioTheme.colors.SurfaceVariant
+                        past -> NuvioTheme.colors.Surface.copy(alpha = 0.5f)
+                        else -> NuvioTheme.colors.Surface
+                    },
+                    idleText = if (past) NuvioTheme.colors.TextSecondary else NuvioTheme.colors.TextPrimary
+                )
                 ProgramBlock(
                     title = p.title,
-                    subtitle = if (w > 140.dp) p.episode else null,
+                    subtitle = if (w > 140.dp || isFocused) p.episode else null,
                     x = x, width = w,
-                    background = bg,
-                    textColor = when {
-                        isFocused -> onAccent
-                        past -> NuvioTheme.colors.TextSecondary
-                        else -> NuvioTheme.colors.TextPrimary
-                    },
-                    progress = if (live && !isFocused) p.progress(now) else null,
+                    colors = colors,
+                    focused = isFocused,
+                    progress = if (live) p.progress(now) else null,
                     continuesLeft = p.startMs < windowStart
                 )
             }
@@ -831,7 +923,8 @@ private fun GuideRow(
                 val w = (xOf(focusedBlock.stopMs) - x).coerceAtLeast(2.dp)
                 ProgramBlock(
                     title = "No information", subtitle = null, x = x, width = w,
-                    background = accent, textColor = onAccent, progress = null, continuesLeft = false
+                    colors = liveCellColors(focused = true, idle = NuvioTheme.colors.Surface),
+                    focused = true, progress = null, continuesLeft = false
                 )
             }
         }
@@ -844,26 +937,43 @@ private fun ProgramBlock(
     subtitle: String?,
     x: Dp,
     width: Dp,
-    background: Color,
-    textColor: Color,
+    colors: LiveCellColors,
+    focused: Boolean,
     progress: Float?,
     continuesLeft: Boolean
 ) {
+    val shape = RoundedCornerShape(6.dp)
     Box(
         modifier = Modifier
             .offset(x = x)
             .width(width)
             .fillMaxHeight()
             .padding(horizontal = 1.5.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(background)
+            .clip(shape)
+            .background(colors.background)
+            .border(2.dp, colors.border, shape)
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
             verticalArrangement = Arrangement.Center
         ) {
-            LiveText((if (continuesLeft) "‹ " else "") + title, color = textColor, size = 15.sp)
-            subtitle?.let { LiveText(it, color = textColor.copy(alpha = 0.7f), size = 12.sp) }
+            // The focused programme scrolls when its title doesn't fit, like TiviMate.
+            LiveText(
+                (if (continuesLeft) "‹ " else "") + title,
+                modifier = Modifier.fillMaxWidth(),
+                color = colors.text,
+                size = 15.sp,
+                marquee = focused
+            )
+            subtitle?.let {
+                LiveText(
+                    it,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colors.text.copy(alpha = 0.7f),
+                    size = 12.sp,
+                    marquee = focused
+                )
+            }
         }
         progress?.let {
             Box(
@@ -904,7 +1014,7 @@ private fun GroupPanel(
     selectedId: String,
     focusRequester: FocusRequester,
     onSelect: (ChannelGroup) -> Unit,
-    onHideGroup: (ChannelGroup) -> Unit,
+    onGroupMenu: (ChannelGroup) -> Unit,
     onClose: () -> Unit
 ) {
     val listState = rememberLazyListState(
@@ -933,13 +1043,13 @@ private fun GroupPanel(
                         .then(if (selected) Modifier.focusRequester(focusRequester) else Modifier),
                     selected = selected,
                     onClick = { onSelect(g) },
-                    onLongClick = if (g.special) null else ({ onHideGroup(g) })
+                    onLongClick = if (g.special) null else ({ onGroupMenu(g) })
                 ) { focused ->
-                    LiveText(g.title, modifier = Modifier.weight(1f), color = focusedTextColor(focused), size = 15.sp)
+                    LiveText(g.title, modifier = Modifier.weight(1f), color = focusedTextColor(focused), size = 15.sp, marquee = focused)
                     if (g.id != ChannelGroup.SEARCH) {
                         LiveText(
                             g.count.toString(),
-                            color = if (focused) NuvioTheme.colors.OnSecondary else NuvioTheme.colors.TextSecondary,
+                            color = focusedSecondaryTextColor(focused),
                             size = 13.sp
                         )
                     }
@@ -962,6 +1072,12 @@ private fun ChannelContextMenu(
     onCatchup: (EpgProgram) -> Unit,
     onToggleFavorite: () -> Unit,
     onMoveFavorite: (Int) -> Unit,
+    customGroupId: String?,
+    onMoveInGroup: (String, Int) -> Unit,
+    onRemoveFromGroup: (String) -> Unit,
+    onAddToGroup: () -> Unit,
+    onRename: () -> Unit,
+    onRenumber: () -> Unit,
     onHide: () -> Unit,
     onHideGroup: () -> Unit,
     onProgramInfo: () -> Unit,
@@ -977,20 +1093,71 @@ private fun ChannelContextMenu(
         LiveText("${ch.number}  ${ch.name}", size = 20.sp, weight = FontWeight.Bold)
         LiveText(ch.group, color = NuvioTheme.colors.TextSecondary, size = 13.sp)
         Spacer(Modifier.height(14.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            MenuItem("Watch full screen", Modifier.focusRequester(first), onWatch)
-            if (canCatchup) MenuItem("Play from archive: ${program!!.title}", onClick = { onCatchup(program!!) })
-            if (program != null) MenuItem("Programme info", onClick = onProgramInfo)
-            MenuItem(if (isFavorite) "Remove from favourites" else "Add to favourites", onClick = onToggleFavorite)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            item { MenuItem("Watch full screen", Modifier.focusRequester(first), onWatch) }
+            if (canCatchup) item { MenuItem("Play from archive: ${program!!.title}", onClick = { onCatchup(program!!) }) }
+            if (program != null) item { MenuItem("Programme info", onClick = onProgramInfo) }
+            item { MenuItem(if (isFavorite) "Remove from favourites" else "Add to favourites", onClick = onToggleFavorite) }
             if (isFavorite && inFavoritesGroup) {
-                MenuItem("Move up in favourites", onClick = { onMoveFavorite(-1) })
-                MenuItem("Move down in favourites", onClick = { onMoveFavorite(1) })
+                item { MenuItem("Move up in favourites", onClick = { onMoveFavorite(-1) }) }
+                item { MenuItem("Move down in favourites", onClick = { onMoveFavorite(1) }) }
             }
-            MenuItem("Hide channel", onClick = onHide)
-            MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup)
-            MenuItem("Search channels", onClick = onSearch)
-            MenuItem("Update playlists & EPG", onClick = onRefresh)
-            MenuItem("Live TV settings", onClick = onSettings)
+            item { MenuItem("Add to group…", onClick = onAddToGroup) }
+            if (customGroupId != null) {
+                item { MenuItem("Move up in this group", onClick = { onMoveInGroup(customGroupId, -1) }) }
+                item { MenuItem("Move down in this group", onClick = { onMoveInGroup(customGroupId, 1) }) }
+                item { MenuItem("Remove from this group", onClick = { onRemoveFromGroup(customGroupId) }) }
+            }
+            item { MenuItem("Rename channel", onClick = onRename) }
+            item { MenuItem("Change channel number", onClick = onRenumber) }
+            item { MenuItem("Hide channel", onClick = onHide) }
+            item { MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup) }
+            item { MenuItem("Search channels", onClick = onSearch) }
+            item { MenuItem("Update playlists & EPG", onClick = onRefresh) }
+            item { MenuItem("Live TV settings", onClick = onSettings) }
+        }
+    }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+private data class TextPrompt(
+    val title: String,
+    val initial: String,
+    val hint: String,
+    val numeric: Boolean = false,
+    val onConfirm: (String) -> Unit
+)
+
+@Composable
+private fun GroupPickerDialog(
+    channel: LiveChannel,
+    groups: List<ChannelGroup>,
+    onDismiss: () -> Unit,
+    onPick: (ChannelGroup) -> Unit,
+    onNewGroup: () -> Unit
+) {
+    val first = remember { FocusRequester() }
+    LiveDialog(onDismiss = onDismiss, width = 460.dp) {
+        LiveText("Add \"${channel.name}\" to…", size = 20.sp, weight = FontWeight.Bold)
+        Spacer(Modifier.height(14.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            item { MenuItem("+ New group", Modifier.focusRequester(first), onNewGroup) }
+            items(groups, key = { it.id }) { g -> MenuItem(g.title, onClick = { onPick(g) }) }
+        }
+    }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+@Composable
+private fun ActionMenuDialog(title: String, actions: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
+    val first = remember { FocusRequester() }
+    LiveDialog(onDismiss = onDismiss, width = 420.dp) {
+        LiveText(title, size = 20.sp, weight = FontWeight.Bold)
+        Spacer(Modifier.height(14.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            actions.forEachIndexed { i, (label, action) ->
+                MenuItem(label, if (i == 0) Modifier.focusRequester(first) else Modifier, action)
+            }
         }
     }
     LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
@@ -1062,14 +1229,15 @@ internal fun TextInputDialog(
     hint: String,
     confirmLabel: String,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (String) -> Unit,
+    numeric: Boolean = false
 ) {
     var text by remember { mutableStateOf(initial) }
     val fieldFocus = remember { FocusRequester() }
     LiveDialog(onDismiss = onDismiss) {
         LiveText(title, size = 20.sp, weight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
-        LiveTextField(value = text, onValueChange = { text = it }, hint = hint, focusRequester = fieldFocus, onDone = { onConfirm(text) })
+        LiveTextField(value = text, onValueChange = { text = it }, hint = hint, focusRequester = fieldFocus, numeric = numeric, onDone = { onConfirm(text) })
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             LiveFocusRow(onClick = { onConfirm(text) }) { f -> LiveText(confirmLabel, color = focusedTextColor(f)) }
@@ -1086,6 +1254,7 @@ internal fun LiveTextField(
     hint: String,
     focusRequester: FocusRequester? = null,
     password: Boolean = false,
+    numeric: Boolean = false,
     onDone: () -> Unit = {}
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -1106,7 +1275,11 @@ internal fun LiveTextField(
             cursorBrush = SolidColor(NuvioTheme.colors.FocusRing),
             visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation()
             else androidx.compose.ui.text.input.VisualTransformation.None,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Done,
+                keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Number
+                else androidx.compose.ui.text.input.KeyboardType.Text
+            ),
             keyboardActions = KeyboardActions(onDone = { onDone() }),
             modifier = Modifier
                 .fillMaxWidth()

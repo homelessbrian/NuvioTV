@@ -228,7 +228,7 @@ private fun rememberSettingsSectionSpecs() = listOf(
         title = "Live TV",
         icon = Icons.Default.LiveTv,
         subtitle = "Playlists, TV guide and channel options",
-        destination = SettingsSectionDestination.External
+        destination = SettingsSectionDestination.Inline
     ),
     SettingsSectionSpec(
         category = SettingsCategory.TRACKING,
@@ -330,6 +330,7 @@ fun SettingsScreen(
             SettingsCategory.CONTENT_DISCOVERY to FocusRequester(),
             SettingsCategory.INTEGRATION to FocusRequester(),
             SettingsCategory.PLAYBACK to FocusRequester(),
+            SettingsCategory.LIVE_TV to FocusRequester(),
             SettingsCategory.ADVANCED to FocusRequester(),
             SettingsCategory.ABOUT to FocusRequester(),
             SettingsCategory.ACCOUNT to FocusRequester()
@@ -1049,7 +1050,13 @@ private fun SettingsDetailPane(
         )
         SettingsCategory.DEBUG -> DebugSettingsContent()
         SettingsCategory.TRACKING -> Unit
-        SettingsCategory.LIVE_TV -> Unit
+        SettingsCategory.LIVE_TV -> LiveTvSettingsContent(
+            initialFocusRequester = if (allowDetailAutofocus) {
+                contentFocusRequesters[SettingsCategory.LIVE_TV]
+            } else {
+                null
+            }
+        )
     }
 }
 

@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -132,6 +133,7 @@ fun LiveTvPlayerScreen(
 
     BackHandler(enabled = listVisible) { listVisible = false }
 
+    CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -287,9 +289,9 @@ fun LiveTvPlayerScreen(
                             }
                             if (settings.showChannelLogos) ChannelLogo(ch.logo, 26.dp)
                             Column(modifier = Modifier.weight(1f)) {
-                                if (settings.showChannelNames) LiveText(ch.name, color = focusedTextColor(f), size = 15.sp)
+                                if (settings.showChannelNames) LiveText(ch.name, color = focusedTextColor(f), size = 15.sp, marquee = f)
                                 p?.let {
-                                    LiveText(it.title, color = if (f) NuvioTheme.colors.OnSecondary.copy(alpha = 0.8f) else NuvioTheme.colors.TextSecondary, size = 12.sp)
+                                    LiveText(it.title, color = focusedSecondaryTextColor(f), size = 12.sp, marquee = f)
                                 }
                             }
                         }
@@ -365,6 +367,7 @@ fun LiveTvPlayerScreen(
         )
         PlayerDialog.NONE -> Unit
     }
+    }
 }
 
 @Composable
@@ -404,7 +407,7 @@ private fun InfoBanner(
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    LiveText(nowTitle ?: "No programme information", size = 18.sp, modifier = Modifier.weight(1f, fill = false))
+                    LiveText(nowTitle ?: "No programme information", size = 18.sp, modifier = Modifier.weight(1f, fill = false), marquee = true)
                     nowRange?.let { LiveText("   $it", color = NuvioTheme.colors.TextSecondary, size = 15.sp) }
                 }
                 progress?.let {

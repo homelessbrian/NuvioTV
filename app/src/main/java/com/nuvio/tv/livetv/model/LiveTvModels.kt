@@ -87,6 +87,14 @@ data class EpgProgram(
 
 enum class ZapMode { GROUP, ALL }
 
+enum class ChannelSort { PLAYLIST, NUMBER, NAME }
+
+data class CustomGroup(
+    val id: String,
+    val name: String,
+    val channelKeys: List<String> = emptyList()
+)
+
 data class LiveTvSettings(
     val showInSidebar: Boolean = true,
     val showChannelNames: Boolean = true,
@@ -109,7 +117,10 @@ data class LiveTvSettings(
     val epgPastHours: Int = 24,
     val epgFutureDays: Int = 3,
     val use24HourClock: Boolean = false,
-    val autoReconnect: Boolean = true
+    val autoReconnect: Boolean = true,
+    val channelSort: ChannelSort = ChannelSort.PLAYLIST,
+    /** Fill the focused cell with the accent colour instead of outlining it. */
+    val solidHighlight: Boolean = false
 )
 
 data class LiveUserState(
@@ -119,7 +130,12 @@ data class LiveUserState(
     val recent: List<String> = emptyList(),
     val lastChannelKey: String? = null,
     val previousChannelKey: String? = null,
-    val lastGroupId: String? = null
+    val lastGroupId: String? = null,
+    val channelNames: Map<String, String> = emptyMap(),
+    val channelNumbers: Map<String, Int> = emptyMap(),
+    val groupNames: Map<String, String> = emptyMap(),
+    val groupOrder: List<String> = emptyList(),
+    val customGroups: List<CustomGroup> = emptyList()
 )
 
 /** A row in the TiviMate-style group panel. */
@@ -134,5 +150,6 @@ data class ChannelGroup(
         const val FAVORITES = "__fav__"
         const val RECENT = "__recent__"
         const val SEARCH = "__search__"
+        const val CUSTOM_PREFIX = "custom:"
     }
 }

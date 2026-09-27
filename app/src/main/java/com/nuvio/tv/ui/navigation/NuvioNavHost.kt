@@ -1209,7 +1209,7 @@ private fun PlaybackNavHost(
         }
 
         composable(Screen.LiveTvSettings.route) {
-            com.nuvio.tv.livetv.ui.LiveTvSettingsScreen(
+            com.nuvio.tv.ui.screens.settings.LiveTvSettingsScreen(
                 onBack = { navController.popBackStack() }
             )
         }

@@ -11,6 +11,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
+import com.nuvio.tv.livetv.model.ChannelSort
+import com.nuvio.tv.livetv.model.CustomGroup
 import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.LiveUserState
@@ -64,6 +66,8 @@ class LiveTvPreferences @Inject constructor(
         val epgFuture = intPreferencesKey("epg_future_days")
         val clock24 = booleanPreferencesKey("clock_24h")
         val autoReconnect = booleanPreferencesKey("auto_reconnect")
+        val channelSort = stringPreferencesKey("channel_sort")
+        val solidHighlight = booleanPreferencesKey("solid_highlight")
 
         val hiddenChannels = stringSetPreferencesKey("hidden_channels")
         val hiddenGroups = stringSetPreferencesKey("hidden_groups")
@@ -72,6 +76,11 @@ class LiveTvPreferences @Inject constructor(
         val lastChannel = stringPreferencesKey("last_channel")
         val previousChannel = stringPreferencesKey("previous_channel")
         val lastGroup = stringPreferencesKey("last_group")
+        val channelNames = stringPreferencesKey("channel_names")
+        val channelNumbers = stringPreferencesKey("channel_numbers")
+        val groupNames = stringPreferencesKey("group_names")
+        val groupOrder = stringPreferencesKey("group_order")
+        val customGroups = stringPreferencesKey("custom_groups")
     }
 
     val playlists: Flow<List<PlaylistSource>> = store.data
@@ -106,7 +115,9 @@ class LiveTvPreferences @Inject constructor(
             epgPastHours = p[Keys.epgPast] ?: d.epgPastHours,
             epgFutureDays = p[Keys.epgFuture] ?: d.epgFutureDays,
             use24HourClock = p[Keys.clock24] ?: d.use24HourClock,
-            autoReconnect = p[Keys.autoReconnect] ?: d.autoReconnect
+            autoReconnect = p[Keys.autoReconnect] ?: d.autoReconnect,
+            channelSort = p[Keys.channelSort]?.let { runCatching { ChannelSort.valueOf(it) }.getOrNull() } ?: d.channelSort,
+            solidHighlight = p[Keys.solidHighlight] ?: d.solidHighlight
         )
     }.distinctUntilChanged()
 
@@ -118,7 +129,12 @@ class LiveTvPreferences @Inject constructor(
             recent = decodeStringList(p[Keys.recent]),
             lastChannelKey = p[Keys.lastChannel],
             previousChannelKey = p[Keys.previousChannel],
-            lastGroupId = p[Keys.lastGroup]
+            lastGroupId = p[Keys.lastGroup],
+            channelNames = decodeStringMap(p[Keys.channelNames]),
+            channelNumbers = decodeStringMap(p[Keys.channelNumbers]).mapNotNull { (k, v) -> v.toIntOrNull()?.let { k to it } }.toMap(),
+            groupNames = decodeStringMap(p[Keys.groupNames]),
+            groupOrder = decodeStringList(p[Keys.groupOrder]),
+            customGroups = decodeCustomGroups(p[Keys.customGroups])
         )
     }.distinctUntilChanged()
 
@@ -166,6 +182,94 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.epgFuture] = s.epgFutureDays
         p[Keys.clock24] = s.use24HourClock
         p[Keys.autoReconnect] = s.autoReconnect
+        p[Keys.channelSort] = s.channelSort.name
+        p[Keys.solidHighlight] = s.solidHighlight
+    }
+
+    // ---------- channel management ----------
+
+    suspend fun setChannelName(key: String, name: String?) {
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.channelNames]).toMutableMap()
+            if (name.isNullOrBlank()) m.remove(key) else m[key] = name.trim()
+            p[Keys.channelNames] = encodeStringMap(m)
+        }
+    }
+
+    suspend fun setChannelNumber(key: String, number: Int?) {
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.channelNumbers]).toMutableMap()
+            if (number == null) m.remove(key) else m[key] = number.toString()
+            p[Keys.channelNumbers] = encodeStringMap(m)
+        }
+    }
+
+    suspend fun setGroupName(groupId: String, name: String?) {
+        if (groupId.startsWith(com.nuvio.tv.livetv.model.ChannelGroup.CUSTOM_PREFIX)) {
+            updateCustomGroups { list -> list.map { if (it.id == groupId && !name.isNullOrBlank()) it.copy(name = name.trim()) else it } }
+            return
+        }
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.groupNames]).toMutableMap()
+            if (name.isNullOrBlank()) m.remove(groupId) else m[groupId] = name.trim()
+            p[Keys.groupNames] = encodeStringMap(m)
+        }
+    }
+
+    /** Moves [groupId] within [currentOrder] (the order currently shown) and saves the result. */
+    suspend fun moveGroup(groupId: String, delta: Int, currentOrder: List<String>) {
+        val order = currentOrder.toMutableList()
+        val i = order.indexOf(groupId)
+        if (i < 0) return
+        order.removeAt(i)
+        order.add((i + delta).coerceIn(0, order.size), groupId)
+        store.edit { it[Keys.groupOrder] = encodeStringList(order) }
+    }
+
+    suspend fun createCustomGroup(name: String): String {
+        val id = com.nuvio.tv.livetv.model.ChannelGroup.CUSTOM_PREFIX + java.util.UUID.randomUUID().toString().take(8)
+        updateCustomGroups { it + CustomGroup(id, name.trim().ifBlank { "My group" }) }
+        return id
+    }
+
+    suspend fun deleteCustomGroup(groupId: String) = updateCustomGroups { list -> list.filterNot { it.id == groupId } }
+
+    suspend fun addToCustomGroup(groupId: String, key: String) = updateCustomGroups { list ->
+        list.map { if (it.id == groupId && key !in it.channelKeys) it.copy(channelKeys = it.channelKeys + key) else it }
+    }
+
+    suspend fun removeFromCustomGroup(groupId: String, key: String) = updateCustomGroups { list ->
+        list.map { if (it.id == groupId) it.copy(channelKeys = it.channelKeys - key) else it }
+    }
+
+    suspend fun moveInCustomGroup(groupId: String, key: String, delta: Int) = updateCustomGroups { list ->
+        list.map { g ->
+            if (g.id != groupId) return@map g
+            val keys = g.channelKeys.toMutableList()
+            val i = keys.indexOf(key)
+            if (i < 0) return@map g
+            keys.removeAt(i)
+            keys.add((i + delta).coerceIn(0, keys.size), key)
+            g.copy(channelKeys = keys)
+        }
+    }
+
+    suspend fun resetChannelEdits() {
+        store.edit {
+            it[Keys.channelNames] = encodeStringMap(emptyMap())
+            it[Keys.channelNumbers] = encodeStringMap(emptyMap())
+        }
+    }
+
+    suspend fun resetGroupEdits() {
+        store.edit {
+            it[Keys.groupNames] = encodeStringMap(emptyMap())
+            it[Keys.groupOrder] = encodeStringList(emptyList())
+        }
+    }
+
+    private suspend fun updateCustomGroups(transform: (List<CustomGroup>) -> List<CustomGroup>) {
+        store.edit { p -> p[Keys.customGroups] = encodeCustomGroups(transform(decodeCustomGroups(p[Keys.customGroups]))) }
     }
 
     // ---------- per-channel state ----------
@@ -317,4 +421,42 @@ class LiveTvPreferences @Inject constructor(
     }
 
     private fun encodeStringList(list: List<String>): String = JSONArray(list).toString()
+
+    private fun decodeStringMap(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val o = JSONObject(raw)
+            o.keys().asSequence().associateWith { o.optString(it) }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeStringMap(map: Map<String, String>): String {
+        val o = JSONObject()
+        map.forEach { (k, v) -> o.put(k, v) }
+        return o.toString()
+    }
+
+    private fun decodeCustomGroups(raw: String?): List<CustomGroup> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                val keys = o.optJSONArray("keys")
+                CustomGroup(
+                    id = o.optString("id"),
+                    name = o.optString("name"),
+                    channelKeys = if (keys == null) emptyList() else (0 until keys.length()).map { keys.getString(it) }
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeCustomGroups(list: List<CustomGroup>): String {
+        val arr = JSONArray()
+        list.forEach { g ->
+            arr.put(JSONObject().put("id", g.id).put("name", g.name).put("keys", JSONArray(g.channelKeys)))
+        }
+        return arr.toString()
+    }
 }

@@ -3,6 +3,7 @@ package com.nuvio.tv.livetv.ui
 import android.view.LayoutInflater
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,6 +24,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +52,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** True = focused items are filled with the accent colour; false = tinted fill with an accent outline. */
+internal val LocalLiveSolidHighlight = staticCompositionLocalOf { false }
+
+/**
+ * @param marquee scrolls single-line text that doesn't fit, like TiviMate does for the
+ * focused programme. Only turn it on for the focused item.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun LiveText(
     text: String,
@@ -58,18 +68,39 @@ internal fun LiveText(
     size: TextUnit = 16.sp,
     weight: FontWeight = FontWeight.Normal,
     maxLines: Int = 1,
-    align: TextAlign? = null
+    align: TextAlign? = null,
+    marquee: Boolean = false
 ) {
     Text(
         text = text,
-        modifier = modifier,
+        modifier = if (marquee && maxLines == 1) {
+            modifier.basicMarquee(
+                iterations = Int.MAX_VALUE,
+                initialDelayMillis = 1_200,
+                repeatDelayMillis = 1_500
+            )
+        } else modifier,
         color = color,
         fontSize = size,
         fontWeight = weight,
         maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
+        softWrap = !(marquee && maxLines == 1),
+        overflow = if (marquee && maxLines == 1) TextOverflow.Clip else TextOverflow.Ellipsis,
         textAlign = align
     )
+}
+
+/** Background / border / text colours for a focused or unfocused guide cell. */
+internal data class LiveCellColors(val background: Color, val border: Color, val text: Color)
+
+@Composable
+internal fun liveCellColors(focused: Boolean, idle: Color, idleText: Color = NuvioTheme.colors.TextPrimary): LiveCellColors {
+    if (!focused) return LiveCellColors(idle, Color.Transparent, idleText)
+    return if (LocalLiveSolidHighlight.current) {
+        LiveCellColors(NuvioTheme.colors.Secondary, Color.Transparent, NuvioTheme.colors.OnSecondary)
+    } else {
+        LiveCellColors(NuvioTheme.colors.FocusBackground, NuvioTheme.colors.FocusRing, NuvioTheme.colors.TextPrimary)
+    }
 }
 
 /** A focusable row that highlights like TiviMate menus. Supports long press. */
@@ -85,15 +116,12 @@ internal fun LiveFocusRow(
 ) {
     var focused by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
-    val bg = when {
-        focused -> NuvioTheme.colors.Secondary
-        selected -> NuvioTheme.colors.FocusBackground
-        else -> Color.Transparent
-    }
+    val colors = liveCellColors(focused, if (selected) NuvioTheme.colors.SurfaceVariant else Color.Transparent)
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(bg)
+            .background(colors.background)
+            .border(2.dp, colors.border, RoundedCornerShape(8.dp))
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused?.invoke()
@@ -114,7 +142,12 @@ internal fun LiveFocusRow(
 
 @Composable
 internal fun focusedTextColor(focused: Boolean): Color =
-    if (focused) NuvioTheme.colors.OnSecondary else NuvioTheme.colors.TextPrimary
+    if (focused && LocalLiveSolidHighlight.current) NuvioTheme.colors.OnSecondary else NuvioTheme.colors.TextPrimary
+
+@Composable
+internal fun focusedSecondaryTextColor(focused: Boolean): Color =
+    if (focused && LocalLiveSolidHighlight.current) NuvioTheme.colors.OnSecondary.copy(alpha = 0.8f)
+    else NuvioTheme.colors.TextSecondary
 
 @Composable
 internal fun ChannelLogo(url: String?, size: Dp, modifier: Modifier = Modifier) {

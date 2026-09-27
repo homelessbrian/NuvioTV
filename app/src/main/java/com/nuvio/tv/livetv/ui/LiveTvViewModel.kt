@@ -7,6 +7,7 @@ import com.nuvio.tv.livetv.data.LiveTvPreferences
 import com.nuvio.tv.livetv.data.LiveTvRepository
 import com.nuvio.tv.livetv.data.LiveTvStatus
 import com.nuvio.tv.livetv.model.ChannelGroup
+import com.nuvio.tv.livetv.model.ChannelSort
 import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.model.LiveTvSettings
@@ -44,7 +45,10 @@ data class LiveTvUiState(
     val channels: List<LiveChannel> = emptyList(),
     val allVisibleChannels: List<LiveChannel> = emptyList(),
     val hasSources: Boolean = true,
-    val searchQuery: String = ""
+    val searchQuery: String = "",
+    /** Non-special groups in the order shown, used when the user moves a group. */
+    val orderableGroupIds: List<String> = emptyList(),
+    val customGroups: List<ChannelGroup> = emptyList()
 )
 
 @HiltViewModel
@@ -83,8 +87,20 @@ class LiveTvViewModel @Inject constructor(
     private val hasSources: StateFlow<Boolean> = prefs.playlists.map { it.isNotEmpty() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    /** Channels with the user's renames and renumbering applied. */
+    val displayChannels: StateFlow<List<LiveChannel>> = combine(repository.channels, userState) { channels, user ->
+        if (user.channelNames.isEmpty() && user.channelNumbers.isEmpty() && user.groupNames.isEmpty()) channels
+        else channels.map { c ->
+            c.copy(
+                name = user.channelNames[c.key] ?: c.name,
+                number = user.channelNumbers[c.key] ?: c.number,
+                group = user.groupNames[c.groupId] ?: c.group
+            )
+        }
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val uiState: StateFlow<LiveTvUiState> = combine(
-        combine(repository.channels, userState, settings) { a, b, c -> Triple(a, b, c) },
+        combine(displayChannels, userState, settings) { a, b, c -> Triple(a, b, c) },
         session.currentGroupId,
         searchQuery,
         hasSources
@@ -126,38 +142,60 @@ class LiveTvViewModel @Inject constructor(
         val favorites = user.favorites.mapNotNull { byKey[it] }
         val recent = user.recent.mapNotNull { byKey[it] }
 
+        fun sorted(list: List<LiveChannel>): List<LiveChannel> = when (s.channelSort) {
+            ChannelSort.PLAYLIST -> list
+            ChannelSort.NUMBER -> list.sortedBy { it.number }
+            ChannelSort.NAME -> list.sortedBy { it.name.lowercase() }
+        }
+
         val groups = mutableListOf<ChannelGroup>()
         groups += ChannelGroup(ChannelGroup.SEARCH, "Search", 0, special = true)
         if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favourites", favorites.size, special = true)
         if (s.showRecentGroup) groups += ChannelGroup(ChannelGroup.RECENT, "Recently watched", recent.size, special = true)
         groups += ChannelGroup(ChannelGroup.ALL, "All channels", visible.size, special = true)
-        val order = LinkedHashMap<String, Pair<String, Int>>()
+
+        // Your own groups first, then the playlist's groups, then the saved order on top.
+        val regular = mutableListOf<ChannelGroup>()
+        val custom = user.customGroups
+            .filter { it.id !in user.hiddenGroups }
+            .map { g -> ChannelGroup(g.id, g.name, g.channelKeys.count { it in byKey }) }
+        regular += custom
+        val playlistGroups = LinkedHashMap<String, Pair<String, Int>>()
         visible.forEach { c ->
-            val cur = order[c.groupId]
-            order[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
+            val cur = playlistGroups[c.groupId]
+            playlistGroups[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
         }
-        order.forEach { (id, v) -> groups += ChannelGroup(id, v.first, v.second) }
+        playlistGroups.forEach { (id, v) -> regular += ChannelGroup(id, v.first, v.second) }
+        val orderIndex = user.groupOrder.withIndex().associate { (i, id) -> id to i }
+        val orderedRegular = regular.withIndex()
+            .sortedWith(compareBy<IndexedValue<ChannelGroup>>({ orderIndex[it.value.id] ?: Int.MAX_VALUE }, { it.index }))
+            .map { it.value }
+        groups += orderedRegular
 
         val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: ChannelGroup.ALL
-        val list = when (groupId) {
-            ChannelGroup.ALL -> visible
-            ChannelGroup.FAVORITES -> favorites
-            ChannelGroup.RECENT -> recent
-            ChannelGroup.SEARCH -> {
+        val list = when {
+            groupId == ChannelGroup.ALL -> sorted(visible)
+            groupId == ChannelGroup.FAVORITES -> favorites
+            groupId == ChannelGroup.RECENT -> recent
+            groupId == ChannelGroup.SEARCH -> {
                 val q = query.trim()
-                if (q.isEmpty()) emptyList() else visible.filter {
+                if (q.isEmpty()) emptyList() else sorted(visible.filter {
                     it.name.contains(q, ignoreCase = true) || it.number.toString() == q
-                }
+                })
             }
-            else -> visible.filter { it.groupId == groupId }
+            groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
+                user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty()
+            else -> sorted(visible.filter { it.groupId == groupId })
         }
         return LiveTvUiState(
             groups = groups,
             selectedGroupId = groupId,
             channels = list,
-            allVisibleChannels = visible,
+            allVisibleChannels = sorted(visible),
             hasSources = hasSrc,
-            searchQuery = query
+            searchQuery = query,
+            orderableGroupIds = orderedRegular.map { it.id },
+            customGroups = custom
         )
     }
 
@@ -198,8 +236,42 @@ class LiveTvViewModel @Inject constructor(
     }
     fun refresh() = repository.refreshAll(force = true)
 
+    // ------------------------------------------------------------ channel management
+
+    fun renameChannel(channel: LiveChannel, name: String?) = viewModelScope.launch {
+        val original = repository.channels.value.firstOrNull { it.key == channel.key }?.name
+        prefs.setChannelName(channel.key, name?.takeIf { it.isNotBlank() && it != original })
+    }
+
+    fun setChannelNumber(channel: LiveChannel, number: Int?) = viewModelScope.launch {
+        val original = repository.channels.value.firstOrNull { it.key == channel.key }?.number
+        prefs.setChannelNumber(channel.key, number?.takeIf { it != original })
+    }
+
+    fun renameGroup(groupId: String, name: String?) = viewModelScope.launch { prefs.setGroupName(groupId, name) }
+
+    fun moveGroup(groupId: String, delta: Int) {
+        viewModelScope.launch { prefs.moveGroup(groupId, delta, uiState.value.orderableGroupIds) }
+    }
+
+    fun createGroupWith(name: String, channel: LiveChannel?) = viewModelScope.launch {
+        val id = prefs.createCustomGroup(name)
+        channel?.let { prefs.addToCustomGroup(id, it.key) }
+    }
+
+    fun addToGroup(groupId: String, channel: LiveChannel) = viewModelScope.launch { prefs.addToCustomGroup(groupId, channel.key) }
+    fun removeFromGroup(groupId: String, channel: LiveChannel) = viewModelScope.launch { prefs.removeFromCustomGroup(groupId, channel.key) }
+    fun moveInGroup(groupId: String, channel: LiveChannel, delta: Int) = viewModelScope.launch {
+        prefs.moveInCustomGroup(groupId, channel.key, delta)
+    }
+
+    fun deleteGroup(groupId: String) = viewModelScope.launch {
+        prefs.deleteCustomGroup(groupId)
+        if (session.currentGroupId.value == groupId) selectGroup(ChannelGroup.ALL)
+    }
+
     fun channelByKey(key: String?): LiveChannel? =
-        key?.let { k -> repository.channels.value.firstOrNull { it.key == k } }
+        key?.let { k -> displayChannels.value.firstOrNull { it.key == k } }
 
     fun currentProgram(channelKey: String, at: Long = _now.value): EpgProgram? =
         programs.value[channelKey]?.firstOrNull { at >= it.startMs && at < it.stopMs }
@@ -237,5 +309,6 @@ class LiveTvViewModel @Inject constructor(
             repository.channels.first { it.isNotEmpty() }
         } ?: return null
         return channels.firstOrNull { it.key == key }
+            ?.let { c -> displayChannels.value.firstOrNull { it.key == c.key } ?: c }
     }
 }
