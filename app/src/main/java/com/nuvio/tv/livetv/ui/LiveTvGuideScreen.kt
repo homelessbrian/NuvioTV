@@ -428,6 +428,8 @@ fun LiveTvGuideScreen(
                                 val isOk = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
                                 if (isOk) {
                                     if (event.type == KeyEventType.KeyDown) {
+                                        // A new press: forget a long press whose release went to a dialog.
+                                        if (event.nativeKeyEvent.repeatCount == 0) longPressFired = false
                                         if (event.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
                                             longPressFired = true
                                             focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }

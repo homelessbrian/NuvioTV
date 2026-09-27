@@ -145,6 +145,8 @@ fun LiveTvPlayerScreen(
                 val archive = playback.catchupTitle != null
                 if (isOk) {
                     if (e.type == KeyEventType.KeyDown) {
+                        // A new press: forget a long press whose release went to a dialog.
+                        if (e.nativeKeyEvent.repeatCount == 0) longPressFired = false
                         if (e.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
                             longPressFired = true
                             dialog = PlayerDialog.OPTIONS

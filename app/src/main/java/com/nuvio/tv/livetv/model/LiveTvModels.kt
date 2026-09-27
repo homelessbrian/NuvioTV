@@ -120,7 +120,9 @@ data class LiveTvSettings(
     val autoReconnect: Boolean = true,
     val channelSort: ChannelSort = ChannelSort.PLAYLIST,
     /** Fill the focused cell with the accent colour instead of outlining it. */
-    val solidHighlight: Boolean = false
+    val solidHighlight: Boolean = false,
+    /** Show matching channels and programmes in Nuvio's search. */
+    val showInSearch: Boolean = true
 )
 
 data class LiveUserState(

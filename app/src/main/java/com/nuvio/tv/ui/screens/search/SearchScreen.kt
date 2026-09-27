@@ -138,7 +138,8 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel(),
     onNavigateToDetail: (String, String, String) -> Unit,
     onNavigateToSeeAll: (catalogId: String, addonId: String, type: String) -> Unit = { _, _, _ -> },
-    onOpenDiscover: () -> Unit = {}
+    onOpenDiscover: () -> Unit = {},
+    onOpenLiveTv: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val watchedMovieIds by viewModel.watchedMovieIds.collectAsState()
@@ -318,6 +319,11 @@ fun SearchScreen(
 
     val trimmedQuery = remember(uiState.query) { uiState.query.trim() }
     val trimmedSubmittedQuery = remember(uiState.submittedQuery) { uiState.submittedQuery.trim() }
+    // Live TV fork: matching IPTV channels and programmes.
+    val liveTvResults = com.nuvio.tv.livetv.ui.rememberLiveTvSearchResults(
+        query = trimmedSubmittedQuery,
+        onOpened = onOpenLiveTv
+    )
 
     // Stable per-row state maps — mirrors ClassicHomeContent pattern so
     // CatalogRowSection keeps focus when placeholder→real data transitions.
@@ -694,6 +700,12 @@ fun SearchScreen(
                 // instruction is wrong, and it was re-appearing on every keystroke. Neither the
                 // mobile nor the desktop client shows an equivalent message.
 
+                if (trimmedSubmittedQuery.length >= MIN_SEARCH_QUERY_LENGTH && liveTvResults.hits.isNotEmpty()) {
+                    item(key = "live_tv_results") {
+                        com.nuvio.tv.livetv.ui.LiveTvSearchRow(results = liveTvResults)
+                    }
+                }
+
                 when {
                     trimmedSubmittedQuery.length < MIN_SEARCH_QUERY_LENGTH && !hasPendingUnsubmittedQuery -> {
                         item {
@@ -780,7 +792,8 @@ fun SearchScreen(
                         }
                     }
 
-                    !uiState.isSearching && !hasPendingUnsubmittedQuery && visibleCatalogRows.isEmpty() -> {
+                    !uiState.isSearching && !hasPendingUnsubmittedQuery && visibleCatalogRows.isEmpty() &&
+                        liveTvResults.hits.isEmpty() -> {
                         item {
                             EmptyScreenState(
                                 title = stringResource(R.string.search_no_results_title),

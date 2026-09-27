@@ -1126,6 +1126,9 @@ private fun PlaybackNavHost(
                 androidx.hilt.navigation.compose.hiltViewModel(backStackEntry)
             SearchScreen(
                 viewModel = searchViewModel,
+                onOpenLiveTv = {
+                    navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }
+                },
                 onNavigateToDetail = { itemId, itemType, addonBaseUrl ->
                     val heroBackdrop = HeroBackdropState.consumeAndClear()
                     navController.navigate(

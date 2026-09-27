@@ -204,6 +204,7 @@ fun LiveTvSettingsContent(
             item(key = "guide") {
                 SettingsGroupCard(title = "Guide") {
                     SettingsToggleRow("Show in side menu", "Adds Live TV to Nuvio's main menu", s.showInSidebar, { update { it.copy(showInSidebar = !it.showInSidebar) } })
+                    SettingsToggleRow("Show in Nuvio search", "Matching channels and shows appear in search results", s.showInSearch, { update { it.copy(showInSearch = !it.showInSearch) } })
                     SettingsToggleRow("Show channel names", null, s.showChannelNames, { update { it.copy(showChannelNames = !it.showChannelNames) } })
                     SettingsToggleRow("Show channel numbers", null, s.showChannelNumbers, { update { it.copy(showChannelNumbers = !it.showChannelNumbers) } })
                     SettingsToggleRow("Show channel logos", null, s.showChannelLogos, { update { it.copy(showChannelLogos = !it.showChannelLogos) } })

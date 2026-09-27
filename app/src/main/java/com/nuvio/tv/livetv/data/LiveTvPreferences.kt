@@ -68,6 +68,7 @@ class LiveTvPreferences @Inject constructor(
         val autoReconnect = booleanPreferencesKey("auto_reconnect")
         val channelSort = stringPreferencesKey("channel_sort")
         val solidHighlight = booleanPreferencesKey("solid_highlight")
+        val showInSearch = booleanPreferencesKey("show_in_search")
 
         val hiddenChannels = stringSetPreferencesKey("hidden_channels")
         val hiddenGroups = stringSetPreferencesKey("hidden_groups")
@@ -117,7 +118,8 @@ class LiveTvPreferences @Inject constructor(
             use24HourClock = p[Keys.clock24] ?: d.use24HourClock,
             autoReconnect = p[Keys.autoReconnect] ?: d.autoReconnect,
             channelSort = p[Keys.channelSort]?.let { runCatching { ChannelSort.valueOf(it) }.getOrNull() } ?: d.channelSort,
-            solidHighlight = p[Keys.solidHighlight] ?: d.solidHighlight
+            solidHighlight = p[Keys.solidHighlight] ?: d.solidHighlight,
+            showInSearch = p[Keys.showInSearch] ?: d.showInSearch
         )
     }.distinctUntilChanged()
 
@@ -184,6 +186,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.autoReconnect] = s.autoReconnect
         p[Keys.channelSort] = s.channelSort.name
         p[Keys.solidHighlight] = s.solidHighlight
+        p[Keys.showInSearch] = s.showInSearch
     }
 
     // ---------- channel management ----------

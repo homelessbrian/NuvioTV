@@ -32,6 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -195,9 +198,26 @@ internal fun LiveDialog(
     width: Dp = 520.dp,
     content: @Composable () -> Unit
 ) {
+    // A dialog opened by a long press appears while OK is still held. Swallow the rest of that
+    // press (its repeats and its release) so it can't click the first menu item and close the menu.
+    var sawKeyDown by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
             modifier = Modifier
+                .onPreviewKeyEvent { e ->
+                    when (e.type) {
+                        KeyEventType.KeyDown -> {
+                            if (!sawKeyDown && e.nativeKeyEvent.repeatCount > 0) {
+                                true
+                            } else {
+                                sawKeyDown = true
+                                false
+                            }
+                        }
+                        KeyEventType.KeyUp -> !sawKeyDown
+                        else -> false
+                    }
+                }
                 .widthIn(min = 320.dp, max = width)
                 .heightIn(max = 620.dp)
                 .clip(RoundedCornerShape(16.dp))
