@@ -324,6 +324,8 @@ fun SearchScreen(
         query = trimmedSubmittedQuery,
         onOpened = onOpenLiveTv
     )
+    val liveTvRowFocusRequester = remember { FocusRequester() }
+    val hasLiveTvResults = trimmedSubmittedQuery.length >= MIN_SEARCH_QUERY_LENGTH && liveTvResults.hits.isNotEmpty()
 
     // Stable per-row state maps — mirrors ClassicHomeContent pattern so
     // CatalogRowSection keeps focus when placeholder→real data transitions.
@@ -645,7 +647,7 @@ fun SearchScreen(
                 SearchInputField(
                     modifier = Modifier.onFocusChanged { inputRowHasFocus = it.hasFocus },
                     query = uiState.query,
-                    canMoveToResults = canMoveToResults,
+                    canMoveToResults = canMoveToResults || hasLiveTvResults,
                     voiceFocusRequester = if (isVoiceSearchAvailable) voiceFocusRequester else null,
                     searchFocusRequester = searchFocusRequester,
                     onSearchFieldFocusChanged = { focused -> isSearchFieldFocused = focused },
@@ -661,7 +663,12 @@ fun SearchScreen(
                         // D-pad down from the text field is the user's confirmation that the
                         // live-search results are useful, even before a particular card opens.
                         viewModel.onEvent(SearchEvent.RememberSearchFromTextInput)
-                        focusResults = true
+                        // Live TV fork: the Live TV row sits above the addon rows, so go there first.
+                        if (hasLiveTvResults && runCatching { liveTvRowFocusRequester.requestFocus() }.isSuccess) {
+                            focusResults = false
+                        } else {
+                            focusResults = true
+                        }
                     },
                     onOpenDiscover = {
                         // Arm the restore so coming back lands on this button rather than the
@@ -709,9 +716,13 @@ fun SearchScreen(
                 // instruction is wrong, and it was re-appearing on every keystroke. Neither the
                 // mobile nor the desktop client shows an equivalent message.
 
-                if (trimmedSubmittedQuery.length >= MIN_SEARCH_QUERY_LENGTH && liveTvResults.hits.isNotEmpty()) {
+                if (hasLiveTvResults) {
                     item(key = "live_tv_results") {
-                        com.nuvio.tv.livetv.ui.LiveTvSearchRow(results = liveTvResults)
+                        com.nuvio.tv.livetv.ui.LiveTvSearchRow(
+                            results = liveTvResults,
+                            entryFocusRequester = liveTvRowFocusRequester,
+                            upFocusRequester = searchFocusRequester
+                        )
                     }
                 }
 
@@ -846,7 +857,9 @@ fun SearchScreen(
                                 rowFocusRequester = rowFocusRequester,
                                 entryFocusRequester = entryFocusRequester,
                                 // Anchor Up to the field; geometric focus varies with the card.
-                                upFocusRequester = if (index == 0) searchFocusRequester else null,
+                                upFocusRequester = if (index == 0) {
+                                    if (hasLiveTvResults) liveTvRowFocusRequester else searchFocusRequester
+                                } else null,
                                 listState = listState,
                                 restorerFocusedIndex = if (restoringSearchFocus.value && catalogKey == viewModel.savedFocusRowKey) {
                                     viewModel.savedFocusItemIndex

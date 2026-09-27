@@ -122,7 +122,10 @@ data class LiveTvSettings(
     /** Fill the focused cell with the accent colour instead of outlining it. */
     val solidHighlight: Boolean = false,
     /** Show matching channels and programmes in Nuvio's search. */
-    val showInSearch: Boolean = true
+    val showInSearch: Boolean = true,
+    val showAllChannelsGroup: Boolean = true,
+    /** When Live TV opens, start the last channel in the preview window and highlight it. */
+    val resumeLastInPreview: Boolean = true
 )
 
 data class LiveUserState(

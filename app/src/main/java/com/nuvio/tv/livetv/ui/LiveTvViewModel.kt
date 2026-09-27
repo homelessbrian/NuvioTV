@@ -48,8 +48,14 @@ data class LiveTvUiState(
     val searchQuery: String = "",
     /** Non-special groups in the order shown, used when the user moves a group. */
     val orderableGroupIds: List<String> = emptyList(),
-    val customGroups: List<ChannelGroup> = emptyList()
-)
+    val customGroups: List<ChannelGroup> = emptyList(),
+    /** Where "back" and fallbacks go: All channels, or the first group when that's hidden. */
+    val defaultGroupId: String = ChannelGroup.ALL
+) {
+    /** The group to switch to so [channel] is in the list. */
+    fun groupFor(channel: LiveChannel): String =
+        if (groups.any { it.id == ChannelGroup.ALL }) ChannelGroup.ALL else channel.groupId
+}
 
 @HiltViewModel
 class LiveTvViewModel @Inject constructor(
@@ -153,7 +159,7 @@ class LiveTvViewModel @Inject constructor(
         groups += ChannelGroup(ChannelGroup.SEARCH, "Search", 0, special = true)
         if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favourites", favorites.size, special = true)
         if (s.showRecentGroup) groups += ChannelGroup(ChannelGroup.RECENT, "Recently watched", recent.size, special = true)
-        groups += ChannelGroup(ChannelGroup.ALL, "All channels", visible.size, special = true)
+        if (s.showAllChannelsGroup) groups += ChannelGroup(ChannelGroup.ALL, "All channels", visible.size, special = true)
 
         // Your own groups first, then the playlist's groups, then the saved order on top.
         val regular = mutableListOf<ChannelGroup>()
@@ -173,9 +179,15 @@ class LiveTvViewModel @Inject constructor(
             .map { it.value }
         groups += orderedRegular
 
-        val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: ChannelGroup.ALL
+        val defaultGroupId = when {
+            s.showAllChannelsGroup -> ChannelGroup.ALL
+            orderedRegular.isNotEmpty() -> orderedRegular.first().id
+            s.showFavoritesGroup -> ChannelGroup.FAVORITES
+            else -> ChannelGroup.ALL
+        }
+        val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: defaultGroupId
         val list = when {
-            groupId == ChannelGroup.ALL -> sorted(visible)
+            groupId == ChannelGroup.ALL && s.showAllChannelsGroup -> sorted(visible)
             groupId == ChannelGroup.FAVORITES -> favorites
             groupId == ChannelGroup.RECENT -> recent
             groupId == ChannelGroup.SEARCH -> {
@@ -196,7 +208,8 @@ class LiveTvViewModel @Inject constructor(
             hasSources = hasSrc,
             searchQuery = query,
             orderableGroupIds = orderedRegular.map { it.id },
-            customGroups = custom
+            customGroups = custom,
+            defaultGroupId = defaultGroupId
         )
     }
 
@@ -233,7 +246,7 @@ class LiveTvViewModel @Inject constructor(
     fun hideChannel(channel: LiveChannel) = viewModelScope.launch { prefs.setChannelHidden(channel.key, true) }
     fun hideGroup(groupId: String) = viewModelScope.launch {
         prefs.setGroupHidden(groupId, true)
-        if (session.currentGroupId.value == groupId) selectGroup(ChannelGroup.ALL)
+        if (session.currentGroupId.value == groupId) selectGroup(uiState.value.defaultGroupId)
     }
     fun refresh() = repository.refreshAll(force = true)
 
@@ -271,7 +284,7 @@ class LiveTvViewModel @Inject constructor(
 
     fun deleteGroup(groupId: String) = viewModelScope.launch {
         prefs.deleteCustomGroup(groupId)
-        if (session.currentGroupId.value == groupId) selectGroup(ChannelGroup.ALL)
+        if (session.currentGroupId.value == groupId) selectGroup(uiState.value.defaultGroupId)
     }
 
     fun channelByKey(key: String?): LiveChannel? =
@@ -302,6 +315,17 @@ class LiveTvViewModel @Inject constructor(
         uiState.value.allVisibleChannels.firstOrNull { it.number == number }
 
     fun previousChannel(): LiveChannel? = channelByKey(userState.value.previousChannelKey)
+
+    /** The channel to start in the preview when Live TV opens ("Resume last channel in preview"). */
+    suspend fun resumeCandidate(): LiveChannel? {
+        val s = prefs.currentSettings()
+        if (!s.resumeLastInPreview || !s.showPreview) return null
+        val key = prefs.userState.first().lastChannelKey ?: return null
+        val channels = withTimeoutOrNull(15_000) {
+            displayChannels.first { list -> list.any { it.key == key } }
+        } ?: return null
+        return channels.firstOrNull { it.key == key }
+    }
 
     /** The last watched channel, once per app launch, when "auto-play last channel" is on. */
     suspend fun autoPlayCandidate(): LiveChannel? {

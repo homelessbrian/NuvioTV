@@ -6,6 +6,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -46,7 +56,8 @@ data class LiveSearchHit(
 class LiveTvSearchResults(
     val hits: List<LiveSearchHit>,
     val use24h: Boolean,
-    val open: (LiveSearchHit) -> Unit
+    val open: (LiveSearchHit) -> Unit,
+    val posterFor: suspend (String) -> String?
 )
 
 private const val MAX_HITS = 40
@@ -100,18 +111,24 @@ fun rememberLiveTvSearchResults(
         open = { hit ->
             viewModel.preview(hit.channel)
             onOpened()
-        }
+        },
+        posterFor = { title -> viewModel.posterFor(title) }
     )
 }
 
-/** A search-results row in Nuvio's style: title, then a horizontal list of channel cards. */
+/**
+ * A search-results row in Nuvio's style: title, then a horizontal list of cards.
+ * [entryFocusRequester] goes on the first card so the search screen can move focus into the row;
+ * [upFocusRequester] is where D-pad up goes from the row (the search field).
+ */
 @Composable
 fun LiveTvSearchRow(
     results: LiveTvSearchResults,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    entryFocusRequester: FocusRequester? = null,
+    upFocusRequester: FocusRequester? = null
 ) {
     if (results.hits.isEmpty()) return
-    val use24h = results.use24h
     Column(modifier = modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         LiveText(
             "Live TV",
@@ -121,10 +138,18 @@ fun LiveTvSearchRow(
         )
         LazyRow(
             contentPadding = PaddingValues(horizontal = 52.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            items(results.hits, key = { it.channel.key }) { hit ->
-                LiveSearchCard(hit = hit, use24h = use24h, onClick = { results.open(hit) })
+            itemsIndexed(results.hits, key = { _, h -> h.channel.key }) { index, hit ->
+                LiveSearchCard(
+                    hit = hit,
+                    use24h = results.use24h,
+                    posterFor = results.posterFor,
+                    modifier = Modifier
+                        .then(if (index == 0 && entryFocusRequester != null) Modifier.focusRequester(entryFocusRequester) else Modifier)
+                        .focusProperties { if (upFocusRequester != null) up = upFocusRequester },
+                    onClick = { results.open(hit) }
+                )
             }
         }
     }
@@ -132,21 +157,31 @@ fun LiveTvSearchRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LiveSearchCard(hit: LiveSearchHit, use24h: Boolean, onClick: () -> Unit) {
+private fun LiveSearchCard(
+    hit: LiveSearchHit,
+    use24h: Boolean,
+    posterFor: suspend (String) -> String?,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
     val colors = liveCellColors(focused = focused, idle = guideSurface())
     val now = System.currentTimeMillis()
     val p = hit.program
-    val programLine = when {
-        p == null -> "No programme information"
-        now >= p.startMs && now < p.stopMs -> "Now · ${p.title}"
-        else -> "${formatDayClock(p.startMs, now, use24h)} · ${p.title}"
+    val live = p != null && now >= p.startMs && now < p.stopMs
+    val poster by produceState<String?>(initialValue = null, p?.title) {
+        value = p?.title?.let { posterFor(it) }
     }
-    Column(
-        modifier = Modifier
-            .width(250.dp)
-            .height(128.dp)
+    val when_ = when {
+        p == null -> null
+        live -> "Now · ${formatRange(p.startMs, p.stopMs, use24h)}"
+        else -> formatDayClock(p.startMs, now, use24h)
+    }
+    Row(
+        modifier = modifier
+            .width(440.dp)
+            .height(168.dp)
             .clip(shape)
             .background(colors.background)
             .border(2.dp, colors.border, shape)
@@ -157,28 +192,62 @@ private fun LiveSearchCard(hit: LiveSearchHit, use24h: Boolean, onClick: () -> U
                 onClick = onClick
             )
             .padding(12.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ChannelLogo(hit.channel.logo, 36.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                LiveText(hit.channel.name, color = colors.text, size = 15.sp, weight = FontWeight.SemiBold, marquee = focused)
+        // Poster as Nuvio's catalogs would show it; the channel logo when there's no match.
+        Box(
+            modifier = Modifier
+                .width(96.dp)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(8.dp))
+                .background(guideSurfaceVariant()),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!poster.isNullOrBlank()) {
+                AsyncImage(
+                    model = poster,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                ChannelLogo(hit.channel.logo, 40.dp)
+            }
+        }
+        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            LiveText(
+                p?.title ?: hit.channel.name,
+                modifier = Modifier.fillMaxWidth(),
+                color = colors.text,
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                marquee = focused
+            )
+            val meta = listOfNotNull(when_, p?.episode).joinToString("  ·  ")
+            if (meta.isNotBlank()) {
+                LiveText(meta, color = focusedSecondaryTextColor(focused), size = 12.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+            if (live) {
+                Spacer(Modifier.height(6.dp))
+                ProgressBar(p!!.progress(now), Modifier.fillMaxWidth())
+            }
+            Spacer(Modifier.height(6.dp))
+            LiveText(
+                p?.description ?: "",
+                color = focusedSecondaryTextColor(focused),
+                size = 13.sp,
+                maxLines = 3,
+                modifier = Modifier.weight(1f)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChannelLogo(hit.channel.logo, 18.dp)
+                Spacer(Modifier.width(6.dp))
                 LiveText(
-                    "Ch ${hit.channel.number} · ${hit.channel.group}",
+                    "${hit.channel.number}  ${hit.channel.name}",
                     color = focusedSecondaryTextColor(focused),
                     size = 12.sp,
                     marquee = focused
                 )
-            }
-        }
-        Column {
-            LiveText(programLine, color = colors.text, size = 13.sp, marquee = focused)
-            if (p != null && now >= p.startMs && now < p.stopMs) {
-                Spacer(Modifier.height(6.dp))
-                ProgressBar(p.progress(now), Modifier.fillMaxWidth())
-            } else {
-                Spacer(Modifier.size(0.dp, 10.dp))
             }
         }
     }

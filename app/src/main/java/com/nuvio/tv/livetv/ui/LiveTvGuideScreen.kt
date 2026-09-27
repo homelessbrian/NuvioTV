@@ -95,6 +95,7 @@ fun LiveTvGuideScreen(
     onOpenFullscreen: () -> Unit,
     onOpenSettings: () -> Unit,
     onFindInNuvio: () -> Unit = {},
+    onOpenNuvioSearch: () -> Unit = onFindInNuvio,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
@@ -114,12 +115,6 @@ fun LiveTvGuideScreen(
     LaunchedEffect(settings.showPreview) {
         if (!settings.showPreview) viewModel.playback.stop()
     }
-    LaunchedEffect(Unit) {
-        viewModel.autoPlayCandidate()?.let { ch ->
-            viewModel.preview(ch)
-            onOpenFullscreen()
-        }
-    }
 
     val gridFocus = remember { FocusRequester() }
     val groupsFocus = remember { FocusRequester() }
@@ -130,6 +125,8 @@ fun LiveTvGuideScreen(
     var cursorMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(floorSlot(System.currentTimeMillis())) }
     var pendingGroupId by remember { mutableStateOf<String?>(null) }
+    // A channel to move the cursor to once it's in the list (after a group switch, etc).
+    var highlightKey by remember { mutableStateOf<String?>(null) }
     val groupsListState = rememberLazyListState()
     var menuTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var infoTarget by remember { mutableStateOf<MenuTarget?>(null) }
@@ -173,9 +170,8 @@ fun LiveTvGuideScreen(
                 row = idx
             } else {
                 viewModel.channelByNumber(n)?.let { target ->
-                    viewModel.selectGroup(ChannelGroup.ALL)
-                    val allIdx = ui.allVisibleChannels.indexOfFirst { it.key == target.key }
-                    if (allIdx >= 0) row = allIdx
+                    viewModel.selectGroup(ui.groupFor(target))
+                    highlightKey = target.key
                 }
             }
         }
@@ -204,12 +200,31 @@ fun LiveTvGuideScreen(
         }
     }
 
-    // Coming back from full screen: make sure the playing channel is in the list so it's highlighted.
+    // Opening Live TV (or coming back from full screen):
+    //  1. "Auto-play last channel" (once per app launch) goes straight to full screen.
+    //  2. Otherwise, if something is already playing, highlight it.
+    //  3. Otherwise "Resume last channel in preview" starts the last channel in the preview.
     LaunchedEffect(Unit) {
-        val key = playback.channelKey ?: return@LaunchedEffect
-        if (channels.none { it.key == key } && ui.allVisibleChannels.any { it.key == key }) {
-            viewModel.selectGroup(ChannelGroup.ALL)
+        viewModel.autoPlayCandidate()?.let { ch ->
+            viewModel.preview(ch)
+            onOpenFullscreen()
+            return@LaunchedEffect
         }
+        val target = viewModel.channelByKey(viewModel.playbackState.value.channelKey)
+            ?: viewModel.resumeCandidate()?.also { viewModel.preview(it) }
+            ?: return@LaunchedEffect
+        val current = viewModel.uiState.value
+        if (current.channels.none { it.key == target.key }) viewModel.selectGroup(current.groupFor(target))
+        highlightKey = target.key
+    }
+    LaunchedEffect(highlightKey, channels) {
+        val key = highlightKey ?: return@LaunchedEffect
+        val idx = channels.indexOfFirst { it.key == key }
+        if (idx < 0) return@LaunchedEffect
+        row = idx
+        column = GuideColumn.CHANNEL
+        listState.scrollToItem((idx - 2).coerceAtLeast(0))
+        highlightKey = null
     }
 
     // Back: leave programme browsing, then leave a group for All channels, then open Nuvio's menu.
@@ -222,8 +237,8 @@ fun LiveTvGuideScreen(
                 windowStart = floorSlot(now)
                 cursorMs = now
             }
-            ui.selectedGroupId != ChannelGroup.ALL -> {
-                viewModel.selectGroup(ChannelGroup.ALL)
+            ui.selectedGroupId != ui.defaultGroupId -> {
+                viewModel.selectGroup(ui.defaultGroupId)
                 row = 0
                 scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
             }
@@ -370,7 +385,7 @@ fun LiveTvGuideScreen(
                     onFocusGroup = { g -> pendingGroupId = g.id },
                     onSelect = { g ->
                         if (g.id == ChannelGroup.SEARCH) {
-                            searchOpen = true
+                            onOpenNuvioSearch()
                         } else {
                             if (g.id != ui.selectedGroupId) {
                                 viewModel.selectGroup(g.id)
@@ -462,7 +477,7 @@ fun LiveTvGuideScreen(
                                         focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }
                                         true
                                     }
-                                            event.key == Key.Search -> { searchOpen = true; true }
+                                            event.key == Key.Search -> { onOpenNuvioSearch(); true }
                                     code in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
                                         if (numberBuffer.length < 5) numberBuffer += (code - android.view.KeyEvent.KEYCODE_0).toString()
                                         true
@@ -606,7 +621,7 @@ fun LiveTvGuideScreen(
                 onProgramInfo = { menuTarget = null; infoTarget = target },
                 streamProgram = target.block?.program ?: viewModel.currentProgram(target.channel.key),
                 onFindInNuvio = { p -> menuTarget = null; findInNuvio(p) },
-                onSearch = { menuTarget = null; searchOpen = true },
+                onSearch = { menuTarget = null; onOpenNuvioSearch() },
                 onRefresh = { menuTarget = null; viewModel.refresh() },
                 onSettings = { menuTarget = null; onOpenSettings() }
             )
@@ -1237,7 +1252,7 @@ private fun ChannelContextMenu(
             item { MenuItem("Change channel number", onClick = onRenumber) }
             item { MenuItem("Hide channel", onClick = onHide) }
             item { MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup) }
-            item { MenuItem("Search channels", onClick = onSearch) }
+            item { MenuItem("Search", onClick = onSearch) }
             item { MenuItem("Update playlists & EPG", onClick = onRefresh) }
             item { MenuItem("Live TV settings", onClick = onSettings) }
         }

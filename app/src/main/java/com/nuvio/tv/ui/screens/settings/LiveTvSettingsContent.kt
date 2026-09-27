@@ -212,6 +212,7 @@ fun LiveTvSettingsContent(
                     SettingsToggleRow("Programme details", "Title, time and description above the guide", s.showProgramDetails, { update { it.copy(showProgramDetails = !it.showProgramDetails) } })
                     SettingsToggleRow("Compact rows", "Fit more channels on screen", s.compactRows, { update { it.copy(compactRows = !it.compactRows) } })
                     SettingsToggleRow("Favourites group", null, s.showFavoritesGroup, { update { it.copy(showFavoritesGroup = !it.showFavoritesGroup) } })
+                    SettingsToggleRow("All channels group", "Turn off to only show your groups and the playlist's groups", s.showAllChannelsGroup, { update { it.copy(showAllChannelsGroup = !it.showAllChannelsGroup) } })
                     SettingsToggleRow("Recently watched group", null, s.showRecentGroup, { update { it.copy(showRecentGroup = !it.showRecentGroup) } })
                     SettingsToggleRow("Remember last group", null, s.rememberLastGroup, { update { it.copy(rememberLastGroup = !it.rememberLastGroup) } })
                     SettingsToggleRow("24-hour clock", null, s.use24HourClock, { update { it.copy(use24HourClock = !it.use24HourClock) } })
@@ -234,6 +235,7 @@ fun LiveTvSettingsContent(
             item(key = "playback") {
                 SettingsGroupCard(title = "Playback") {
                     SettingsToggleRow("OK opens full screen", "Skip the preview window", s.openFullscreenOnSelect, { update { it.copy(openFullscreenOnSelect = !it.openFullscreenOnSelect) } })
+                    SettingsToggleRow("Resume last channel in preview", "Opening Live TV starts your last channel in the preview window and highlights it", s.resumeLastInPreview, { update { it.copy(resumeLastInPreview = !it.resumeLastInPreview) } })
                     SettingsToggleRow("Auto-play last channel", "When Live TV is opened", s.autoPlayLastChannel, { update { it.copy(autoPlayLastChannel = !it.autoPlayLastChannel) } })
                     SettingsToggleRow("Reverse channel up / down", null, s.reverseZap, { update { it.copy(reverseZap = !it.reverseZap) } })
                     SettingsToggleRow("Reconnect automatically", "Retry when a stream drops", s.autoReconnect, { update { it.copy(autoReconnect = !it.autoReconnect) } })
