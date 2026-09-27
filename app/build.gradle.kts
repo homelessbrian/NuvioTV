@@ -333,6 +333,15 @@ android {
     }
 }
 
+// Live TV fork versioning. Each build's versionCode is Nuvio's code x 100 plus a fork build
+// number, so fork updates released between Nuvio versions install as normal upgrades.
+// The release workflow passes -PlivetvBuildNumber and -PlivetvVersionName.
+val livetvBuildNumber = (findProperty("livetvBuildNumber") as String?)?.toIntOrNull() ?: 0
+android.defaultConfig.versionCode = (android.defaultConfig.versionCode ?: 1) * 100 + livetvBuildNumber
+(findProperty("livetvVersionName") as String?)?.takeIf { it.isNotBlank() }?.let {
+    android.defaultConfig.versionName = it
+}
+
 androidComponents {
     onVariants(selector().withBuildType("debug")) { variant ->
         val isPlaystore = variant.productFlavors.any { it.second == "playstore" }
