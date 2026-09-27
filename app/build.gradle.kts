@@ -347,6 +347,12 @@ androidComponents {
         val isPlaystore = variant.productFlavors.any { it.second == "playstore" }
         variant.applicationId.set(if (isPlaystore) "com.nuvio.appdebug" else "com.nuvio.livetv")
     }
+    // Live TV fork: release builds get their own app ID too, so they install next to official
+    // Nuvio and update the fork's earlier builds in place.
+    onVariants(selector().withBuildType("release")) { variant ->
+        val isPlaystore = variant.productFlavors.any { it.second == "playstore" }
+        if (!isPlaystore) variant.applicationId.set("com.nuvio.livetv")
+    }
 }
 
 composeCompiler {
