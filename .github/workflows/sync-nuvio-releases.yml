@@ -1,12 +1,18 @@
 name: Sync Nuvio releases
 
+# GitHub can't notify your fork when another repo publishes a release, so this
+# does a quick check every hour. It only merges and builds when Nuvio has
+# published a release that your fork doesn't have yet. The check itself takes
+# a few seconds.
+#
 # When a new Nuvio release appears (for example 1.1.0-beta.3), it:
 #   1. merges that exact release into your fork, keeping your Live TV changes
 #   2. builds the APK
 #   3. publishes a release in your fork with the same version number
 #
 # Needs a secret named SYNC_TOKEN: a personal access token (classic) with the
-# "repo" and "workflow" scopes.
+# "repo" and "workflow" scopes. Optional app-key secrets are listed in the
+# "Write app keys" step.
 on:
   schedule:
     - cron: "17 * * * *"   # hourly check
@@ -104,9 +110,45 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Prepare properties and signing
+      - name: Write app keys
+        env:
+          NUVIO_BACKEND_URL: ${{ secrets.NUVIO_BACKEND_URL }}
+          NUVIO_BACKEND_KEY: ${{ secrets.NUVIO_BACKEND_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
         run: |
-          touch local.properties local.dev.properties
+          : > keys.properties
+          add() { if [ -n "$2" ]; then echo "$1=$2" >> keys.properties; fi; }
+          if [ -n "$NUVIO_BACKEND_URL" ]; then
+            BACKEND="${NUVIO_BACKEND_URL%/}"
+            add NUVIO_SUPABASE_URL "$BACKEND"
+            add NUVIO_SUPABASE_ANON_KEY "$NUVIO_BACKEND_KEY"
+            case "$BACKEND" in
+              *api.nuvio.tv*)
+                # Official Nuvio accounts: the app's built-in nuvio.tv login pages are already right.
+                ;;
+              *)
+                # Self-hosted server: its login pages live on the server itself.
+                add TV_LOGIN_WEB_BASE_URL "$BACKEND/tv-login"
+                add DEVICE_LOGIN_WEB_BASE_URL "$BACKEND/link"
+                add AVATAR_PUBLIC_BASE_URL "$BACKEND/storage/v1/object/public/avatars"
+                ;;
+            esac
+          fi
+          add TMDB_API_KEY "$TMDB_API_KEY"
+          add TRAKT_CLIENT_ID "$TRAKT_CLIENT_ID"
+          add TRAKT_CLIENT_SECRET "$TRAKT_CLIENT_SECRET"
+          add SIMKL_CLIENT_ID "$SIMKL_CLIENT_ID"
+          # The build reads some values from each file, so write both.
+          cp keys.properties local.properties
+          cp keys.properties local.dev.properties
+          rm keys.properties
+          echo "Keys set:"; cut -d= -f1 local.properties
+
+      - name: Signing
+        run: |
           cp keystore/livetv-fork.jks "$RUNNER_TEMP/key.jks"
           {
             echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/key.jks"
