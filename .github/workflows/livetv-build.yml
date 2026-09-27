@@ -1,5 +1,7 @@
 name: Build Live TV APK
 
+# Push a tag like v1.0.0 (or run it by hand from the Actions tab) to build the APK.
+# Tagged builds are attached to a GitHub Release automatically.
 on:
   push:
     tags:
@@ -23,14 +25,55 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Prepare properties
+      - name: Write app keys
+        env:
+          NUVIO_BACKEND_URL: ${{ secrets.NUVIO_BACKEND_URL }}
+          NUVIO_BACKEND_KEY: ${{ secrets.NUVIO_BACKEND_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
         run: |
-          touch local.properties
-          touch local.dev.properties
+          : > keys.properties
+          add() { if [ -n "$2" ]; then echo "$1=$2" >> keys.properties; fi; }
+          if [ -n "$NUVIO_BACKEND_URL" ]; then
+            BACKEND="${NUVIO_BACKEND_URL%/}"
+            add NUVIO_SUPABASE_URL "$BACKEND"
+            add NUVIO_SUPABASE_ANON_KEY "$NUVIO_BACKEND_KEY"
+            case "$BACKEND" in
+              *api.nuvio.tv*)
+                # Official Nuvio accounts: the app's built-in nuvio.tv login pages are already right.
+                ;;
+              *)
+                # Self-hosted server: its login pages live on the server itself.
+                add TV_LOGIN_WEB_BASE_URL "$BACKEND/tv-login"
+                add DEVICE_LOGIN_WEB_BASE_URL "$BACKEND/link"
+                add AVATAR_PUBLIC_BASE_URL "$BACKEND/storage/v1/object/public/avatars"
+                ;;
+            esac
+          fi
+          add TMDB_API_KEY "$TMDB_API_KEY"
+          add TRAKT_CLIENT_ID "$TRAKT_CLIENT_ID"
+          add TRAKT_CLIENT_SECRET "$TRAKT_CLIENT_SECRET"
+          add SIMKL_CLIENT_ID "$SIMKL_CLIENT_ID"
+          # The build reads some values from each file, so write both.
+          cp keys.properties local.properties
+          cp keys.properties local.dev.properties
+          rm keys.properties
+          echo "Keys set:"; cut -d= -f1 local.properties
 
+      # A fixed key committed to the repo so every build can update the previous install.
+      # To use your own private key instead, add a secret named LIVETV_KEYSTORE_BASE64
+      # (store password / key password "livetvfork", alias "livetv").
       - name: Signing
+        env:
+          LIVETV_KEYSTORE_BASE64: ${{ secrets.LIVETV_KEYSTORE_BASE64 }}
         run: |
-          cp keystore/livetv-fork.jks "$RUNNER_TEMP/key.jks"
+          if [ -n "$LIVETV_KEYSTORE_BASE64" ]; then
+            printf '%s' "$LIVETV_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/key.jks"
+          else
+            cp keystore/livetv-fork.jks "$RUNNER_TEMP/key.jks"
+          fi
           {
             echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/key.jks"
             echo "NUVIO_RELEASE_KEY_ALIAS=livetv"
