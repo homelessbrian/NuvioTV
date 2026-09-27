@@ -160,12 +160,12 @@ jobs:
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullDebug --stacktrace
+          ./gradlew :app:assembleFullRelease --stacktrace
 
       - name: Collect APKs
         run: |
           mkdir -p out
-          for f in $(find app/build/outputs/apk/full/debug -name "*.apk"); do
+          for f in $(find app/build/outputs/apk/full/release -name "*.apk"); do
             name=$(basename "$f" .apk)
             cp "$f" "out/NuvioLiveTV-$TAG-${name#app-full-}.apk"
           done
