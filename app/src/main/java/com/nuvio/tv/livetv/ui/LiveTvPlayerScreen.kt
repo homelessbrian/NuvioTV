@@ -189,7 +189,6 @@ fun LiveTvPlayerScreen(
                         if (numberBuffer.length < 5) numberBuffer += (code - AndroidKeyEvent.KEYCODE_0).toString()
                         true
                     }
-                    e.key == Key.Back && bannerVisible -> { bannerVisible = false; true }
                     e.key == Key.Back -> { onBack(); true }
                     else -> false
                 }

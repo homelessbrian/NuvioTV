@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -90,6 +92,22 @@ internal fun LiveText(
     )
 }
 
+/**
+ * Guide cell greys. Follows the theme's surface colours, but when "pure black surfaces" is on
+ * (surfaces are black) it falls back to fixed greys so programme blocks stay visible.
+ */
+@Composable
+internal fun guideSurface(): Color {
+    val c = NuvioTheme.colors.Surface
+    return if (c.luminance() < 0.01f) Color(0xFF1C1C1F) else c
+}
+
+@Composable
+internal fun guideSurfaceVariant(): Color {
+    val c = NuvioTheme.colors.SurfaceVariant
+    return if (c.luminance() < 0.01f) Color(0xFF2B2B30) else c
+}
+
 /** Background / border / text colours for a focused or unfocused guide cell. */
 internal data class LiveCellColors(val background: Color, val border: Color, val text: Color)
 
@@ -116,7 +134,7 @@ internal fun LiveFocusRow(
 ) {
     var focused by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
-    val colors = liveCellColors(focused, if (selected) NuvioTheme.colors.SurfaceVariant else Color.Transparent)
+    val colors = liveCellColors(focused, if (selected) guideSurfaceVariant() else Color.Transparent)
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
@@ -151,10 +169,10 @@ internal fun focusedSecondaryTextColor(focused: Boolean): Color =
 
 @Composable
 internal fun ChannelLogo(url: String?, size: Dp, modifier: Modifier = Modifier) {
+    // No clipping: logos are scaled to fit inside the box with a little breathing room,
+    // so square and rounded logos keep their corners.
     Box(
-        modifier = modifier
-            .size(width = size * 1.6f, height = size)
-            .clip(RoundedCornerShape(6.dp)),
+        modifier = modifier.size(width = size * 1.6f, height = size),
         contentAlignment = Alignment.Center
     ) {
         if (!url.isNullOrBlank()) {
@@ -162,7 +180,9 @@ internal fun ChannelLogo(url: String?, size: Dp, modifier: Modifier = Modifier) 
                 model = url,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.size(width = size * 1.6f, height = size)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(2.dp)
             )
         }
     }

@@ -1,5 +1,6 @@
 package com.nuvio.tv.livetv.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -7,6 +8,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -126,7 +128,8 @@ fun LiveTvGuideScreen(
     var row by remember { mutableIntStateOf(0) }
     var cursorMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(floorSlot(System.currentTimeMillis())) }
-    var groupsOpen by remember { mutableStateOf(false) }
+    var pendingGroupId by remember { mutableStateOf<String?>(null) }
+    val groupsListState = rememberLazyListState()
     var menuTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var infoTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -174,6 +177,56 @@ fun LiveTvGuideScreen(
                     if (allIdx >= 0) row = allIdx
                 }
             }
+        }
+    }
+
+    fun focusGroups() {
+        scope.launch {
+            val idx = ui.groups.indexOfFirst { it.id == ui.selectedGroupId }.coerceAtLeast(0)
+            val visible = groupsListState.layoutInfo.visibleItemsInfo.map { it.index }
+            if (idx !in visible) groupsListState.scrollToItem((idx - 3).coerceAtLeast(0))
+            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+            runCatching { groupsFocus.requestFocus() }
+        }
+    }
+
+    // Moving through the group column shows that group straight away (Search opens on OK).
+    LaunchedEffect(pendingGroupId) {
+        val id = pendingGroupId ?: return@LaunchedEffect
+        delay(350)
+        if (id != ChannelGroup.SEARCH && id != ui.selectedGroupId) {
+            viewModel.selectGroup(id)
+            row = 0
+            column = GuideColumn.CHANNEL
+            windowStart = floorSlot(now)
+            cursorMs = now
+        }
+    }
+
+    // Coming back from full screen: make sure the playing channel is in the list so it's highlighted.
+    LaunchedEffect(Unit) {
+        val key = playback.channelKey ?: return@LaunchedEffect
+        if (channels.none { it.key == key } && ui.allVisibleChannels.any { it.key == key }) {
+            viewModel.selectGroup(ChannelGroup.ALL)
+        }
+    }
+
+    // Back: leave programme browsing, then leave a group for All channels, then open Nuvio's menu.
+    val sidebarExpanded = com.nuvio.tv.LocalSidebarExpanded.current
+    val openSidebar = com.nuvio.tv.LocalOpenSidebar.current
+    BackHandler(enabled = !sidebarExpanded) {
+        when {
+            column == GuideColumn.PROGRAM -> {
+                column = GuideColumn.CHANNEL
+                windowStart = floorSlot(now)
+                cursorMs = now
+            }
+            ui.selectedGroupId != ChannelGroup.ALL -> {
+                viewModel.selectGroup(ChannelGroup.ALL)
+                row = 0
+                scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+            }
+            else -> openSidebar()
         }
     }
 
@@ -259,7 +312,7 @@ fun LiveTvGuideScreen(
     fun moveLeft() {
         val ch = focusedChannel ?: return
         if (column == GuideColumn.CHANNEL) {
-            groupsOpen = true
+            focusGroups()
             return
         }
         val block = blockAt(ch, cursorMs)
@@ -296,146 +349,179 @@ fun LiveTvGuideScreen(
                 status = status.message.takeIf { status.loading }
             )
 
-            // ---------------------------------------------------------------- time ruler
-            val channelColWidth = channelColumnWidth(settings)
-            val rowHeight = if (settings.compactRows) 42.dp else 52.dp
+            // ---------------------------------------------------------------- groups + guide
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(34.dp)
-                    .padding(start = 56.dp, end = 24.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LiveText(
-                    text = selectedGroupTitle,
-                    modifier = Modifier.width(channelColWidth).padding(start = 8.dp),
-                    color = NuvioTheme.colors.Secondary,
-                    weight = FontWeight.SemiBold,
-                    size = 15.sp
-                )
-                BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    val w = maxWidth
-                    for (i in 0 until (WINDOW_MS / SLOT_MS).toInt()) {
-                        val t = windowStart + i * SLOT_MS
-                        LiveText(
-                            text = formatDayClock(t, now, settings.use24HourClock),
-                            modifier = Modifier
-                                .offset(x = w * (i * SLOT_MS / WINDOW_MS.toFloat()))
-                                .align(Alignment.CenterStart)
-                                .padding(start = 6.dp),
-                            color = NuvioTheme.colors.TextSecondary,
-                            size = 13.sp
-                        )
-                    }
-                }
-            }
-
-            // ---------------------------------------------------------------- grid
-            Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(start = 56.dp, end = 24.dp, bottom = 12.dp)
-                    .focusRequester(gridFocus)
-                    .focusRequester(contentFocus)
-                    .onFocusChanged { gridFocused = it.hasFocus || it.isFocused }
-                    .onPreviewKeyEvent { event ->
-                        val isOk = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
-                        if (isOk) {
-                            if (event.type == KeyEventType.KeyDown) {
-                                if (event.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
-                                    longPressFired = true
-                                    focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }
-                                }
-                                return@onPreviewKeyEvent true
+                    .padding(start = 56.dp)
+            ) {
+                GroupColumn(
+                    groups = ui.groups,
+                    selectedId = ui.selectedGroupId,
+                    listState = groupsListState,
+                    focusRequester = groupsFocus,
+                    onFocusGroup = { g -> pendingGroupId = g.id },
+                    onSelect = { g ->
+                        if (g.id == ChannelGroup.SEARCH) {
+                            searchOpen = true
+                        } else {
+                            if (g.id != ui.selectedGroupId) {
+                                viewModel.selectGroup(g.id)
+                                row = 0
                             }
-                            if (event.type == KeyEventType.KeyUp) {
-                                if (longPressFired) longPressFired = false else activate()
-                                return@onPreviewKeyEvent true
-                            }
+                            resetToNow()
+                            scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                         }
-                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                        val code = event.nativeKeyEvent.keyCode
-                        when {
-                            event.key == Key.DirectionUp -> { moveRow(-1); true }
-                            event.key == Key.DirectionDown -> { moveRow(1); true }
-                            event.key == Key.PageUp || event.key == Key.ChannelUp -> { moveRow(-8); true }
-                            event.key == Key.PageDown || event.key == Key.ChannelDown -> { moveRow(8); true }
-                            event.key == Key.DirectionRight -> { moveRight(); true }
-                            event.key == Key.DirectionLeft -> { moveLeft(); true }
-                            event.key == Key.MediaFastForward -> { repeat(4) { moveRight() }; true }
-                            event.key == Key.MediaRewind -> { repeat(4) { moveLeft() }; true }
-                            event.key == Key.Menu || event.key == Key.Info -> {
-                                focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }
-                                true
+                    },
+                    onGroupMenu = { g -> if (!g.special) groupMenu = g },
+                    onRight = {
+                        column = GuideColumn.CHANNEL
+                        runCatching { gridFocus.requestFocus() }
+                    }
+                )
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    // ---------------------------------------------------------------- time ruler
+                    val channelColWidth = channelColumnWidth(settings)
+                    val rowHeight = if (settings.compactRows) 42.dp else 52.dp
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .padding(end = 24.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LiveText(
+                            text = selectedGroupTitle,
+                            modifier = Modifier.width(channelColWidth).padding(start = 8.dp),
+                            color = NuvioTheme.colors.Secondary,
+                            weight = FontWeight.SemiBold,
+                            size = 15.sp
+                        )
+                        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            val w = maxWidth
+                            for (i in 0 until (WINDOW_MS / SLOT_MS).toInt()) {
+                                val t = windowStart + i * SLOT_MS
+                                LiveText(
+                                    text = formatDayClock(t, now, settings.use24HourClock),
+                                    modifier = Modifier
+                                        .offset(x = w * (i * SLOT_MS / WINDOW_MS.toFloat()))
+                                        .align(Alignment.CenterStart)
+                                        .padding(start = 6.dp),
+                                    color = NuvioTheme.colors.TextSecondary,
+                                    size = 13.sp
+                                )
                             }
-                            event.key == Key.Back && column == GuideColumn.PROGRAM -> { resetToNow(); true }
-                            event.key == Key.Search -> { searchOpen = true; true }
-                            code in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
-                                if (numberBuffer.length < 5) numberBuffer += (code - android.view.KeyEvent.KEYCODE_0).toString()
-                                true
-                            }
-                            code == android.view.KeyEvent.KEYCODE_LAST_CHANNEL -> {
-                                viewModel.previousChannel()?.let { playChannel(it) }
-                                true
-                            }
-                            else -> false
                         }
                     }
-                    .focusable()
-            ) {
-                when {
-                    !ui.hasSources -> EmptyGuideMessage(
-                        title = "No playlists yet",
-                        body = "Add an M3U playlist, Xtream login or XMLTV guide in Settings › Live TV.",
-                        action = "Press OK to open Live TV settings"
-                    )
-                    channels.isEmpty() && status.loading -> EmptyGuideMessage(
-                        title = status.message ?: "Loading…", body = null, action = null
-                    )
-                    channels.isEmpty() && ui.selectedGroupId == ChannelGroup.SEARCH -> EmptyGuideMessage(
-                        title = if (ui.searchQuery.isBlank()) "Search channels" else "No channels match \"${ui.searchQuery}\"",
-                        body = "Press OK on Search in the group list, or the search key on your remote.",
-                        action = null
-                    )
-                    channels.isEmpty() -> EmptyGuideMessage(
-                        title = "No channels in this group",
-                        body = "Press left to pick another group.",
-                        action = null
-                    )
-                    else -> {
-                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), userScrollEnabled = false) {
-                            itemsIndexed(channels, key = { _, c -> c.key }) { index, ch ->
-                                GuideRow(
-                                    channel = ch,
-                                    programs = programs[ch.key].orEmpty(),
-                                    settings = settings,
-                                    rowHeight = rowHeight,
-                                    channelColWidth = channelColWidth,
-                                    windowStart = windowStart,
-                                    now = now,
-                                    isFavorite = ch.key in user.favorites,
-                                    isPlaying = ch.key == playback.channelKey,
-                                    focusColumn = if (index == row && gridFocused && !groupsOpen) column else null,
-                                    focusedBlock = if (index == row) focusedBlock else null
-                                )
+
+                    // ---------------------------------------------------------------- grid
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(end = 24.dp, bottom = 12.dp)
+                            .focusRequester(gridFocus)
+                            .focusRequester(contentFocus)
+                            .onFocusChanged { gridFocused = it.hasFocus || it.isFocused }
+                            .onPreviewKeyEvent { event ->
+                                val isOk = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+                                if (isOk) {
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        if (event.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
+                                            longPressFired = true
+                                            focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }
+                                        }
+                                        return@onPreviewKeyEvent true
+                                    }
+                                    if (event.type == KeyEventType.KeyUp) {
+                                        if (longPressFired) longPressFired = false else activate()
+                                        return@onPreviewKeyEvent true
+                                    }
+                                }
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                val code = event.nativeKeyEvent.keyCode
+                                when {
+                                    event.key == Key.DirectionUp -> { moveRow(-1); true }
+                                    event.key == Key.DirectionDown -> { moveRow(1); true }
+                                    event.key == Key.PageUp || event.key == Key.ChannelUp -> { moveRow(-8); true }
+                                    event.key == Key.PageDown || event.key == Key.ChannelDown -> { moveRow(8); true }
+                                    event.key == Key.DirectionRight -> { moveRight(); true }
+                                    event.key == Key.DirectionLeft -> { moveLeft(); true }
+                                    event.key == Key.MediaFastForward -> { repeat(4) { moveRight() }; true }
+                                    event.key == Key.MediaRewind -> { repeat(4) { moveLeft() }; true }
+                                    event.key == Key.Menu || event.key == Key.Info -> {
+                                        focusedChannel?.let { menuTarget = MenuTarget(it, if (column == GuideColumn.PROGRAM) focusedBlock else null) }
+                                        true
+                                    }
+                                            event.key == Key.Search -> { searchOpen = true; true }
+                                    code in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
+                                        if (numberBuffer.length < 5) numberBuffer += (code - android.view.KeyEvent.KEYCODE_0).toString()
+                                        true
+                                    }
+                                    code == android.view.KeyEvent.KEYCODE_LAST_CHANNEL -> {
+                                        viewModel.previousChannel()?.let { playChannel(it) }
+                                        true
+                                    }
+                                    else -> false
+                                }
                             }
-                        }
-                        // "Now" line across the programme area.
-                        if (now in windowStart until windowStart + WINDOW_MS) {
-                            BoxWithConstraints(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(start = channelColWidth)
-                            ) {
-                                val x = maxWidth * ((now - windowStart) / WINDOW_MS.toFloat())
-                                Box(
-                                    modifier = Modifier
-                                        .offset(x = x)
-                                        .width(2.dp)
-                                        .fillMaxHeight()
-                                        .background(NuvioTheme.colors.FocusRing.copy(alpha = 0.85f))
-                                )
+                            .focusable()
+                    ) {
+                        when {
+                            !ui.hasSources -> EmptyGuideMessage(
+                                title = "No playlists yet",
+                                body = "Add an M3U playlist, Xtream login or XMLTV guide in Settings › Live TV.",
+                                action = "Press OK to open Live TV settings"
+                            )
+                            channels.isEmpty() && status.loading -> EmptyGuideMessage(
+                                title = status.message ?: "Loading…", body = null, action = null
+                            )
+                            channels.isEmpty() && ui.selectedGroupId == ChannelGroup.SEARCH -> EmptyGuideMessage(
+                                title = if (ui.searchQuery.isBlank()) "Search channels" else "No channels match \"${ui.searchQuery}\"",
+                                body = "Press OK on Search in the group list, or the search key on your remote.",
+                                action = null
+                            )
+                            channels.isEmpty() -> EmptyGuideMessage(
+                                title = "No channels in this group",
+                                body = "Press left to pick another group.",
+                                action = null
+                            )
+                            else -> {
+                                LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), userScrollEnabled = false) {
+                                    itemsIndexed(channels, key = { _, c -> c.key }) { index, ch ->
+                                        GuideRow(
+                                            channel = ch,
+                                            programs = programs[ch.key].orEmpty(),
+                                            settings = settings,
+                                            rowHeight = rowHeight,
+                                            channelColWidth = channelColWidth,
+                                            windowStart = windowStart,
+                                            now = now,
+                                            isFavorite = ch.key in user.favorites,
+                                            isPlaying = ch.key == playback.channelKey,
+                                            focusColumn = if (index == row && gridFocused) column else null,
+                                            focusedBlock = if (index == row) focusedBlock else null
+                                        )
+                                    }
+                                }
+                                // "Now" line across the programme area.
+                                if (now in windowStart until windowStart + WINDOW_MS) {
+                                    BoxWithConstraints(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(start = channelColWidth)
+                                    ) {
+                                        val x = maxWidth * ((now - windowStart) / WINDOW_MS.toFloat())
+                                        Box(
+                                            modifier = Modifier
+                                                .offset(x = x)
+                                                .width(2.dp)
+                                                .fillMaxHeight()
+                                                .background(NuvioTheme.colors.FocusRing.copy(alpha = 0.85f))
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -454,41 +540,6 @@ fun LiveTvGuideScreen(
                     }
                 }
                 LiveText(formatClock(now, settings.use24HourClock), size = 15.sp, weight = FontWeight.SemiBold)
-            }
-        }
-
-        // ---------------------------------------------------------------- group panel
-        AnimatedVisibility(
-            visible = groupsOpen,
-            enter = slideInHorizontally { -it } + fadeIn(),
-            exit = slideOutHorizontally { -it } + fadeOut()
-        ) {
-            GroupPanel(
-                groups = ui.groups,
-                selectedId = ui.selectedGroupId,
-                focusRequester = groupsFocus,
-                onSelect = { g ->
-                    if (g.id == ChannelGroup.SEARCH) {
-                        searchOpen = true
-                    } else {
-                        viewModel.selectGroup(g.id)
-                        row = 0
-                        resetToNow()
-                    }
-                    groupsOpen = false
-                    scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
-                },
-                onGroupMenu = { g -> if (!g.special) groupMenu = g },
-                onClose = {
-                    groupsOpen = false
-                    scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
-                }
-            )
-        }
-        LaunchedEffect(groupsOpen) {
-            if (groupsOpen) {
-                delay(80)
-                runCatching { groupsFocus.requestFocus() }
             }
         }
 
@@ -654,7 +705,7 @@ private fun channelColumnWidth(s: LiveTvSettings): Dp {
     var w = 16.dp
     if (s.showChannelNumbers) w += 52.dp
     if (s.showChannelLogos) w += 72.dp
-    if (s.showChannelNames) w += 170.dp
+    if (s.showChannelNames) w += 150.dp
     return w.coerceAtLeast(80.dp)
 }
 
@@ -821,7 +872,7 @@ private fun GuideRow(
         val channelFocused = focusColumn == GuideColumn.CHANNEL
         val cell = liveCellColors(
             focused = channelFocused,
-            idle = if (focusColumn != null) NuvioTheme.colors.SurfaceVariant else NuvioTheme.colors.Surface
+            idle = if (focusColumn != null) guideSurfaceVariant() else guideSurface()
         )
         Row(
             modifier = Modifier
@@ -885,7 +936,7 @@ private fun GuideRow(
                         .fillMaxSize()
                         .padding(horizontal = 1.dp)
                         .clip(cellShape)
-                        .background(NuvioTheme.colors.Surface.copy(alpha = 0.55f))
+                        .background(guideSurface().copy(alpha = 0.55f))
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
@@ -901,9 +952,9 @@ private fun GuideRow(
                 val colors = liveCellColors(
                     focused = isFocused,
                     idle = when {
-                        live -> NuvioTheme.colors.SurfaceVariant
-                        past -> NuvioTheme.colors.Surface.copy(alpha = 0.5f)
-                        else -> NuvioTheme.colors.Surface
+                        live -> guideSurfaceVariant()
+                        past -> guideSurface().copy(alpha = 0.5f)
+                        else -> guideSurface()
                     },
                     idleText = if (past) NuvioTheme.colors.TextSecondary else NuvioTheme.colors.TextPrimary
                 )
@@ -923,7 +974,7 @@ private fun GuideRow(
                 val w = (xOf(focusedBlock.stopMs) - x).coerceAtLeast(2.dp)
                 ProgramBlock(
                     title = "No information", subtitle = null, x = x, width = w,
-                    colors = liveCellColors(focused = true, idle = NuvioTheme.colors.Surface),
+                    colors = liveCellColors(focused = true, idle = guideSurface()),
                     focused = true, progress = null, continuesLeft = false
                 )
             }
@@ -1009,52 +1060,110 @@ private fun EmptyGuideMessage(title: String, body: String?, action: String?) {
 // ==================================================================== group panel
 
 @Composable
-private fun GroupPanel(
+private fun GroupColumn(
     groups: List<ChannelGroup>,
     selectedId: String,
+    listState: androidx.compose.foundation.lazy.LazyListState,
     focusRequester: FocusRequester,
+    onFocusGroup: (ChannelGroup) -> Unit,
     onSelect: (ChannelGroup) -> Unit,
     onGroupMenu: (ChannelGroup) -> Unit,
-    onClose: () -> Unit
+    onRight: () -> Unit
 ) {
-    val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = (groups.indexOfFirst { it.id == selectedId } - 3).coerceAtLeast(0)
-    )
     Column(
         modifier = Modifier
             .fillMaxHeight()
-            .width(340.dp)
-            .padding(start = 56.dp)
-            .background(NuvioTheme.colors.BackgroundElevated.copy(alpha = 0.97f))
-            .padding(vertical = 20.dp, horizontal = 10.dp)
+            .width(190.dp)
+            .padding(end = 8.dp, bottom = 12.dp)
             .onPreviewKeyEvent { e ->
-                if (e.type == KeyEventType.KeyDown && (e.key == Key.DirectionRight || e.key == Key.Back)) {
-                    onClose(); true
+                if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) {
+                    onRight(); true
                 } else false
             }
     ) {
-        LiveText("Groups", size = 18.sp, weight = FontWeight.Bold, modifier = Modifier.padding(start = 14.dp, bottom = 10.dp))
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        LiveText(
+            "Groups",
+            modifier = Modifier.height(34.dp).padding(start = 12.dp, top = 8.dp),
+            color = NuvioTheme.colors.TextSecondary,
+            size = 13.sp,
+            weight = FontWeight.SemiBold
+        )
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
             itemsIndexed(groups, key = { _, g -> g.id }) { _, g ->
                 val selected = g.id == selectedId
-                LiveFocusRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(if (selected) Modifier.focusRequester(focusRequester) else Modifier),
+                GroupItem(
+                    group = g,
                     selected = selected,
+                    modifier = if (selected) Modifier.focusRequester(focusRequester) else Modifier,
+                    onFocused = { onFocusGroup(g) },
                     onClick = { onSelect(g) },
                     onLongClick = if (g.special) null else ({ onGroupMenu(g) })
-                ) { focused ->
-                    LiveText(g.title, modifier = Modifier.weight(1f), color = focusedTextColor(focused), size = 15.sp, marquee = focused)
-                    if (g.id != ChannelGroup.SEARCH) {
-                        LiveText(
-                            g.count.toString(),
-                            color = focusedSecondaryTextColor(focused),
-                            size = 13.sp
-                        )
-                    }
-                }
+                )
             }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun GroupItem(
+    group: ChannelGroup,
+    selected: Boolean,
+    modifier: Modifier,
+    onFocused: () -> Unit,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(8.dp)
+    val colors = liveCellColors(
+        focused = focused,
+        idle = if (selected) guideSurfaceVariant() else Color.Transparent,
+        idleText = if (selected) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary
+    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .clip(shape)
+            .background(colors.background)
+            .border(2.dp, colors.border, shape)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Accent bar marks the group being shown, even when focus is elsewhere.
+        Box(
+            Modifier
+                .width(3.dp)
+                .fillMaxHeight()
+                .padding(vertical = 8.dp)
+                .background(if (selected) NuvioTheme.colors.Secondary else Color.Transparent)
+        )
+        Spacer(Modifier.width(9.dp))
+        LiveText(
+            group.title,
+            modifier = Modifier.weight(1f),
+            color = colors.text,
+            size = 14.sp,
+            weight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            marquee = focused
+        )
+        if (group.id != ChannelGroup.SEARCH) {
+            LiveText(group.count.toString(), color = focusedSecondaryTextColor(focused), size = 12.sp)
         }
     }
 }
