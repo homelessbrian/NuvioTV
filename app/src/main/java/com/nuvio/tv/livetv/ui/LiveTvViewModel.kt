@@ -1,0 +1,241 @@
+package com.nuvio.tv.livetv.ui
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.nuvio.tv.livetv.data.CatchupUrlBuilder
+import com.nuvio.tv.livetv.data.LiveTvPreferences
+import com.nuvio.tv.livetv.data.LiveTvRepository
+import com.nuvio.tv.livetv.data.LiveTvStatus
+import com.nuvio.tv.livetv.model.ChannelGroup
+import com.nuvio.tv.livetv.model.EpgProgram
+import com.nuvio.tv.livetv.model.LiveChannel
+import com.nuvio.tv.livetv.model.LiveTvSettings
+import com.nuvio.tv.livetv.model.LiveUserState
+import com.nuvio.tv.livetv.model.ZapMode
+import com.nuvio.tv.livetv.player.LivePlaybackState
+import com.nuvio.tv.livetv.player.LiveTvPlaybackController
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/** In-memory session shared by the guide and the full-screen player (current group, etc). */
+@Singleton
+class LiveTvSession @Inject constructor() {
+    val currentGroupId = MutableStateFlow<String?>(null)
+    var autoPlayedThisLaunch = false
+}
+
+data class LiveTvUiState(
+    val groups: List<ChannelGroup> = emptyList(),
+    val selectedGroupId: String = ChannelGroup.ALL,
+    val channels: List<LiveChannel> = emptyList(),
+    val allVisibleChannels: List<LiveChannel> = emptyList(),
+    val hasSources: Boolean = true,
+    val searchQuery: String = ""
+)
+
+@HiltViewModel
+class LiveTvViewModel @Inject constructor(
+    private val repository: LiveTvRepository,
+    private val prefs: LiveTvPreferences,
+    val playback: LiveTvPlaybackController,
+    private val session: LiveTvSession
+) : ViewModel() {
+
+    val settings: StateFlow<LiveTvSettings> = prefs.settings
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LiveTvSettings())
+
+    val userState: StateFlow<LiveUserState> = prefs.userState
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LiveUserState())
+
+    val status: StateFlow<LiveTvStatus> = repository.status
+    val playbackState: StateFlow<LivePlaybackState> = playback.state
+
+    private val _now = MutableStateFlow(System.currentTimeMillis())
+    val now: StateFlow<Long> = _now
+
+    private val searchQuery = MutableStateFlow("")
+
+    /** Programmes with the user's EPG time offset applied. */
+    val programs: StateFlow<Map<String, List<EpgProgram>>> = combine(
+        repository.programs,
+        settings.map { it.epgOffsetMinutes }.distinctUntilChanged()
+    ) { map, offset ->
+        if (offset == 0) map else {
+            val shift = offset * 60_000L
+            map.mapValues { (_, list) -> list.map { it.copy(startMs = it.startMs + shift, stopMs = it.stopMs + shift) } }
+        }
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    private val hasSources: StateFlow<Boolean> = prefs.playlists.map { it.isNotEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val uiState: StateFlow<LiveTvUiState> = combine(
+        combine(repository.channels, userState, settings) { a, b, c -> Triple(a, b, c) },
+        session.currentGroupId,
+        searchQuery,
+        hasSources
+    ) { (channels, user, s), groupIdRaw, query, hasSrc ->
+        buildUi(channels, user, s, groupIdRaw, query, hasSrc)
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, LiveTvUiState())
+
+    init {
+        repository.ensureLoaded()
+        viewModelScope.launch {
+            while (true) {
+                _now.value = System.currentTimeMillis()
+                delay(30_000)
+            }
+        }
+        viewModelScope.launch {
+            settings.collect { playback.autoReconnect = it.autoReconnect }
+        }
+        viewModelScope.launch {
+            // Restore the remembered group once the user state is known.
+            val remembered = prefs.userState.first()
+            if (session.currentGroupId.value == null) {
+                val s = prefs.currentSettings()
+                session.currentGroupId.value = if (s.rememberLastGroup) remembered.lastGroupId else null
+            }
+        }
+    }
+
+    private fun buildUi(
+        channels: List<LiveChannel>,
+        user: LiveUserState,
+        s: LiveTvSettings,
+        groupIdRaw: String?,
+        query: String,
+        hasSrc: Boolean
+    ): LiveTvUiState {
+        val visible = channels.filter { it.key !in user.hiddenChannels && it.groupId !in user.hiddenGroups }
+        val byKey = visible.associateBy { it.key }
+        val favorites = user.favorites.mapNotNull { byKey[it] }
+        val recent = user.recent.mapNotNull { byKey[it] }
+
+        val groups = mutableListOf<ChannelGroup>()
+        groups += ChannelGroup(ChannelGroup.SEARCH, "Search", 0, special = true)
+        if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favourites", favorites.size, special = true)
+        if (s.showRecentGroup) groups += ChannelGroup(ChannelGroup.RECENT, "Recently watched", recent.size, special = true)
+        groups += ChannelGroup(ChannelGroup.ALL, "All channels", visible.size, special = true)
+        val order = LinkedHashMap<String, Pair<String, Int>>()
+        visible.forEach { c ->
+            val cur = order[c.groupId]
+            order[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
+        }
+        order.forEach { (id, v) -> groups += ChannelGroup(id, v.first, v.second) }
+
+        val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: ChannelGroup.ALL
+        val list = when (groupId) {
+            ChannelGroup.ALL -> visible
+            ChannelGroup.FAVORITES -> favorites
+            ChannelGroup.RECENT -> recent
+            ChannelGroup.SEARCH -> {
+                val q = query.trim()
+                if (q.isEmpty()) emptyList() else visible.filter {
+                    it.name.contains(q, ignoreCase = true) || it.number.toString() == q
+                }
+            }
+            else -> visible.filter { it.groupId == groupId }
+        }
+        return LiveTvUiState(
+            groups = groups,
+            selectedGroupId = groupId,
+            channels = list,
+            allVisibleChannels = visible,
+            hasSources = hasSrc,
+            searchQuery = query
+        )
+    }
+
+    // ------------------------------------------------------------ actions
+
+    fun selectGroup(id: String) {
+        session.currentGroupId.value = id
+        if (id != ChannelGroup.SEARCH) viewModelScope.launch { prefs.setLastGroup(id) }
+    }
+
+    fun setSearchQuery(q: String) {
+        searchQuery.value = q
+        session.currentGroupId.value = ChannelGroup.SEARCH
+    }
+
+    fun preview(channel: LiveChannel) {
+        playback.play(channel)
+        viewModelScope.launch { prefs.recordWatched(channel.key) }
+    }
+
+    fun playCatchup(channel: LiveChannel, program: EpgProgram): Boolean {
+        val catchup = channel.catchup ?: return false
+        val now = System.currentTimeMillis()
+        if (!CatchupUrlBuilder.isAvailable(catchup, program.startMs, now)) return false
+        val shift = settings.value.epgOffsetMinutes * 60_000L
+        val url = CatchupUrlBuilder.build(channel.url, catchup, program.startMs - shift, program.stopMs - shift, now)
+            ?: return false
+        playback.play(channel, overrideUrl = url, catchupTitle = program.title)
+        return true
+    }
+
+    fun toggleFavorite(channel: LiveChannel) = viewModelScope.launch { prefs.toggleFavorite(channel.key) }
+    fun moveFavorite(channel: LiveChannel, delta: Int) = viewModelScope.launch { prefs.moveFavorite(channel.key, delta) }
+    fun hideChannel(channel: LiveChannel) = viewModelScope.launch { prefs.setChannelHidden(channel.key, true) }
+    fun hideGroup(groupId: String) = viewModelScope.launch {
+        prefs.setGroupHidden(groupId, true)
+        if (session.currentGroupId.value == groupId) selectGroup(ChannelGroup.ALL)
+    }
+    fun refresh() = repository.refreshAll(force = true)
+
+    fun channelByKey(key: String?): LiveChannel? =
+        key?.let { k -> repository.channels.value.firstOrNull { it.key == k } }
+
+    fun currentProgram(channelKey: String, at: Long = _now.value): EpgProgram? =
+        programs.value[channelKey]?.firstOrNull { at >= it.startMs && at < it.stopMs }
+
+    fun nextProgram(channelKey: String, at: Long = _now.value): EpgProgram? =
+        programs.value[channelKey]?.firstOrNull { it.startMs >= at }
+
+    /** Channel list used for up/down zapping in the full-screen player. */
+    fun zapList(): List<LiveChannel> {
+        val ui = uiState.value
+        return if (settings.value.zapMode == ZapMode.ALL || ui.channels.isEmpty()) ui.allVisibleChannels else ui.channels
+    }
+
+    fun zap(currentKey: String?, direction: Int): LiveChannel? {
+        val list = zapList()
+        if (list.isEmpty()) return null
+        val dir = if (settings.value.reverseZap) -direction else direction
+        val idx = list.indexOfFirst { it.key == currentKey }
+        val next = if (idx < 0) 0 else Math.floorMod(idx + dir, list.size)
+        return list[next]
+    }
+
+    fun channelByNumber(number: Int): LiveChannel? =
+        uiState.value.allVisibleChannels.firstOrNull { it.number == number }
+
+    fun previousChannel(): LiveChannel? = channelByKey(userState.value.previousChannelKey)
+
+    /** The last watched channel, once per app launch, when "auto-play last channel" is on. */
+    suspend fun autoPlayCandidate(): LiveChannel? {
+        if (session.autoPlayedThisLaunch) return null
+        session.autoPlayedThisLaunch = true
+        if (!prefs.currentSettings().autoPlayLastChannel) return null
+        val key = prefs.userState.first().lastChannelKey ?: return null
+        val channels = withTimeoutOrNull(15_000) {
+            repository.channels.first { it.isNotEmpty() }
+        } ?: return null
+        return channels.firstOrNull { it.key == key }
+    }
+}

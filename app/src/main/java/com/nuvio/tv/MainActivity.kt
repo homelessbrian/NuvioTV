@@ -49,6 +49,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
@@ -256,6 +257,9 @@ open class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var themeDataStore: ThemeDataStore
+
+    @Inject
+    lateinit var liveTvPreferences: com.nuvio.tv.livetv.data.LiveTvPreferences
 
     @Inject
     lateinit var layoutPreferenceDataStore: LayoutPreferenceDataStore
@@ -1007,9 +1011,14 @@ open class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    val rootRoutes = remember(discoverLocation) {
+                    val liveTvSettingsFlow = remember { liveTvPreferences.settings }
+                    val liveTvInSidebar = liveTvSettingsFlow
+                        .collectAsState(initial = com.nuvio.tv.livetv.model.LiveTvSettings())
+                        .value.showInSidebar
+                    val rootRoutes = remember(discoverLocation, liveTvInSidebar) {
                         buildSet {
                             add(Screen.Home.route)
+                            if (liveTvInSidebar) add(Screen.LiveTv.route)
                             add(Screen.Search.route)
                             add(Screen.Library.route)
                             add(Screen.Settings.route)
@@ -1030,7 +1039,8 @@ open class MainActivity : ComponentActivity() {
                         strNavSearch,
                         strNavLibrary,
                         strNavSettings,
-                        discoverLocation
+                        discoverLocation,
+                        liveTvInSidebar
                     ) {
                         buildList {
                             add(
@@ -1046,6 +1056,15 @@ open class MainActivity : ComponentActivity() {
                                         route = Screen.Discover.route,
                                         label = strNavDiscover,
                                         icon = Icons.Default.Explore
+                                    )
+                                )
+                            }
+                            if (liveTvInSidebar) {
+                                add(
+                                    DrawerItem(
+                                        route = Screen.LiveTv.route,
+                                        label = "Live TV",
+                                        icon = Icons.Default.LiveTv
                                     )
                                 )
                             }

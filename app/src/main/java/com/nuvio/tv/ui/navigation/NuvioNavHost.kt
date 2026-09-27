@@ -1193,10 +1193,32 @@ private fun PlaybackNavHost(
             )
         }
 
+        composable(Screen.LiveTv.route) {
+            com.nuvio.tv.livetv.ui.LiveTvGuideScreen(
+                onOpenFullscreen = {
+                    navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }
+                },
+                onOpenSettings = { navController.navigate(Screen.LiveTvSettings.route) }
+            )
+        }
+
+        composable(Screen.LiveTvPlayer.route) {
+            com.nuvio.tv.livetv.ui.LiveTvPlayerScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.LiveTvSettings.route) {
+            com.nuvio.tv.livetv.ui.LiveTvSettingsScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
         composable(Screen.Settings.route) {
             SettingsScreen(
                 showBuiltInHeader = !hideBuiltInHeaders,
                 onNavigateToTracking = { navController.navigate(Screen.Tracking.route) },
+                onNavigateToLiveTv = { navController.navigate(Screen.LiveTvSettings.route) },
                 onNavigateToAddons = { navController.navigate(Screen.AddonManager.route) },
                 onNavigateToPlugins = { navController.navigate(Screen.Plugins.route) },
                 onNavigateToAuthQrSignIn = { navController.navigate(Screen.AuthQrSignIn.route) },

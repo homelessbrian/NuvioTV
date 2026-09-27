@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
@@ -107,6 +108,7 @@ internal enum class SettingsCategory {
     CONTENT_DISCOVERY,
     INTEGRATION,
     PLAYBACK,
+    LIVE_TV,
     ADVANCED,
     TRACKING,
     ABOUT,
@@ -222,6 +224,13 @@ private fun rememberSettingsSectionSpecs() = listOf(
         destination = SettingsSectionDestination.Inline
     ),
     SettingsSectionSpec(
+        category = SettingsCategory.LIVE_TV,
+        title = "Live TV",
+        icon = Icons.Default.LiveTv,
+        subtitle = "Playlists, TV guide and channel options",
+        destination = SettingsSectionDestination.External
+    ),
+    SettingsSectionSpec(
         category = SettingsCategory.TRACKING,
         title = stringResource(R.string.settings_tracking_title),
         icon = Icons.Default.Sync,
@@ -255,6 +264,7 @@ private fun rememberSettingsSectionSpecs() = listOf(
 fun SettingsScreen(
     showBuiltInHeader: Boolean = true,
     onNavigateToTracking: () -> Unit = {},
+    onNavigateToLiveTv: () -> Unit = {},
     onNavigateToAddons: () -> Unit = {},
     onNavigateToPlugins: () -> Unit = {},
     onNavigateToAuthQrSignIn: () -> Unit = {},
@@ -516,6 +526,7 @@ fun SettingsScreen(
                     when (section.category) {
                         SettingsCategory.ACCOUNT -> onNavigateToAuthQrSignIn()
                         SettingsCategory.TRACKING -> onNavigateToTracking()
+                        SettingsCategory.LIVE_TV -> onNavigateToLiveTv()
                         else -> Unit
                     }
                 } else {
@@ -1038,6 +1049,7 @@ private fun SettingsDetailPane(
         )
         SettingsCategory.DEBUG -> DebugSettingsContent()
         SettingsCategory.TRACKING -> Unit
+        SettingsCategory.LIVE_TV -> Unit
     }
 }
 
