@@ -1,0 +1,42 @@
+name: Apply Live TV kit
+
+# Upload nuvio-livetv-kit.zip to the root of the repo and this runs automatically.
+# It unzips the kit over the repo, commits the result and removes the zip.
+on:
+  push:
+    paths:
+      - "nuvio-livetv-kit.zip"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip kit
+        run: |
+          if [ ! -f nuvio-livetv-kit.zip ]; then
+            echo "nuvio-livetv-kit.zip not found in the repo root" >&2
+            exit 1
+          fi
+          # Workflow files can't be written by GITHUB_TOKEN, so .github/ is skipped here.
+          unzip -o nuvio-livetv-kit.zip -x ".github/*" "nuvio-livetv.patch"
+          git rm -q nuvio-livetv-kit.zip
+          git status --short
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Add Live TV (multi M3U/EPG, TiviMate-style guide)"
+            git push
+          fi
