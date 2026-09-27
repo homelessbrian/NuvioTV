@@ -251,7 +251,14 @@ class LiveTvViewModel @Inject constructor(
     fun refresh() = repository.refreshAll(force = true)
 
     /** The poster Nuvio's catalogs would show for this programme, or null if there's no good match. */
-    suspend fun posterFor(programTitle: String): String? = posterResolver.posterFor(programTitle)
+    suspend fun posterFor(
+        programTitle: String,
+        program: EpgProgram? = null,
+        channel: LiveChannel? = null
+    ): String? = posterResolver.posterFor(
+        programTitle,
+        com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(program, channel)
+    )
 
     // ------------------------------------------------------------ channel management
 

@@ -9,6 +9,8 @@ import com.nuvio.tv.domain.model.enabledAddons
 import com.nuvio.tv.domain.model.supportsExtra
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.CatalogRepository
+import com.nuvio.tv.livetv.model.EpgProgram
+import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.ui.LiveTvSearchBridge
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -34,23 +36,39 @@ class LiveTvPosterResolver @Inject constructor(
 
     data class Result(val poster: String?)
 
-    suspend fun posterFor(programTitle: String): String? {
+    /** Whether a programme is a movie or a series, and how sure we are. */
+    enum class Kind { MOVIE, SERIES }
+    data class TypeHint(val kind: Kind, val strong: Boolean)
+
+    suspend fun posterFor(programTitle: String, hint: TypeHint? = null): String? {
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
-        val key = normalize(query)
+        val key = normalize(query) + "|" + (hint?.kind ?: "any")
         cache[key]?.let { return it.poster }
         return mutex.withLock {
             cache[key]?.let { return@withLock it.poster }
-            val poster = runCatching { lookup(query) }.getOrNull()
+            val poster = runCatching { lookup(query, hint) }.getOrNull()
             cache[key] = Result(poster)
             poster
         }
     }
 
-    private suspend fun lookup(query: String): String? {
+    private suspend fun lookup(query: String, hint: TypeHint?): String? {
         val addons = withTimeoutOrNull(5_000) { addonRepository.getInstalledAddons().first() }
             ?.enabledAddons() ?: return null
-        val targets = searchTargets(addons).take(MAX_CATALOGS)
+        val all = searchTargets(addons)
+        if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS))
+        val preferredType = if (hint.kind == Kind.MOVIE) "movie" else "series"
+        // Search the right kind of catalog first. With a strong hint (episode number, or the guide
+        // says "Movie"), never take the other kind: that's how a sitcom ends up with a movie poster.
+        val preferred = all.filter { it.second.apiType == preferredType }.take(MAX_CATALOGS)
+        lookupIn(query, preferred)?.let { return it }
+        if (hint.strong) return null
+        val others = all.filter { it.second.apiType != preferredType }.take(MAX_CATALOGS)
+        return lookupIn(query, others)
+    }
+
+    private suspend fun lookupIn(query: String, targets: List<Pair<Addon, CatalogDescriptor>>): String? {
         val wanted = normalize(query)
         var closeMatch: MetaPreview? = null
 
@@ -89,15 +107,43 @@ class LiveTvPosterResolver @Inject constructor(
                 .filter { c ->
                     c.supportsExtra("search") &&
                         c.extra.none { it.isRequired && !it.name.equals("search", ignoreCase = true) } &&
-                        (c.apiType == "movie" || c.apiType == "series" || c.apiType == "tv")
+                        (c.apiType == "movie" || c.apiType == "series")
                 }
                 .map { addon to it }
-        }.sortedBy { (_, c) -> if (c.apiType == "movie") 0 else 1 }
+        }
 
     private fun normalize(s: String): String =
         s.lowercase().replace("&", "and").filter { it.isLetterOrDigit() }
 
-    private companion object {
-        const val MAX_CATALOGS = 6
+    companion object {
+        private const val MAX_CATALOGS = 6
+        private val movieWords = Regex("""\b(movie|movies|film|films|cinema|feature)\b""", RegexOption.IGNORE_CASE)
+        private val seriesWords = Regex(
+            """\b(series|sitcom|episode|episodes|soap|soap opera|talk show|reality|news|game show|drama series|comedy series)\b""",
+            RegexOption.IGNORE_CASE
+        )
+
+        /**
+         * Works out movie vs series from the guide: an episode number or the guide's category is a
+         * strong signal; failing that, the running time (under about an hour is almost always a
+         * series episode, over 80 minutes usually a movie) and the channel's group are weak ones.
+         */
+        fun typeHint(program: EpgProgram?, channel: LiveChannel?): TypeHint? {
+            if (program == null) return null
+            if (!program.episode.isNullOrBlank()) return TypeHint(Kind.SERIES, strong = true)
+            program.category?.let { cat ->
+                if (movieWords.containsMatchIn(cat)) return TypeHint(Kind.MOVIE, strong = true)
+                if (seriesWords.containsMatchIn(cat)) return TypeHint(Kind.SERIES, strong = true)
+            }
+            val minutes = (program.stopMs - program.startMs) / 60_000
+            channel?.group?.let { g ->
+                if (movieWords.containsMatchIn(g) && minutes >= 75) return TypeHint(Kind.MOVIE, strong = false)
+            }
+            return when {
+                minutes in 1..65 -> TypeHint(Kind.SERIES, strong = false)
+                minutes >= 80 -> TypeHint(Kind.MOVIE, strong = false)
+                else -> null
+            }
+        }
     }
 }

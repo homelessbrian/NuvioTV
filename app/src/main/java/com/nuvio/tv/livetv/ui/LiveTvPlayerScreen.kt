@@ -138,7 +138,9 @@ fun LiveTvPlayerScreen(
     val watchingTitle = playback.catchupTitle ?: nowProgram?.title
     val poster by androidx.compose.runtime.produceState<String?>(initialValue = null, watchingTitle) {
         value = null
-        value = watchingTitle?.let { viewModel.posterFor(it) }
+        // In archive playback the guide entry isn't the live one, so no movie/series hint.
+        val hintProgram = if (playback.catchupTitle == null) nowProgram else null
+        value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) }
     }
 
     BackHandler(enabled = listVisible) { listVisible = false }

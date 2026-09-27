@@ -57,7 +57,7 @@ class LiveTvSearchResults(
     val hits: List<LiveSearchHit>,
     val use24h: Boolean,
     val open: (LiveSearchHit) -> Unit,
-    val posterFor: suspend (String) -> String?
+    val posterFor: suspend (LiveSearchHit) -> String?
 )
 
 private const val MAX_HITS = 40
@@ -112,7 +112,7 @@ fun rememberLiveTvSearchResults(
             viewModel.preview(hit.channel)
             onOpened()
         },
-        posterFor = { title -> viewModel.posterFor(title) }
+        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } }
     )
 }
 
@@ -160,7 +160,7 @@ fun LiveTvSearchRow(
 private fun LiveSearchCard(
     hit: LiveSearchHit,
     use24h: Boolean,
-    posterFor: suspend (String) -> String?,
+    posterFor: suspend (LiveSearchHit) -> String?,
     modifier: Modifier,
     onClick: () -> Unit
 ) {
@@ -171,7 +171,7 @@ private fun LiveSearchCard(
     val p = hit.program
     val live = p != null && now >= p.startMs && now < p.stopMs
     val poster by produceState<String?>(initialValue = null, p?.title) {
-        value = p?.title?.let { posterFor(it) }
+        value = posterFor(hit)
     }
     val when_ = when {
         p == null -> null
