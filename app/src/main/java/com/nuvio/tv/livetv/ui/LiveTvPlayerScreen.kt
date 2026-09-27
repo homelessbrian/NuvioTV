@@ -132,6 +132,15 @@ fun LiveTvPlayerScreen(
         viewModel.zap(playback.channelKey, direction)?.let { viewModel.preview(it) }
     }
 
+    // What's on now, and the poster Nuvio's catalogs would show for it (looked up ahead of time,
+    // so it's ready when the info bar opens).
+    val nowProgram = current?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } }
+    val watchingTitle = playback.catchupTitle ?: nowProgram?.title
+    val poster by androidx.compose.runtime.produceState<String?>(initialValue = null, watchingTitle) {
+        value = null
+        value = watchingTitle?.let { viewModel.posterFor(it) }
+    }
+
     BackHandler(enabled = listVisible) { listVisible = false }
 
     CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
@@ -159,8 +168,9 @@ fun LiveTvPlayerScreen(
                             longPressFired = false
                         } else when {
                             playback.error != null && playback.reconnectAttempt > 8 -> viewModel.playback.retry()
-                            archive -> { viewModel.playback.togglePause(); showBanner() }
-                            else -> listVisible = true
+                            // OK shows the info bar; OK again hides it.
+                            bannerVisible -> bannerVisible = false
+                            else -> showBanner()
                         }
                         return@onPreviewKeyEvent true
                     }
@@ -234,17 +244,24 @@ fun LiveTvPlayerScreen(
         ) {
             current?.let { ch ->
                 val list = programs[ch.key].orEmpty()
-                val nowProgram = list.firstOrNull { now >= it.startMs && now < it.stopMs }
                 val next = list.firstOrNull { it.startMs >= (nowProgram?.stopMs ?: now) }
+                val use24h = settings.use24HourClock
                 InfoBanner(
                     channel = ch,
-                    nowTitle = playback.catchupTitle?.let { "Archive · $it" } ?: nowProgram?.title,
-                    nowRange = nowProgram?.let { formatRange(it.startMs, it.stopMs, settings.use24HourClock) },
-                    progress = nowProgram?.progress(now),
-                    nextTitle = next?.let { "${formatClock(it.startMs, settings.use24HourClock)}  ${it.title}" },
-                    description = nowProgram?.description,
+                    title = watchingTitle ?: ch.name,
+                    isArchive = playback.catchupTitle != null,
+                    meta = listOfNotNull(
+                        nowProgram?.let { formatRange(it.startMs, it.stopMs, use24h) },
+                        nowProgram?.let { minutesLeftLabel(it.stopMs, now) },
+                        nowProgram?.episode,
+                        nowProgram?.category
+                    ).joinToString("  ·  "),
+                    progress = if (playback.catchupTitle == null) nowProgram?.progress(now) else null,
+                    description = if (playback.catchupTitle == null) nowProgram?.description else null,
+                    nextLine = next?.let { "Next: ${formatClock(it.startMs, use24h)}  ${it.title}" },
+                    poster = poster,
                     isFavorite = ch.key in user.favorites,
-                    clock = formatClock(now, settings.use24HourClock),
+                    clock = formatClock(now, use24h),
                     resolution = if (playback.videoHeight > 0) "${playback.videoHeight}p" else null,
                     showNumber = settings.showChannelNumbers,
                     showLogo = settings.showChannelLogos
@@ -381,11 +398,13 @@ fun LiveTvPlayerScreen(
 @Composable
 private fun InfoBanner(
     channel: LiveChannel,
-    nowTitle: String?,
-    nowRange: String?,
+    title: String,
+    isArchive: Boolean,
+    meta: String,
     progress: Float?,
-    nextTitle: String?,
     description: String?,
+    nextLine: String?,
+    poster: String?,
     isFavorite: Boolean,
     clock: String,
     resolution: String?,
@@ -395,40 +414,70 @@ private fun InfoBanner(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.92f))))
-            .padding(start = 48.dp, end = 48.dp, top = 60.dp, bottom = 32.dp)
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f), Color.Black.copy(alpha = 0.95f))))
+            .padding(start = 48.dp, end = 48.dp, top = 72.dp, bottom = 32.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (showLogo) {
-                ChannelLogo(channel.logo, 64.dp)
-                Spacer(Modifier.width(22.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            // Poster, as Nuvio would show it in a catalog. Falls back to the channel logo.
+            Box(
+                modifier = Modifier
+                    .width(124.dp)
+                    .height(186.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(guideSurface()),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!poster.isNullOrBlank()) {
+                    coil3.compose.AsyncImage(
+                        model = poster,
+                        contentDescription = null,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    ChannelLogo(channel.logo, 56.dp)
+                }
             }
+            Spacer(Modifier.width(26.dp))
             Column(modifier = Modifier.weight(1f)) {
+                // What you're watching: big and bold, with the clock on the right.
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (showNumber) LiveText("${channel.number}", size = 26.sp, weight = FontWeight.Bold, color = NuvioTheme.colors.Secondary)
-                    if (showNumber) Spacer(Modifier.width(14.dp))
-                    LiveText(channel.name, size = 22.sp, weight = FontWeight.SemiBold)
-                    if (isFavorite) LiveText("  ★", color = NuvioTheme.colors.Rating, size = 18.sp)
-                    Spacer(Modifier.weight(1f))
-                    resolution?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp, modifier = Modifier.padding(end = 16.dp)) }
+                    LiveText(
+                        (if (isArchive) "Archive · " else "") + title,
+                        modifier = Modifier.weight(1f),
+                        size = 32.sp,
+                        weight = FontWeight.Bold,
+                        marquee = true
+                    )
+                    Spacer(Modifier.width(20.dp))
+                    resolution?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp, modifier = Modifier.padding(end = 14.dp)) }
                     LiveText(clock, size = 20.sp, weight = FontWeight.SemiBold)
                 }
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LiveText(nowTitle ?: "No programme information", size = 18.sp, modifier = Modifier.weight(1f, fill = false), marquee = true)
-                    nowRange?.let { LiveText("   $it", color = NuvioTheme.colors.TextSecondary, size = 15.sp) }
+                if (meta.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    LiveText(meta, color = NuvioTheme.colors.TextSecondary, size = 15.sp)
                 }
                 progress?.let {
-                    Spacer(Modifier.height(8.dp))
-                    ProgressBar(it, Modifier.fillMaxWidth(0.6f))
+                    Spacer(Modifier.height(10.dp))
+                    ProgressBar(it, Modifier.fillMaxWidth(0.55f))
                 }
                 description?.let {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
                     LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp, maxLines = 2)
                 }
-                nextTitle?.let {
-                    Spacer(Modifier.height(8.dp))
-                    LiveText("Next: $it", color = NuvioTheme.colors.TextSecondary, size = 14.sp)
+                Spacer(Modifier.height(16.dp))
+                // Bottom line: channel logo, then what's next.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!channel.logo.isNullOrBlank()) {
+                        ChannelLogo(channel.logo, 30.dp)
+                    } else {
+                        // No logo in the playlist: show the name so you still know the channel.
+                        LiveText(channel.name, size = 16.sp, weight = FontWeight.Medium)
+                    }
+                    nextLine?.let {
+                        Spacer(Modifier.width(14.dp))
+                        LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 15.sp, marquee = true, modifier = Modifier.weight(1f))
+                    }
                 }
             }
         }

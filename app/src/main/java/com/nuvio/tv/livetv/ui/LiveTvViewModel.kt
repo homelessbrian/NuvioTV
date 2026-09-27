@@ -56,7 +56,8 @@ class LiveTvViewModel @Inject constructor(
     private val repository: LiveTvRepository,
     private val prefs: LiveTvPreferences,
     val playback: LiveTvPlaybackController,
-    private val session: LiveTvSession
+    private val session: LiveTvSession,
+    private val posterResolver: com.nuvio.tv.livetv.data.LiveTvPosterResolver
 ) : ViewModel() {
 
     val settings: StateFlow<LiveTvSettings> = prefs.settings
@@ -235,6 +236,9 @@ class LiveTvViewModel @Inject constructor(
         if (session.currentGroupId.value == groupId) selectGroup(ChannelGroup.ALL)
     }
     fun refresh() = repository.refreshAll(force = true)
+
+    /** The poster Nuvio's catalogs would show for this programme, or null if there's no good match. */
+    suspend fun posterFor(programTitle: String): String? = posterResolver.posterFor(programTitle)
 
     // ------------------------------------------------------------ channel management
 

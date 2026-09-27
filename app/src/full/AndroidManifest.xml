@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Live TV fork: on-screen crash reports. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="com.nuvio.tv.livetv.crash.CrashCatcherInitProvider"
+            android:authorities="${applicationId}.livetv-crash-catcher"
+            android:exported="false"
+            android:initOrder="1000" />
+
+        <activity
+            android:name="com.nuvio.tv.livetv.crash.CrashReportActivity"
+            android:exported="false"
+            android:process=":crash"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
+    </application>
+</manifest>
