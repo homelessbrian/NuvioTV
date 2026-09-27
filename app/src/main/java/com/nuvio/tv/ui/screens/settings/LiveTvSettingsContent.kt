@@ -213,6 +213,7 @@ fun LiveTvSettingsContent(
                     SettingsToggleRow("Compact rows", "Fit more channels on screen", s.compactRows, { update { it.copy(compactRows = !it.compactRows) } })
                     SettingsToggleRow("Favourites group", null, s.showFavoritesGroup, { update { it.copy(showFavoritesGroup = !it.showFavoritesGroup) } })
                     SettingsToggleRow("All channels group", "Turn off to only show your groups and the playlist's groups", s.showAllChannelsGroup, { update { it.copy(showAllChannelsGroup = !it.showAllChannelsGroup) } })
+                    SettingsToggleRow("Show channel counts", "The number of channels next to each group", s.showGroupCounts, { update { it.copy(showGroupCounts = !it.showGroupCounts) } })
                     SettingsToggleRow("Recently watched group", null, s.showRecentGroup, { update { it.copy(showRecentGroup = !it.showRecentGroup) } })
                     SettingsToggleRow("Remember last group", null, s.rememberLastGroup, { update { it.copy(rememberLastGroup = !it.rememberLastGroup) } })
                     SettingsToggleRow("24-hour clock", null, s.use24HourClock, { update { it.copy(use24HourClock = !it.use24HourClock) } })

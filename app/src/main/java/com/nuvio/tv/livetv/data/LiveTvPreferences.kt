@@ -71,6 +71,7 @@ class LiveTvPreferences @Inject constructor(
         val showInSearch = booleanPreferencesKey("show_in_search")
         val showAllGroup = booleanPreferencesKey("show_all_group")
         val resumeInPreview = booleanPreferencesKey("resume_in_preview")
+        val showGroupCounts = booleanPreferencesKey("show_group_counts")
 
         val hiddenChannels = stringSetPreferencesKey("hidden_channels")
         val hiddenGroups = stringSetPreferencesKey("hidden_groups")
@@ -123,7 +124,8 @@ class LiveTvPreferences @Inject constructor(
             solidHighlight = p[Keys.solidHighlight] ?: d.solidHighlight,
             showInSearch = p[Keys.showInSearch] ?: d.showInSearch,
             showAllChannelsGroup = p[Keys.showAllGroup] ?: d.showAllChannelsGroup,
-            resumeLastInPreview = p[Keys.resumeInPreview] ?: d.resumeLastInPreview
+            resumeLastInPreview = p[Keys.resumeInPreview] ?: d.resumeLastInPreview,
+            showGroupCounts = p[Keys.showGroupCounts] ?: d.showGroupCounts
         )
     }.distinctUntilChanged()
 
@@ -193,6 +195,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.showInSearch] = s.showInSearch
         p[Keys.showAllGroup] = s.showAllChannelsGroup
         p[Keys.resumeInPreview] = s.resumeLastInPreview
+        p[Keys.showGroupCounts] = s.showGroupCounts
     }
 
     // ---------- channel management ----------

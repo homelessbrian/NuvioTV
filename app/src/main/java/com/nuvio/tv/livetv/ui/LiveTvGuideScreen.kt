@@ -380,6 +380,7 @@ fun LiveTvGuideScreen(
                 GroupColumn(
                     groups = ui.groups,
                     selectedId = ui.selectedGroupId,
+                    showCounts = settings.showGroupCounts,
                     listState = groupsListState,
                     focusRequester = groupsFocus,
                     onFocusGroup = { g -> pendingGroupId = g.id },
@@ -1089,6 +1090,7 @@ private fun EmptyGuideMessage(title: String, body: String?, action: String?) {
 private fun GroupColumn(
     groups: List<ChannelGroup>,
     selectedId: String,
+    showCounts: Boolean,
     listState: androidx.compose.foundation.lazy.LazyListState,
     focusRequester: FocusRequester,
     onFocusGroup: (ChannelGroup) -> Unit,
@@ -1124,6 +1126,7 @@ private fun GroupColumn(
                 GroupItem(
                     group = g,
                     selected = selected,
+                    showCount = showCounts,
                     modifier = if (selected) Modifier.focusRequester(focusRequester) else Modifier,
                     onFocused = { onFocusGroup(g) },
                     onClick = { onSelect(g) },
@@ -1139,6 +1142,7 @@ private fun GroupColumn(
 private fun GroupItem(
     group: ChannelGroup,
     selected: Boolean,
+    showCount: Boolean,
     modifier: Modifier,
     onFocused: () -> Unit,
     onClick: () -> Unit,
@@ -1188,7 +1192,7 @@ private fun GroupItem(
             weight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             marquee = focused
         )
-        if (group.id != ChannelGroup.SEARCH) {
+        if (showCount && group.id != ChannelGroup.SEARCH) {
             LiveText(group.count.toString(), color = focusedSecondaryTextColor(focused), size = 12.sp)
         }
     }

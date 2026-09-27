@@ -125,7 +125,9 @@ data class LiveTvSettings(
     val showInSearch: Boolean = true,
     val showAllChannelsGroup: Boolean = true,
     /** When Live TV opens, start the last channel in the preview window and highlight it. */
-    val resumeLastInPreview: Boolean = true
+    val resumeLastInPreview: Boolean = true,
+    /** Show how many channels each group has in the guide's group list. */
+    val showGroupCounts: Boolean = true
 )
 
 data class LiveUserState(
