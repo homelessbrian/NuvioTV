@@ -183,3 +183,32 @@ private fun LiveSearchCard(hit: LiveSearchHit, use24h: Boolean, onClick: () -> U
         }
     }
 }
+
+/**
+ * Hands a programme title from Live TV to Nuvio's search screen, which picks it up once and
+ * runs the search. From there the normal detail page streams it through your addons / debrid.
+ */
+object LiveTvSearchBridge {
+    /** The title waiting to be searched, or null. The search screen collects this. */
+    val pending = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    fun request(programTitle: String) {
+        pending.value = cleanTitle(programTitle).ifBlank { programTitle.trim() }
+    }
+
+    fun consume(): String? = pending.value.also { pending.value = null }
+
+    private val leadingTags = Regex("""^\s*(new|live|premiere|repeat|re-?run|encore|movie|film)\s*[:!\-–]\s*""", RegexOption.IGNORE_CASE)
+    private val bracketed = Regex("""\s*[\[(][^\])]*[\])]\s*""")
+    private val episodeCode = Regex("""\b[Ss]\d{1,2}\s*[Ee]\d{1,3}\b""")
+    private val trailingEpisode = Regex("""\s*[-:–]\s*(episode|ep\.?|part)\s*\d+.*$""", RegexOption.IGNORE_CASE)
+
+    internal fun cleanTitle(raw: String): String {
+        var t = raw
+        repeat(2) { t = t.replace(leadingTags, "") }
+        t = t.replace(bracketed, " ")
+            .replace(episodeCode, " ")
+            .replace(trailingEpisode, "")
+        return t.replace(Regex("""\s+"""), " ").trim().trimEnd(':', '-', '–').trim()
+    }
+}

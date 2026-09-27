@@ -94,6 +94,7 @@ private fun floorSlot(ms: Long) = ms - Math.floorMod(ms, SLOT_MS)
 fun LiveTvGuideScreen(
     onOpenFullscreen: () -> Unit,
     onOpenSettings: () -> Unit,
+    onFindInNuvio: () -> Unit = {},
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
@@ -228,6 +229,11 @@ fun LiveTvGuideScreen(
             }
             else -> openSidebar()
         }
+    }
+
+    fun findInNuvio(program: EpgProgram) {
+        LiveTvSearchBridge.request(program.title)
+        onFindInNuvio()
     }
 
     val focusedChannel = channels.getOrNull(row)
@@ -598,6 +604,8 @@ fun LiveTvGuideScreen(
                     menuTarget = null
                 },
                 onProgramInfo = { menuTarget = null; infoTarget = target },
+                streamProgram = target.block?.program ?: viewModel.currentProgram(target.channel.key),
+                onFindInNuvio = { p -> menuTarget = null; findInNuvio(p) },
                 onSearch = { menuTarget = null; searchOpen = true },
                 onRefresh = { menuTarget = null; viewModel.refresh() },
                 onSettings = { menuTarget = null; onOpenSettings() }
@@ -609,6 +617,7 @@ fun LiveTvGuideScreen(
                 now = now,
                 use24h = settings.use24HourClock,
                 onDismiss = { infoTarget = null },
+                onFind = { p -> infoTarget = null; findInNuvio(p) },
                 onWatch = { infoTarget = null; playChannel(target.channel) },
                 onCatchup = { p ->
                     infoTarget = null
@@ -1192,6 +1201,8 @@ private fun ChannelContextMenu(
     onHide: () -> Unit,
     onHideGroup: () -> Unit,
     onProgramInfo: () -> Unit,
+    streamProgram: EpgProgram?,
+    onFindInNuvio: (EpgProgram) -> Unit,
     onSearch: () -> Unit,
     onRefresh: () -> Unit,
     onSettings: () -> Unit
@@ -1207,6 +1218,9 @@ private fun ChannelContextMenu(
         LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             item { MenuItem("Watch full screen", Modifier.focusRequester(first), onWatch) }
             if (canCatchup) item { MenuItem("Play from archive: ${program!!.title}", onClick = { onCatchup(program!!) }) }
+            if (streamProgram != null) {
+                item { MenuItem("Find & stream \"${streamProgram.title}\" in Nuvio", onClick = { onFindInNuvio(streamProgram) }) }
+            }
             if (program != null) item { MenuItem("Programme info", onClick = onProgramInfo) }
             item { MenuItem(if (isFavorite) "Remove from favourites" else "Add to favourites", onClick = onToggleFavorite) }
             if (isFavorite && inFavoritesGroup) {
@@ -1287,6 +1301,7 @@ private fun ProgramInfoDialog(
     now: Long,
     use24h: Boolean,
     onDismiss: () -> Unit,
+    onFind: (EpgProgram) -> Unit,
     onWatch: () -> Unit,
     onCatchup: (EpgProgram) -> Unit
 ) {
@@ -1310,10 +1325,21 @@ private fun ProgramInfoDialog(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             val live = block != null && now >= block.startMs && now < block.stopMs
             val archive = p != null && p.stopMs <= now && CatchupUrlBuilder.isAvailable(target.channel.catchup, p.startMs, now)
+            val upcoming = p != null && block != null && block.startMs > now
+            // For a show that hasn't started, streaming it through Nuvio is the main action.
+            if (upcoming) {
+                LiveFocusRow(modifier = Modifier.focusRequester(first), onClick = { onFind(p!!) }) { f ->
+                    LiveText("Find & stream in Nuvio", color = focusedTextColor(f))
+                }
+            }
             when {
                 live -> LiveFocusRow(modifier = Modifier.focusRequester(first), onClick = onWatch) { f -> LiveText("Watch", color = focusedTextColor(f)) }
                 archive -> LiveFocusRow(modifier = Modifier.focusRequester(first), onClick = { onCatchup(p!!) }) { f -> LiveText("Play from archive", color = focusedTextColor(f)) }
+                upcoming -> LiveFocusRow(onClick = onWatch) { f -> LiveText("Watch channel now", color = focusedTextColor(f)) }
                 else -> LiveFocusRow(modifier = Modifier.focusRequester(first), onClick = onWatch) { f -> LiveText("Watch channel now", color = focusedTextColor(f)) }
+            }
+            if (p != null && !upcoming) {
+                LiveFocusRow(onClick = { onFind(p) }) { f -> LiveText("Find & stream in Nuvio", color = focusedTextColor(f)) }
             }
             LiveFocusRow(onClick = onDismiss) { f -> LiveText("Close", color = focusedTextColor(f)) }
         }

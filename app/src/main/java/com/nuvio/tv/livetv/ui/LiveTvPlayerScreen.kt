@@ -73,6 +73,7 @@ private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES }
 @Composable
 fun LiveTvPlayerScreen(
     onBack: () -> Unit,
+    onFindInNuvio: () -> Unit = {},
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -349,7 +350,13 @@ fun LiveTvPlayerScreen(
                     viewModel.previousChannel()?.let { viewModel.preview(it) }
                 },
                 onBackToLive = { dialog = PlayerDialog.NONE; viewModel.playback.play(ch) },
-                onRetry = { dialog = PlayerDialog.NONE; viewModel.playback.retry() }
+                onRetry = { dialog = PlayerDialog.NONE; viewModel.playback.retry() },
+                currentTitle = viewModel.currentProgram(ch.key)?.title,
+                onFind = { title ->
+                    dialog = PlayerDialog.NONE
+                    LiveTvSearchBridge.request(title)
+                    onFindInNuvio()
+                }
             )
         } ?: run { dialog = PlayerDialog.NONE }
         PlayerDialog.AUDIO -> TrackDialog(
@@ -442,7 +449,9 @@ private fun PlayerOptionsDialog(
     onHide: () -> Unit,
     onPrevious: () -> Unit,
     onBackToLive: () -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    currentTitle: String?,
+    onFind: (String) -> Unit
 ) {
     val first = remember { FocusRequester() }
     LiveDialog(onDismiss = onDismiss, width = 440.dp) {
@@ -451,6 +460,7 @@ private fun PlayerOptionsDialog(
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (archive) MenuItem("Back to live", Modifier.focusRequester(first), onBackToLive)
             MenuItem("Audio track", if (archive) Modifier else Modifier.focusRequester(first), onAudio)
+            currentTitle?.let { t -> MenuItem("Find & stream \"$t\" in Nuvio", onClick = { onFind(t) }) }
             MenuItem("Subtitles", onClick = onSubtitles)
             MenuItem("Aspect ratio: $aspectLabel", onClick = onAspect)
             MenuItem(if (isFavorite) "Remove from favourites" else "Add to favourites", onClick = onFavorite)

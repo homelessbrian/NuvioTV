@@ -1201,13 +1201,22 @@ private fun PlaybackNavHost(
                 onOpenFullscreen = {
                     navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }
                 },
-                onOpenSettings = { navController.navigate(Screen.LiveTvSettings.route) }
+                onOpenSettings = { navController.navigate(Screen.LiveTvSettings.route) },
+                onFindInNuvio = {
+                    // Back from search returns to the guide.
+                    navController.navigate(Screen.Search.route) { launchSingleTop = true }
+                }
             )
         }
 
         composable(Screen.LiveTvPlayer.route) {
             com.nuvio.tv.livetv.ui.LiveTvPlayerScreen(
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onFindInNuvio = {
+                    // Leave full screen first so back from search lands on the guide.
+                    navController.popBackStack()
+                    navController.navigate(Screen.Search.route) { launchSingleTop = true }
+                }
             )
         }
 

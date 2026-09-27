@@ -420,6 +420,15 @@ fun SearchScreen(
             pendingFocusMoveHadExistingSearchRows = false
         }
     }
+    // Live TV fork: a programme sent from the TV guide ("Find & stream in Nuvio").
+    LaunchedEffect(Unit) {
+        com.nuvio.tv.livetv.ui.LiveTvSearchBridge.pending.collect { title ->
+            if (title == null) return@collect
+            com.nuvio.tv.livetv.ui.LiveTvSearchBridge.consume()
+            viewModel.onEvent(SearchEvent.QueryChanged(title))
+            submitCurrentQuery(title)
+        }
+    }
     val handleQueryChanged: (String) -> Unit = { nextQuery ->
         // A real edit is user intent. An IME that re-commits the same text on dismiss is not.
         if (nextQuery != uiState.query) backToFieldLatched = false
