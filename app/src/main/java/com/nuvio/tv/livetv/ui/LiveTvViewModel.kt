@@ -277,6 +277,7 @@ class LiveTvViewModel @Inject constructor(
     // ------------------------------------------------------------ per-channel EPG
 
     val epgSources: StateFlow<List<com.nuvio.tv.livetv.model.EpgSourceChannels>> = repository.epgSources
+    val epgAutoMatches: StateFlow<Map<String, com.nuvio.tv.livetv.model.EpgAssignment>> = repository.autoMatches
 
     fun setChannelEpg(channel: LiveChannel, sourceId: String, xmltvId: String) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, com.nuvio.tv.livetv.model.EpgAssignment(sourceId, xmltvId))

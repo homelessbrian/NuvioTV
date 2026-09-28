@@ -2,6 +2,7 @@ package com.nuvio.tv.livetv.data
 
 import android.content.Context
 import android.util.Log
+import com.nuvio.tv.livetv.model.EpgAssignment
 import com.nuvio.tv.livetv.model.EpgChannelEntry
 import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.EpgSourceChannels
@@ -67,6 +68,10 @@ class LiveTvRepository @Inject constructor(
     /** Programs keyed by [LiveChannel.key], sorted by start. Offset is not applied here. */
     private val _programs = MutableStateFlow<Map<String, List<EpgProgram>>>(emptyMap())
     val programs: StateFlow<Map<String, List<EpgProgram>>> = _programs.asStateFlow()
+
+    /** Channel key -> the guide channel picked automatically (shown in Assign EPG). */
+    private val _autoMatches = MutableStateFlow<Map<String, EpgAssignment>>(emptyMap())
+    val autoMatches: StateFlow<Map<String, EpgAssignment>> = _autoMatches.asStateFlow()
 
     /** Every loaded EPG source with its channel list (for "Change EPG"). */
     private val _epgSources = MutableStateFlow<List<EpgSourceChannels>>(emptyList())
@@ -372,35 +377,38 @@ class LiveTvRepository @Inject constructor(
             normalize(c.name).takeIf { it.isNotEmpty() }?.let { byName.getOrPut(it) { ArrayList() }.add(c) }
         }
 
-        val result = HashMap<String, List<EpgProgram>>()
+        // Every guide is read; each channel keeps its best candidate:
+        //   1. real listings beat placeholder listings ("Programming", "No information", …)
+        //   2. a tvg-id match beats a name match
+        //   3. then the earlier guide in the list
+        // so a guide full of placeholders can't hide real listings from another guide.
+        data class Candidate(val score: Int, val sourceId: String, val xmltvId: String, val programs: List<EpgProgram>)
+        val best = HashMap<String, Candidate>()
+        val pinned = HashMap<String, List<EpgProgram>>()
         val sourceLists = ArrayList<EpgSourceChannels>()
-        for (target in targets) {
+        val sourceMeta = ArrayList<Triple<EpgTarget, String, List<EpgChannelEntry>>>()
+
+        for ((order, target) in targets.withIndex()) {
             val file = epgFile(target.fileId)
             if (!file.exists()) continue
             val pinnedHere = overrides.filterValues { it.sourceId == target.fileId }
-            // xmltv id -> channels it feeds
-            val mapping = HashMap<String, MutableSet<LiveChannel>>()
+            val idHits = HashMap<String, MutableSet<LiveChannel>>()
+            val nameHits = HashMap<String, MutableSet<LiveChannel>>()
             val parsed = runCatching {
                 openMaybeGzip(file).use { input ->
                     XmltvParser.parse(input, windowStart, windowEnd) { xmlChannels ->
                         xmlChannels.values.forEach { xc ->
-                            val hits = LinkedHashSet<LiveChannel>()
-                            byTvgId[xc.id.lowercase()]?.let { hits.addAll(it) }
-                            if (hits.isEmpty()) {
-                                (xc.displayNames + xc.id).forEach { dn ->
-                                    byName[normalize(dn)]?.let { hits.addAll(it) }
-                                }
+                            byTvgId[xc.id.lowercase()]?.let { idHits.getOrPut(xc.id) { LinkedHashSet() }.addAll(it) }
+                            (xc.displayNames + xc.id).forEach { dn ->
+                                byName[normalize(dn)]?.let { nameHits.getOrPut(xc.id) { LinkedHashSet() }.addAll(it) }
                             }
-                            hits.removeAll { it.key in result }
-                            if (hits.isNotEmpty()) mapping[xc.id] = hits
                         }
                         if (xmlChannels.isEmpty()) null
-                        else mapping.keys + pinnedHere.values.map { it.xmltvId }
+                        else idHits.keys + nameHits.keys + pinnedHere.values.map { it.xmltvId }
                     }
                 }
             }.onFailure { Log.w(TAG, "EPG parse ${target.name} failed", it) }.getOrNull() ?: continue
 
-            // Keep this guide's channel list for the picker.
             val entries = if (parsed.channels.isNotEmpty()) {
                 parsed.channels.values.map { EpgChannelEntry(it.id, it.displayNames, it.icon) }
             } else {
@@ -408,34 +416,97 @@ class LiveTvRepository @Inject constructor(
             }
             val label = runCatching { java.net.URI(target.url).host?.removePrefix("www.") }.getOrNull()
                 ?.takeIf { it.isNotBlank() } ?: target.name
-            val sortedEntries = entries.sortedBy { it.displayName.lowercase() }
+            sourceMeta += Triple(target, label, entries.sortedBy { it.displayName.lowercase() })
 
-            pinnedHere.forEach { (key, a) -> result[key] = parsed.programs[a.xmltvId].orEmpty() }
+            pinnedHere.forEach { (key, a) -> pinned[key] = cleanListings(parsed.programs[a.xmltvId].orEmpty()) }
 
-            if (mapping.isEmpty()) {
+            if (idHits.isEmpty() && nameHits.isEmpty()) {
                 // Guide had no <channel> list before programs: match program channel ids directly.
                 parsed.programs.keys.forEach { id ->
-                    val hits = byTvgId[id.lowercase()] ?: byName[normalize(id)]
-                    hits?.filter { it.key !in result }?.let { if (it.isNotEmpty()) mapping[id] = it.toMutableSet() }
+                    byTvgId[id.lowercase()]?.let { idHits.getOrPut(id) { LinkedHashSet() }.addAll(it) }
+                    byName[normalize(id)]?.let { nameHits.getOrPut(id) { LinkedHashSet() }.addAll(it) }
                 }
             }
             var count = 0
-            val used = HashSet<String>(pinnedHere.values.map { it.xmltvId })
-            mapping.forEach { (xmlId, chans) ->
-                val list = parsed.programs[xmlId] ?: return@forEach
+            fun offer(xmlId: String, chans: Set<LiveChannel>, idMatch: Boolean) {
+                val raw = parsed.programs[xmlId] ?: return
+                val list = cleanListings(raw)
+                if (list.isEmpty()) return
                 count += list.size
-                var fed = false
-                chans.forEach { c -> if (c.key !in result) { result[c.key] = list; fed = true } }
-                if (fed) used += xmlId
+                val real = !isPlaceholderListing(list)
+                // Higher is better; the guide's position only breaks ties.
+                val score = (if (real) 4_000 else 0) + (if (idMatch) 2_000 else 0) - order
+                chans.forEach { c ->
+                    val cur = best[c.key]
+                    if (cur == null || score > cur.score) best[c.key] = Candidate(score, target.fileId, xmlId, list)
+                }
             }
-            sourceLists += EpgSourceChannels(target.fileId, target.name, label, sortedEntries, used)
+            idHits.forEach { (xmlId, chans) -> offer(xmlId, chans, idMatch = true) }
+            nameHits.forEach { (xmlId, chans) -> offer(xmlId, chans, idMatch = false) }
             if (target.sourceId != null) {
                 prefs.updateEpgSources { l -> l.map { if (it.id == target.sourceId) it.copy(programCount = count) else it } }
             }
         }
+
+        val result = HashMap<String, List<EpgProgram>>()
+        val auto = HashMap<String, EpgAssignment>()
+        best.forEach { (key, c) ->
+            result[key] = c.programs
+            auto[key] = EpgAssignment(c.sourceId, c.xmltvId)
+        }
+        result.putAll(pinned)
+        // Which guide channels ended up feeding a playlist channel (for "Unassigned" in Assign EPG).
+        val usedBySource = HashMap<String, MutableSet<String>>()
+        auto.values.forEach { usedBySource.getOrPut(it.sourceId) { HashSet() } += it.xmltvId }
+        overrides.values.forEach { usedBySource.getOrPut(it.sourceId) { HashSet() } += it.xmltvId }
+        sourceMeta.forEach { (target, label, entries) ->
+            sourceLists += EpgSourceChannels(target.fileId, target.name, label, entries, usedBySource[target.fileId].orEmpty())
+        }
+        _autoMatches.value = auto
         _epgSources.value = sourceLists
         _programs.value = result
     }
+
+    /**
+     * Some guides add a long placeholder ("Programming", "No information") that overlaps the real
+     * listings for the same time. Keep the real ones wherever they overlap.
+     */
+    private fun cleanListings(list: List<EpgProgram>): List<EpgProgram> {
+        if (list.size < 2) return list
+        val real = list.filter { !isPlaceholder(it.title) }
+        val kept = if (real.isEmpty() || real.size == list.size) list else list.filter { p ->
+            !isPlaceholder(p.title) || real.none { r -> r.startMs < p.stopMs && r.stopMs > p.startMs }
+        }
+        return resolveOverlaps(kept)
+    }
+
+    /**
+     * Makes sure only one program covers any moment. When a long entry (often a "Programming"
+     * filler) runs across later shows, it's cut off where the next show starts. Otherwise the
+     * filler, having started earlier, is what counts as "on now" even while a real show is airing.
+     */
+    private fun resolveOverlaps(list: List<EpgProgram>): List<EpgProgram> {
+        val sorted = list.sortedWith(compareBy<EpgProgram>({ it.startMs }, { isPlaceholder(it.title) }, { it.stopMs - it.startMs }))
+        val out = ArrayList<EpgProgram>(sorted.size)
+        for (p in sorted) {
+            val last = out.lastOrNull()
+            if (last != null && last.stopMs > p.startMs) {
+                if (last.startMs == p.startMs) continue // same start: keep the one sorted first
+                out[out.lastIndex] = last.copy(stopMs = p.startMs)
+            }
+            if (p.stopMs > p.startMs) out += p
+        }
+        return out
+    }
+
+    /** True when (almost) everything in a channel's listings is a placeholder. */
+    private fun isPlaceholderListing(list: List<EpgProgram>): Boolean {
+        val placeholders = list.count { isPlaceholder(it.title) }
+        return placeholders * 10 >= list.size * 8
+    }
+
+    private fun isPlaceholder(title: String): Boolean =
+        PLACEHOLDER_TITLES.matches(title.trim().lowercase())
 
     /** Re-reads the cached guides, e.g. after an EPG assignment changed. No downloads. */
     fun rematchEpg() {
@@ -625,6 +696,12 @@ class LiveTvRepository @Inject constructor(
     companion object {
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
+        /** Titles guides use when they have no real listing. */
+        private val PLACEHOLDER_TITLES = Regex(
+            """(programming|program|programme|no information|no info|no program information|no programme information|""" +
+                """to be announced|tba|tbd|n/?a|off air|no data|no epg|not available|information not available|""" +
+                """regular programming|scheduled programming|paid programming|coming soon)\.?"""
+        )
         const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android 12; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
         private val qualityTokens = Regex("""\b(fhd|uhd|hd|sd|4k|8k|hevc|h265|h264|1080p|720p|backup|raw)\b""")

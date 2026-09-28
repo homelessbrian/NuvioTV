@@ -151,6 +151,7 @@ fun LiveTvGuideScreen(
     var groupMenu by remember { mutableStateOf<ChannelGroup?>(null) }
     var epgPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
     val epgSources by viewModel.epgSources.collectAsStateWithLifecycle()
+    val epgAutoMatches by viewModel.epgAutoMatches.collectAsStateWithLifecycle()
     val menuStyle by viewModel.menuStyle.collectAsStateWithLifecycle()
     val panelHaze = remember { dev.chrisbanes.haze.HazeState() }
     var gridFocused by remember { mutableStateOf(false) }
@@ -633,6 +634,7 @@ fun LiveTvGuideScreen(
                 channel = ch,
                 sources = epgSources,
                 current = user.epgOverrides[ch.key],
+                automatic = epgAutoMatches[ch.key],
                 loading = status.loading,
                 statusMessage = status.message.takeIf { status.loading },
                 unassignedOnly = epgUnassignedOnly,
@@ -1395,6 +1397,7 @@ private fun EpgSidePanel(
     channel: LiveChannel,
     sources: List<com.nuvio.tv.livetv.model.EpgSourceChannels>,
     current: com.nuvio.tv.livetv.model.EpgAssignment?,
+    automatic: com.nuvio.tv.livetv.model.EpgAssignment?,
     loading: Boolean,
     statusMessage: String?,
     unassignedOnly: Boolean,
@@ -1435,7 +1438,7 @@ private fun EpgSidePanel(
 
     fun anchorIndex(): Int {
         if (rows.isEmpty()) return 0
-        current?.let { a ->
+        (current ?: automatic)?.let { a ->
             val i = rows.indexOfFirst { it.source.sourceId == a.sourceId && it.entry.id == a.xmltvId }
             if (i >= 0) return i
         }
@@ -1520,8 +1523,16 @@ private fun EpgSidePanel(
         // Header
         LiveText("Assign EPG", modifier = Modifier.padding(start = 12.dp), size = 22.sp, weight = FontWeight.Bold)
         val filterName = sources.firstOrNull { it.sourceId == sourceFilter }?.name
+        // What the channel uses now: your pick, or the automatic match (handy when a channel shows
+        // the wrong listings, e.g. a guide's "Programming" placeholder).
+        val using = (current ?: automatic)?.let { a ->
+            val src = sources.firstOrNull { it.sourceId == a.sourceId }
+            val name = src?.channels?.firstOrNull { it.id == a.xmltvId }?.displayName ?: a.xmltvId
+            (if (current != null) "Assigned: " else "Automatic: ") + name + (src?.let { " · ${it.label}" } ?: "")
+        } ?: "Automatic: no guide found"
         val sub = statusMessage ?: listOfNotNull(
             channel.name,
+            using,
             if (unassignedOnly) "Unassigned channels" else null,
             filterName,
             query.takeIf { it.isNotBlank() }?.let { "\"$it\"" }
