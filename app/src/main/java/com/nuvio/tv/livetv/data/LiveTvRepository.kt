@@ -64,7 +64,7 @@ class LiveTvRepository @Inject constructor(
     private val _channels = MutableStateFlow<List<LiveChannel>>(emptyList())
     val channels: StateFlow<List<LiveChannel>> = _channels.asStateFlow()
 
-    /** Programmes keyed by [LiveChannel.key], sorted by start. Offset is not applied here. */
+    /** Programs keyed by [LiveChannel.key], sorted by start. Offset is not applied here. */
     private val _programs = MutableStateFlow<Map<String, List<EpgProgram>>>(emptyMap())
     val programs: StateFlow<Map<String, List<EpgProgram>>> = _programs.asStateFlow()
 
@@ -310,7 +310,7 @@ class LiveTvRepository @Inject constructor(
                 .getOrNull() ?: continue
             embeddedEpgUrls[pl.id] = parsed.epgUrls
             for (e in parsed.entries) {
-                val groupTitle = e.group?.ifBlank { null } ?: "Uncategorised"
+                val groupTitle = e.group?.ifBlank { null } ?: "Uncategorized"
                 val baseKey = "${pl.id}|${e.tvgId ?: ""}|${e.name}"
                 var key = baseKey
                 var n = 2
@@ -405,7 +405,7 @@ class LiveTvRepository @Inject constructor(
             pinnedHere.forEach { (key, a) -> result[key] = parsed.programs[a.xmltvId].orEmpty() }
 
             if (mapping.isEmpty()) {
-                // Guide had no <channel> list before programmes: match programme channel ids directly.
+                // Guide had no <channel> list before programs: match program channel ids directly.
                 parsed.programs.keys.forEach { id ->
                     val hits = byTvgId[id.lowercase()] ?: byName[normalize(id)]
                     hits?.filter { it.key !in result }?.let { if (it.isNotEmpty()) mapping[id] = it.toMutableSet() }
@@ -559,7 +559,7 @@ class LiveTvRepository @Inject constructor(
                             attr("tvg-id", f["epg_channel_id"])
                             attr("tvg-name", title)
                             attr("tvg-logo", f["stream_icon"])
-                            attr("group-title", categories[f["category_id"]] ?: "Uncategorised")
+                            attr("group-title", categories[f["category_id"]] ?: "Uncategorized")
                             attr("tvg-chno", f["num"])
                             if (f["tv_archive"] == "1") {
                                 attr("catchup", "xc")

@@ -105,7 +105,7 @@ object CatchupUrlBuilder {
         simple.forEach { (k, v) ->
             out = out.replace("\${$k}", v.toString()).replace("{$k}", v.toString())
         }
-        // Bare {Y}{m}{d}{H}{M}{S} refer to the programme start in local time.
+        // Bare {Y}{m}{d}{H}{M}{S} refer to the program start in local time.
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = start * 1000 }
         out = out
             .replace("{Y}", "%04d".format(cal.get(java.util.Calendar.YEAR)))

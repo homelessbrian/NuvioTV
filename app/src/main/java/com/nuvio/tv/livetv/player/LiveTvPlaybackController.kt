@@ -39,7 +39,7 @@ data class LivePlaybackState(
     val reconnectAttempt: Int = 0,
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
-    /** Non-null while an archive (catch-up) programme is playing instead of the live stream. */
+    /** Non-null while an archive (catch-up) program is playing instead of the live stream. */
     val catchupTitle: String? = null
 )
 

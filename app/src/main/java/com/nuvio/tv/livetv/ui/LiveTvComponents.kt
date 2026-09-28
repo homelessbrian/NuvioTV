@@ -57,12 +57,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** True = focused items are filled with the accent colour; false = tinted fill with an accent outline. */
+/** True = focused items are filled with the accent color; false = tinted fill with an accent outline. */
 internal val LocalLiveSolidHighlight = staticCompositionLocalOf { false }
 
 /**
  * @param marquee scrolls single-line text that doesn't fit, like TiviMate does for the
- * focused programme. Only turn it on for the focused item.
+ * focused program. Only turn it on for the focused item.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -96,8 +96,8 @@ internal fun LiveText(
 }
 
 /**
- * Guide cell greys. Follows the theme's surface colours, but when "pure black surfaces" is on
- * (surfaces are black) it falls back to fixed greys so programme blocks stay visible.
+ * Guide cell greys. Follows the theme's surface colors, but when "pure black surfaces" is on
+ * (surfaces are black) it falls back to fixed greys so program blocks stay visible.
  */
 @Composable
 internal fun guideSurface(): Color {
@@ -111,7 +111,7 @@ internal fun guideSurfaceVariant(): Color {
     return if (c.luminance() < 0.01f) Color(0xFF2B2B30) else c
 }
 
-/** Background / border / text colours for a focused or unfocused guide cell. */
+/** Background / border / text colors for a focused or unfocused guide cell. */
 internal data class LiveCellColors(val background: Color, val border: Color, val text: Color)
 
 @Composable

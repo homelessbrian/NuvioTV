@@ -182,7 +182,7 @@ fun LiveTvSettingsContent(
                     epgs.forEach { e ->
                         SettingsActionRow(
                             title = e.name,
-                            subtitle = sourceStatus(e.enabled, e.lastUpdatedMs, e.lastError, "${e.programCount} programmes matched"),
+                            subtitle = sourceStatus(e.enabled, e.lastUpdatedMs, e.lastError, "${e.programCount} programs matched"),
                             value = if (e.enabled) "On" else "Off",
                             leadingIcon = Icons.Default.Link,
                             onClick = { dialog = LiveDialog.EpgActions(e) }
@@ -211,10 +211,11 @@ fun LiveTvSettingsContent(
                     SettingsToggleRow("Show channel names", null, s.showChannelNames, { update { it.copy(showChannelNames = !it.showChannelNames) } })
                     SettingsToggleRow("Show channel numbers", null, s.showChannelNumbers, { update { it.copy(showChannelNumbers = !it.showChannelNumbers) } })
                     SettingsToggleRow("Show channel logos", null, s.showChannelLogos, { update { it.copy(showChannelLogos = !it.showChannelLogos) } })
-                    SettingsToggleRow("Preview window", "Play the selected channel above the guide", s.showPreview, { update { it.copy(showPreview = !it.showPreview) } })
-                    SettingsToggleRow("Programme details", "Title, time and description above the guide", s.showProgramDetails, { update { it.copy(showProgramDetails = !it.showProgramDetails) } })
-                    SettingsToggleRow("Compact rows", "Fit more channels on screen", s.compactRows, { update { it.copy(compactRows = !it.compactRows) } })
-                    SettingsToggleRow("Favourites group", null, s.showFavoritesGroup, { update { it.copy(showFavoritesGroup = !it.showFavoritesGroup) } })
+                    SettingsToggleRow("Preview window", "The video in the top-right corner of the guide", s.showPreview, { update { it.copy(showPreview = !it.showPreview) } })
+                    SettingsToggleRow("Info panel", "Title, time and description at the top of the guide", s.showProgramDetails, { update { it.copy(showProgramDetails = !it.showProgramDetails) } })
+                    SettingsToggleRow("Small info & preview", "A shorter info panel and preview, so more channels fit", s.smallHeader, { update { it.copy(smallHeader = !it.smallHeader) } })
+                    SettingsToggleRow("Compact rows", "Even slimmer rows, to fit more channels", s.compactRows, { update { it.copy(compactRows = !it.compactRows) } })
+                    SettingsToggleRow("Favorites group", null, s.showFavoritesGroup, { update { it.copy(showFavoritesGroup = !it.showFavoritesGroup) } })
                     SettingsToggleRow("All channels group", "Turn off to only show your groups and the playlist's groups", s.showAllChannelsGroup, { update { it.copy(showAllChannelsGroup = !it.showAllChannelsGroup) } })
                     SettingsToggleRow("Show channel counts", "The number of channels next to each group", s.showGroupCounts, { update { it.copy(showGroupCounts = !it.showGroupCounts) } })
                     SettingsToggleRow("Recently watched group", null, s.showRecentGroup, { update { it.copy(showRecentGroup = !it.showRecentGroup) } })
@@ -222,7 +223,7 @@ fun LiveTvSettingsContent(
                     SettingsToggleRow("24-hour clock", null, s.use24HourClock, { update { it.copy(use24HourClock = !it.use24HourClock) } })
                     SettingsActionRow(
                         title = "Highlight style",
-                        subtitle = "How the selected channel and programme are marked",
+                        subtitle = "How the selected channel and program are marked",
                         value = if (s.solidHighlight) "Solid" else "Outline",
                         onClick = { dialog = LiveDialog.HighlightChoice }
                     )
@@ -276,7 +277,7 @@ fun LiveTvSettingsContent(
                 ) {
                     SettingsActionRow(
                         title = "Channel order",
-                        subtitle = "Favourites and your own groups keep the order you set",
+                        subtitle = "Favorites and your own groups keep the order you set",
                         value = when (s.channelSort) {
                             ChannelSort.PLAYLIST -> "Playlist order"
                             ChannelSort.NUMBER -> "Channel number"
@@ -287,7 +288,7 @@ fun LiveTvSettingsContent(
                     SettingsActionRow("My groups", "Groups you created", "${user.customGroups.size}", onClick = { dialog = LiveDialog.CustomGroups })
                     SettingsActionRow("Hidden channels", "Show channels again", "${user.hiddenChannels.size}", leadingIcon = Icons.Default.VisibilityOff, onClick = { dialog = LiveDialog.HiddenChannels })
                     SettingsActionRow("Hidden groups", "Show groups again", "${user.hiddenGroups.size}", leadingIcon = Icons.Default.VisibilityOff, onClick = { dialog = LiveDialog.HiddenGroups })
-                    SettingsActionRow("Clear favourites", null, "${user.favorites.size}", onClick = { viewModel.clearFavorites() })
+                    SettingsActionRow("Clear favorites", null, "${user.favorites.size}", onClick = { viewModel.clearFavorites() })
                     SettingsActionRow("Clear recently watched", null, "${user.recent.size}", onClick = { viewModel.clearRecent() })
                     SettingsActionRow(
                         "Reset channel names and numbers", null,
@@ -397,7 +398,7 @@ fun LiveTvSettingsContent(
         )
         is LiveDialog.ConfirmDeletePlaylist -> ConfirmDeleteDialog(
             title = "Delete \"${d.source.name}\"?",
-            message = "Its ${d.source.channelCount} channels leave the guide. Favourites, hidden channels and EPG assignments for them are kept in case you add it back.",
+            message = "Its ${d.source.channelCount} channels leave the guide. Favorites, hidden channels and EPG assignments for them are kept in case you add it back.",
             onDismiss = close,
             onConfirm = { viewModel.removePlaylist(d.source.id); close() }
         )
@@ -486,8 +487,8 @@ fun LiveTvSettingsContent(
         LiveDialog.HighlightChoice -> SettingsSingleChoiceDialog(
             title = "Highlight style",
             options = listOf(
-                SettingsPickerOption(false, "Outline", "Dark tint with a coloured border — logos stay visible"),
-                SettingsPickerOption(true, "Solid", "Fill with the theme's accent colour")
+                SettingsPickerOption(false, "Outline", "Dark tint with a colored border — logos stay visible"),
+                SettingsPickerOption(true, "Solid", "Fill with the theme's accent color")
             ),
             selectedValue = s.solidHighlight,
             onOptionSelected = { v -> update { it.copy(solidHighlight = v) }; close() },

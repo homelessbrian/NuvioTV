@@ -40,7 +40,7 @@ class LiveTvSettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.updateSettings(transform) }
     }
 
-    /** Settings that change which programmes are kept need the guide re-read. */
+    /** Settings that change which programs are kept need the guide re-read. */
     fun updateAndReloadEpg(transform: (LiveTvSettings) -> LiveTvSettings) {
         viewModelScope.launch {
             prefs.updateSettings(transform)

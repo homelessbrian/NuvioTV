@@ -97,7 +97,7 @@ class LiveTvViewModel @Inject constructor(
 
     private val searchQuery = MutableStateFlow("")
 
-    /** Programmes with the user's EPG time offset applied. */
+    /** Programs with the user's EPG time offset applied. */
     val programs: StateFlow<Map<String, List<EpgProgram>>> = combine(
         repository.programs,
         settings.map { it.epgOffsetMinutes }.distinctUntilChanged()
@@ -174,7 +174,7 @@ class LiveTvViewModel @Inject constructor(
 
         val groups = mutableListOf<ChannelGroup>()
         groups += ChannelGroup(ChannelGroup.SEARCH, "Search", 0, special = true)
-        if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favourites", favorites.size, special = true)
+        if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favorites", favorites.size, special = true)
         if (s.showRecentGroup) groups += ChannelGroup(ChannelGroup.RECENT, "Recently watched", recent.size, special = true)
         if (s.showAllChannelsGroup) groups += ChannelGroup(ChannelGroup.ALL, "All channels", visible.size, special = true)
 
@@ -284,14 +284,19 @@ class LiveTvViewModel @Inject constructor(
         repository.rematchEpg()
     }
 
-    /** The poster Nuvio's catalogs would show for this programme, or null if there's no good match. */
+    /** The poster Nuvio's catalogs would show for this program, or null if there's no good match. */
     suspend fun posterFor(
         programTitle: String,
         program: EpgProgram? = null,
         channel: LiveChannel? = null
     ): String? = posterResolver.posterFor(
         programTitle,
-        com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(program, channel)
+        com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(program, channel),
+        com.nuvio.tv.livetv.data.LiveTvPosterResolver.Clues(
+            year = program?.year,
+            people = program?.people.orEmpty(),
+            description = program?.description
+        )
     )
 
     // ------------------------------------------------------------ channel management

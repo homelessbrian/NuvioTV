@@ -15,13 +15,13 @@ data class XmltvChannel(
 
 data class XmltvResult(
     val channels: Map<String, XmltvChannel>,
-    /** Programmes keyed by XMLTV channel id, sorted by start time. */
+    /** Programs keyed by XMLTV channel id, sorted by start time. */
     val programs: Map<String, List<EpgProgram>>
 )
 
 /**
  * Streaming XMLTV parser. Large provider guides are often 50–200 MB, so only
- * programmes inside [windowStartMs, windowEndMs] and (once the channel list has
+ * programs inside [windowStartMs, windowEndMs] and (once the channel list has
  * been read) only channels that match the playlist are kept in memory.
  */
 object XmltvParser {
@@ -46,7 +46,7 @@ object XmltvParser {
             if (event == XmlPullParser.START_TAG) {
                 when (parser.name) {
                     "channel" -> readChannel(parser)?.let { channels[it.id] = it }
-                    "programme" -> {
+                    "programme" -> { // XMLTV's element name: keep this spelling
                         if (!wantedResolved) {
                             wanted = selectChannels(channels)
                             wantedResolved = true
@@ -106,6 +106,8 @@ object XmltvParser {
         var episode: String? = null
         var subTitle: String? = null
         var icon: String? = null
+        var date: String? = null
+        val people = ArrayList<String>()
         val depth = parser.depth
         var event = parser.next()
         while (!(event == XmlPullParser.END_TAG && parser.depth == depth)) {
@@ -121,12 +123,16 @@ object XmltvParser {
                         if (system == "onscreen" || episode == null) episode = formatEpisode(system, t)
                     }
                     "icon" -> { icon = parser.getAttributeValue(null, "src"); skip(parser) }
+                    "date" -> { val t = readText(parser); if (date == null) date = t }
+                    "credits" -> readCredits(parser, people)
                     else -> skip(parser)
                 }
             }
             if (event == XmlPullParser.END_DOCUMENT) break
             event = parser.next()
         }
+        val year = date?.trim()?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
+            ?: yearIn(title) ?: yearIn(desc)
         val fullDesc = listOfNotNull(subTitle?.takeIf { it.isNotBlank() }, desc?.takeIf { it.isNotBlank() })
             .joinToString("\n").ifBlank { null }
         return EpgProgram(
@@ -136,8 +142,31 @@ object XmltvParser {
             description = fullDesc,
             category = category?.trim(),
             episode = episode,
-            icon = icon
+            icon = icon,
+            year = year,
+            people = people.take(12)
         )
+    }
+
+    private val yearInParens = Regex("""\((19\d{2}|20\d{2})\)""")
+
+    /** "(1990)" in a title or description. Bare numbers are ignored: too easy to misread. */
+    private fun yearIn(text: String?): Int? =
+        text?.let { yearInParens.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+
+    private fun readCredits(parser: XmlPullParser, out: MutableList<String>) {
+        val depth = parser.depth
+        var event = parser.next()
+        while (!(event == XmlPullParser.END_TAG && parser.depth == depth)) {
+            if (event == XmlPullParser.START_TAG) {
+                when (parser.name) {
+                    "actor", "director" -> readText(parser).trim().takeIf { it.isNotEmpty() }?.let { out += it }
+                    else -> skip(parser)
+                }
+            }
+            if (event == XmlPullParser.END_DOCUMENT) break
+            event = parser.next()
+        }
     }
 
     private fun formatEpisode(system: String?, raw: String): String? {

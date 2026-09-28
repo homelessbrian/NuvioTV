@@ -49,7 +49,7 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 
 data class LiveSearchHit(
     val channel: LiveChannel,
-    /** The programme to show on the card: what's on now, or the upcoming show that matched. */
+    /** The program to show on the card: what's on now, or the upcoming show that matched. */
     val program: EpgProgram?,
     val matchedProgram: Boolean
 )
@@ -66,7 +66,7 @@ private const val UPCOMING_WINDOW_MS = 6L * 60 * 60 * 1000
 
 /**
  * Live TV matches for Nuvio's search screen: channels whose name matches, then channels
- * showing (now or in the next few hours) a programme whose title matches.
+ * showing (now or in the next few hours) a program whose title matches.
  * [onOpened] is called after the channel starts playing, to show the full-screen player.
  */
 @Composable
@@ -244,7 +244,7 @@ private fun LiveSearchCard(
             if (meta.isNotBlank()) {
                 LiveText(
                     meta,
-                    // Upcoming start times stand out in the accent colour.
+                    // Upcoming start times stand out in the accent color.
                     color = if (upcoming) NuvioTheme.colors.Secondary else focusedSecondaryTextColor(focused),
                     size = 12.sp,
                     weight = if (upcoming) FontWeight.SemiBold else FontWeight.Normal,
@@ -288,7 +288,7 @@ private fun startsInLabel(ms: Long): String {
 }
 
 /**
- * Hands a programme title from Live TV to Nuvio's search screen, which picks it up once and
+ * Hands a program title from Live TV to Nuvio's search screen, which picks it up once and
  * runs the search. From there the normal detail page streams it through your addons / debrid.
  */
 object LiveTvSearchBridge {

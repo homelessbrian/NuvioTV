@@ -21,8 +21,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Finds the poster Nuvio would show for a programme, by searching the user's own addon catalogs
- * (the same catalogs Nuvio's search uses) for the programme title. Uses the Home poster settings,
+ * Finds the poster Nuvio would show for a program, by searching the user's own addon catalogs
+ * (the same catalogs Nuvio's search uses) for the program title. Uses the Home poster settings,
  * so custom posters match what the home screen shows. Only an exact or very close title match is
  * used; a wrong poster is worse than none.
  */
@@ -36,40 +36,59 @@ class LiveTvPosterResolver @Inject constructor(
 
     data class Result(val poster: String?)
 
-    /** Whether a programme is a movie or a series, and how sure we are. */
+    /** Whether a program is a movie or a series, and how sure we are. */
     enum class Kind { MOVIE, SERIES }
     data class TypeHint(val kind: Kind, val strong: Boolean)
 
-    suspend fun posterFor(programTitle: String, hint: TypeHint? = null): String? {
+    /** What the guide says about the program, used to tell same-named titles apart. */
+    data class Clues(
+        val year: Int? = null,
+        val people: List<String> = emptyList(),
+        val description: String? = null
+    )
+
+    suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
-        val key = normalize(query) + "|" + (hint?.kind ?: "any")
+        val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (clues.year ?: "") +
+            "|" + (clues.description?.hashCode() ?: 0)
         cache[key]?.let { return it.poster }
         return mutex.withLock {
             cache[key]?.let { return@withLock it.poster }
-            val poster = runCatching { lookup(query, hint) }.getOrNull()
+            val poster = runCatching { lookup(query, hint, clues) }.getOrNull()
             cache[key] = Result(poster)
             poster
         }
     }
 
-    private suspend fun lookup(query: String, hint: TypeHint?): String? {
+    private suspend fun lookup(query: String, hint: TypeHint?, clues: Clues): String? {
         val addons = withTimeoutOrNull(5_000) { addonRepository.getInstalledAddons().first() }
             ?.enabledAddons() ?: return null
         val all = searchTargets(addons)
-        if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS))
+        if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS), clues)
         val preferredType = if (hint.kind == Kind.MOVIE) "movie" else "series"
         // Search the right kind of catalog first. With a strong hint (episode number, or the guide
         // says "Movie"), never take the other kind: that's how a sitcom ends up with a movie poster.
         val preferred = all.filter { it.second.apiType == preferredType }.take(MAX_CATALOGS)
-        lookupIn(query, preferred)?.let { return it }
+        lookupIn(query, preferred, clues)?.let { return it }
         if (hint.strong) return null
         val others = all.filter { it.second.apiType != preferredType }.take(MAX_CATALOGS)
-        return lookupIn(query, others)
+        return lookupIn(query, others, clues)
     }
 
-    private suspend fun lookupIn(query: String, targets: List<Pair<Addon, CatalogDescriptor>>): String? {
+    /**
+     * Collects every result with the right title, then picks the best one: same release year
+     * wins (Total Recall 1990 vs 2012), then shared cast/directors, then how much the
+     * descriptions have in common. If the guide gives a year and no result is within a year of
+     * it, nothing is shown rather than a poster for the wrong film.
+     */
+    private suspend fun lookupIn(
+        query: String,
+        targets: List<Pair<Addon, CatalogDescriptor>>,
+        clues: Clues
+    ): String? {
         val wanted = normalize(query)
+        val exact = LinkedHashMap<String, MetaPreview>()
         var closeMatch: MetaPreview? = null
 
         for ((addon, catalog) in targets) {
@@ -86,8 +105,12 @@ class LiveTvPosterResolver @Inject constructor(
                 ).first { it !is NetworkResult.Loading }
             }
             val items = (result as? NetworkResult.Success)?.data?.items.orEmpty()
-            items.firstOrNull { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
-                ?.let { return it.poster }
+            items.filter { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
+                .forEach { exact.putIfAbsent(it.imdbId ?: it.id, it) }
+            // With no year to check, the first exact match is as good as it gets.
+            if (clues.year == null && clues.people.isEmpty() && clues.description.isNullOrBlank() && exact.isNotEmpty()) break
+            // A result from the right year settles it.
+            if (clues.year != null && exact.values.any { yearOf(it) == clues.year }) break
             if (closeMatch == null) {
                 closeMatch = items.take(5).firstOrNull { item ->
                     val n = normalize(item.name)
@@ -97,8 +120,55 @@ class LiveTvPosterResolver @Inject constructor(
                 }
             }
         }
-        return closeMatch?.poster
+
+        if (exact.isNotEmpty()) {
+            val best = exact.values.maxByOrNull { score(it, clues) }!!
+            if (clues.year != null) {
+                val y = yearOf(best)
+                if (y != null && kotlin.math.abs(y - clues.year) > 1) return null
+            }
+            return best.poster
+        }
+        val close = closeMatch ?: return null
+        if (clues.year != null) {
+            val y = yearOf(close)
+            if (y != null && kotlin.math.abs(y - clues.year) > 1) return null
+        }
+        return close.poster
     }
+
+    private fun score(item: MetaPreview, clues: Clues): Double {
+        var score = 0.0
+        val y = yearOf(item)
+        if (clues.year != null && y != null) {
+            val diff = kotlin.math.abs(y - clues.year)
+            score += when (diff) { 0 -> 100.0; 1 -> 80.0; else -> -100.0 }
+        }
+        if (clues.people.isNotEmpty()) {
+            val names = clues.people.map { it.lowercase() }
+            val hay = (item.director + item.writer).joinToString(" ").lowercase() + " " + item.description.orEmpty().lowercase()
+            score += 30.0 * names.count { n -> n.substringAfterLast(' ').length > 2 && hay.contains(n.substringAfterLast(' ')) }
+        }
+        val a = words(clues.description)
+        val b = words(item.description)
+        if (a.isNotEmpty() && b.isNotEmpty()) {
+            score += 60.0 * a.intersect(b).size / minOf(a.size, b.size)
+        }
+        return score
+    }
+
+    private fun yearOf(item: MetaPreview): Int? =
+        Regex("""(19|20)\d{2}""").find(item.releaseInfo ?: item.released ?: "")?.value?.toIntOrNull()
+
+    private val stopWords = setOf(
+        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "his", "her", "their", "is",
+        "are", "was", "who", "that", "this", "from", "by", "as", "at", "into", "after", "when", "while"
+    )
+
+    private fun words(text: String?): Set<String> =
+        text.orEmpty().lowercase().split(Regex("""[^a-z0-9]+"""))
+            .filter { it.length > 3 && it !in stopWords }
+            .toSet()
 
     /** Movie and series catalogs that need nothing but a search term, movies first. */
     private fun searchTargets(addons: List<Addon>): List<Pair<Addon, CatalogDescriptor>> =

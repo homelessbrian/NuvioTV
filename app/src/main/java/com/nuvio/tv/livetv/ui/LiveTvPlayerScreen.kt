@@ -516,7 +516,7 @@ private fun PlayerOptionsDialog(
             currentTitle?.let { t -> MenuItem("Find & stream \"$t\" in Nuvio", onClick = { onFind(t) }) }
             MenuItem("Subtitles", onClick = onSubtitles)
             MenuItem("Aspect ratio: $aspectLabel", onClick = onAspect)
-            MenuItem(if (isFavorite) "Remove from favourites" else "Add to favourites", onClick = onFavorite)
+            MenuItem(if (isFavorite) "Remove from favorites" else "Add to favorites", onClick = onFavorite)
             MenuItem("Previous channel", onClick = onPrevious)
             MenuItem("Reload stream", onClick = onRetry)
             MenuItem("Hide channel", onClick = onHide)

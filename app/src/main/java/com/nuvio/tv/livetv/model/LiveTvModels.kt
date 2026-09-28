@@ -84,7 +84,7 @@ data class CatchupInfo(
 )
 
 data class LiveChannel(
-    /** Stable key used for favourites, hidden channels and last-channel memory. */
+    /** Stable key used for favorites, hidden channels and last-channel memory. */
     val key: String,
     val sourceId: String,
     val sourceName: String,
@@ -108,7 +108,11 @@ data class EpgProgram(
     val description: String? = null,
     val category: String? = null,
     val episode: String? = null,
-    val icon: String? = null
+    val icon: String? = null,
+    /** Release year from the guide (XMLTV <date>, or "(1990)" in the title/description). */
+    val year: Int? = null,
+    /** Actors and directors from the guide's <credits>, when it has them. */
+    val people: List<String> = emptyList()
 ) {
     fun isLive(nowMs: Long): Boolean = nowMs in startMs until stopMs
     fun progress(nowMs: Long): Float {
@@ -151,15 +155,17 @@ data class LiveTvSettings(
     val use24HourClock: Boolean = false,
     val autoReconnect: Boolean = true,
     val channelSort: ChannelSort = ChannelSort.PLAYLIST,
-    /** Fill the focused cell with the accent colour instead of outlining it. */
+    /** Fill the focused cell with the accent color instead of outlining it. */
     val solidHighlight: Boolean = false,
-    /** Show matching channels and programmes in Nuvio's search. */
+    /** Show matching channels and programs in Nuvio's search. */
     val showInSearch: Boolean = true,
     val showAllChannelsGroup: Boolean = true,
     /** When Live TV opens, start the last channel in the preview window and highlight it. */
     val resumeLastInPreview: Boolean = true,
     /** Show how many channels each group has in the guide's group list. */
-    val showGroupCounts: Boolean = true
+    val showGroupCounts: Boolean = true,
+    /** Smaller info panel and preview at the top of the guide, so more channels fit. */
+    val smallHeader: Boolean = false
 )
 
 data class LiveUserState(
