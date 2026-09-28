@@ -205,7 +205,11 @@ object NetworkModule {
     @Provides
     @Singleton
     @Named("simkl")
-    fun provideSimklOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    fun provideSimklOkHttpClient(
+        @dagger.hilt.android.qualifiers.ApplicationContext context: android.content.Context
+    ): OkHttpClient = OkHttpClient.Builder()
+        // Live TV fork: Simkl "Auth V2" client IDs (device flow + refresh tokens).
+        .addInterceptor(com.nuvio.tv.data.simkl.SimklAuthV2Interceptor(context, BuildConfig.SIMKL_CLIENT_ID))
         .dns(IPv4FirstDns())
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
