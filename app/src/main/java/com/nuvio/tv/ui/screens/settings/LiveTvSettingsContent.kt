@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Link
@@ -75,6 +76,8 @@ private sealed interface LiveDialog {
     data object SortChoice : LiveDialog
     data object HighlightChoice : LiveDialog
     data object CustomGroups : LiveDialog
+    data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
+    data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
 
 private val EPG_OFFSETS = (-24..24).map { it * 30 }
@@ -338,11 +341,11 @@ fun LiveTvSettingsContent(
             title = d.source.name,
             actions = listOf(
                 "Edit" to { dialog = LiveDialog.EditPlaylist(d.source) },
-                (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setPlaylistEnabled(d.source.id, !d.source.enabled); close() },
                 "Update now" to { viewModel.savePlaylist(d.source); close() },
+                (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setPlaylistEnabled(d.source.id, !d.source.enabled); close() },
+                "Delete playlist" to { dialog = LiveDialog.ConfirmDeletePlaylist(d.source) },
                 "Move up" to { viewModel.movePlaylist(d.source.id, -1); close() },
-                "Move down" to { viewModel.movePlaylist(d.source.id, 1); close() },
-                "Delete" to { viewModel.removePlaylist(d.source.id); close() }
+                "Move down" to { viewModel.movePlaylist(d.source.id, 1); close() }
             ),
             onDismiss = close
         )
@@ -386,11 +389,23 @@ fun LiveTvSettingsContent(
             title = d.source.name,
             actions = listOf(
                 "Edit" to { dialog = LiveDialog.EditEpg(d.source) },
-                (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setEpgEnabled(d.source.id, !d.source.enabled); close() },
                 "Update now" to { viewModel.saveEpg(d.source); close() },
-                "Delete" to { viewModel.removeEpg(d.source.id); close() }
+                (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setEpgEnabled(d.source.id, !d.source.enabled); close() },
+                "Delete EPG source" to { dialog = LiveDialog.ConfirmDeleteEpg(d.source) }
             ),
             onDismiss = close
+        )
+        is LiveDialog.ConfirmDeletePlaylist -> ConfirmDeleteDialog(
+            title = "Delete \"${d.source.name}\"?",
+            message = "Its ${d.source.channelCount} channels leave the guide. Favourites, hidden channels and EPG assignments for them are kept in case you add it back.",
+            onDismiss = close,
+            onConfirm = { viewModel.removePlaylist(d.source.id); close() }
+        )
+        is LiveDialog.ConfirmDeleteEpg -> ConfirmDeleteDialog(
+            title = "Delete \"${d.source.name}\"?",
+            message = "Channels using this guide go back to other guides or automatic matching.",
+            onDismiss = close,
+            onConfirm = { viewModel.removeEpg(d.source.id); close() }
         )
         is LiveDialog.EditEpg -> SourceFormDialog(
             title = "Edit EPG source",
@@ -566,13 +581,37 @@ private fun ActionListDialog(
         runCatching { first.requestFocus() }
     }
     NuvioDialog(onDismiss = onDismiss, title = title, width = 460.dp) {
-        actions.forEachIndexed { i, (label, action) ->
-            SettingsActionRow(
-                title = label,
-                subtitle = null,
-                onClick = action,
-                modifier = if (i == 0) Modifier.focusRequester(first) else Modifier
-            )
+        // Scrollable: on a 1080p TV not every option fits, and the last ones were unreachable.
+        LazyColumn(
+            modifier = Modifier.heightIn(max = 380.dp),
+            verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xxs)
+        ) {
+            itemsIndexed(actions) { i, (label, action) ->
+                SettingsActionRow(
+                    title = label,
+                    subtitle = null,
+                    onClick = action,
+                    modifier = if (i == 0) Modifier.focusRequester(first) else Modifier
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfirmDeleteDialog(title: String, message: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { cancelFocus.requestFocus() }
+    }
+    NuvioDialog(onDismiss = onDismiss, title = title, subtitle = message, width = 520.dp) {
+        SettingsDialogActionRow {
+            // Cancel is focused first, so a stray OK press can't delete anything.
+            androidx.compose.foundation.layout.Box(Modifier.focusRequester(cancelFocus)) {
+                SettingsDialogActionButton(text = "Cancel", onClick = onDismiss)
+            }
+            SettingsDialogActionButton(text = "Delete", onClick = onConfirm, primary = true)
         }
     }
 }
