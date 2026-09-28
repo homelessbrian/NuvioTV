@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,6 +36,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.ManageSearch
+import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -54,6 +59,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -75,6 +82,8 @@ import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.ui.theme.NuvioTheme
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.hazeEffect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -134,6 +143,10 @@ fun LiveTvGuideScreen(
     var textPrompt by remember { mutableStateOf<TextPrompt?>(null) }
     var groupPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
     var groupMenu by remember { mutableStateOf<ChannelGroup?>(null) }
+    var epgPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
+    val epgSources by viewModel.epgSources.collectAsStateWithLifecycle()
+    val menuStyle by viewModel.menuStyle.collectAsStateWithLifecycle()
+    val panelHaze = remember { dev.chrisbanes.haze.HazeState() }
     var gridFocused by remember { mutableStateOf(false) }
     var longPressFired by remember { mutableStateOf(false) }
     var numberBuffer by remember { mutableStateOf("") }
@@ -179,7 +192,8 @@ fun LiveTvGuideScreen(
 
     fun focusGroups() {
         scope.launch {
-            val idx = ui.groups.indexOfFirst { it.id == ui.selectedGroupId }.coerceAtLeast(0)
+            val idx = ui.groups.filter { it.id != ChannelGroup.SEARCH }
+                .indexOfFirst { it.id == ui.selectedGroupId }.coerceAtLeast(0)
             val visible = groupsListState.layoutInfo.visibleItemsInfo.map { it.index }
             if (idx !in visible) groupsListState.scrollToItem((idx - 3).coerceAtLeast(0))
             repeat(2) { androidx.compose.runtime.withFrameNanos { } }
@@ -306,7 +320,12 @@ fun LiveTvGuideScreen(
 
     fun moveRow(delta: Int) {
         if (channels.isEmpty()) return
-        row = (row + delta).coerceIn(0, channels.lastIndex)
+        row = when {
+            // One step past the end wraps around; paging stops at the ends.
+            delta == 1 && row == channels.lastIndex -> 0
+            delta == -1 && row == 0 -> channels.lastIndex
+            else -> (row + delta).coerceIn(0, channels.lastIndex)
+        }
         ensureRowVisible(row)
     }
 
@@ -354,7 +373,14 @@ fun LiveTvGuideScreen(
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (menuStyle == LiveMenuStyle.MODERN_BLUR) Modifier.hazeSource(state = panelHaze)
+                    else Modifier
+                )
+        ) {
             // ---------------------------------------------------------------- header
             GuideHeader(
                 channel = focusedChannel,
@@ -524,7 +550,7 @@ fun LiveTvGuideScreen(
                                             now = now,
                                             isFavorite = ch.key in user.favorites,
                                             isPlaying = ch.key == playback.channelKey,
-                                            focusColumn = if (index == row && gridFocused) column else null,
+                                            focusColumn = if (index == row && (gridFocused || epgPickerFor != null)) column else null,
                                             focusedBlock = if (index == row) focusedBlock else null
                                         )
                                     }
@@ -567,6 +593,27 @@ fun LiveTvGuideScreen(
             }
         }
 
+        // ---------------------------------------------------------------- Change EPG panel
+        epgPickerFor?.let { ch ->
+            val closePanel = {
+                epgPickerFor = null
+                scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+                Unit
+            }
+            BackHandler { closePanel() }
+            EpgSidePanel(
+                channel = ch,
+                sources = epgSources,
+                current = user.epgOverrides[ch.key],
+                loading = status.loading,
+                style = menuStyle,
+                hazeState = panelHaze,
+                modifier = Modifier.align(Alignment.CenterEnd),
+                onPick = { src, entry -> viewModel.setChannelEpg(ch, src.sourceId, entry.id); closePanel() },
+                onAutomatic = { viewModel.resetChannelEpg(ch); closePanel() }
+            )
+        }
+
         // ---------------------------------------------------------------- dialogs
         menuTarget?.let { target ->
             ChannelContextMenu(
@@ -601,6 +648,7 @@ fun LiveTvGuideScreen(
                         onConfirm = { viewModel.renameChannel(target.channel, it) }
                     )
                 },
+                onChangeEpg = { menuTarget = null; epgPickerFor = target.channel },
                 onRenumber = {
                     menuTarget = null
                     textPrompt = TextPrompt(
@@ -1109,19 +1157,19 @@ private fun GroupColumn(
                 } else false
             }
     ) {
-        LiveText(
-            "Groups",
-            modifier = Modifier.height(34.dp).padding(start = 12.dp, top = 8.dp),
-            color = NuvioTheme.colors.TextSecondary,
-            size = 13.sp,
-            weight = FontWeight.SemiBold
-        )
+        // Search sits above the groups (it opens Nuvio's search), in the row beside the timeline.
+        groups.firstOrNull { it.id == ChannelGroup.SEARCH }?.let { searchGroup ->
+            GroupSearchButton(
+                modifier = Modifier.padding(bottom = 4.dp),
+                onClick = { onSelect(searchGroup) }
+            )
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            itemsIndexed(groups, key = { _, g -> g.id }) { _, g ->
+            itemsIndexed(groups.filter { it.id != ChannelGroup.SEARCH }, key = { _, g -> g.id }) { _, g ->
                 val selected = g.id == selectedId
                 GroupItem(
                     group = g,
@@ -1134,6 +1182,34 @@ private fun GroupColumn(
                 )
             }
         }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun GroupSearchButton(modifier: Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(8.dp)
+    val colors = liveCellColors(focused = focused, idle = Color.Transparent, idleText = NuvioTheme.colors.TextSecondary)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(30.dp)
+            .clip(shape)
+            .background(colors.background)
+            .border(2.dp, colors.border, shape)
+            .onFocusChanged { focused = it.isFocused }
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Search, contentDescription = null, tint = colors.text, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        LiveText("Search", color = colors.text, size = 13.sp, weight = FontWeight.Medium)
     }
 }
 
@@ -1216,6 +1292,7 @@ private fun ChannelContextMenu(
     onRemoveFromGroup: (String) -> Unit,
     onAddToGroup: () -> Unit,
     onRename: () -> Unit,
+    onChangeEpg: () -> Unit,
     onRenumber: () -> Unit,
     onHide: () -> Unit,
     onHideGroup: () -> Unit,
@@ -1254,6 +1331,7 @@ private fun ChannelContextMenu(
             }
             item { MenuItem("Rename channel", onClick = onRename) }
             item { MenuItem("Change channel number", onClick = onRenumber) }
+            item { MenuItem("Assign EPG", onClick = onChangeEpg) }
             item { MenuItem("Hide channel", onClick = onHide) }
             item { MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup) }
             item { MenuItem("Search", onClick = onSearch) }
@@ -1262,6 +1340,392 @@ private fun ChannelContextMenu(
         }
     }
     LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+private data class EpgRow(
+    val source: com.nuvio.tv.livetv.model.EpgSourceChannels,
+    val entry: com.nuvio.tv.livetv.model.EpgChannelEntry
+)
+
+/**
+ * "Assign EPG" panel. Styled like Nuvio's own side menu (floating rounded panel, pill-shaped
+ * items, accent for the current choice) and laid out like TiviMate's: every loaded guide's
+ * channels in one alphabetical list with the source underneath, opened at the current pick or
+ * where this channel's name would be. Buttons: Search, Filter by guide, Find, Automatic.
+ */
+@Composable
+private fun EpgSidePanel(
+    channel: LiveChannel,
+    sources: List<com.nuvio.tv.livetv.model.EpgSourceChannels>,
+    current: com.nuvio.tv.livetv.model.EpgAssignment?,
+    loading: Boolean,
+    style: LiveMenuStyle,
+    hazeState: dev.chrisbanes.haze.HazeState,
+    modifier: Modifier,
+    onPick: (com.nuvio.tv.livetv.model.EpgSourceChannels, com.nuvio.tv.livetv.model.EpgChannelEntry) -> Unit,
+    onAutomatic: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    var sourceFilter by remember { mutableStateOf<String?>(null) }
+    var searchOpen by remember { mutableStateOf(false) }
+    var filterOpen by remember { mutableStateOf(false) }
+    val seed = remember(channel.key) { epgSearchSeed(channel.name) }
+
+    val rows = remember(sources, query, sourceFilter) {
+        val words = query.lowercase().split(Regex("""\s+""")).filter { it.isNotBlank() }
+        sources.asSequence()
+            .filter { sourceFilter == null || it.sourceId == sourceFilter }
+            .flatMap { src -> src.channels.asSequence().map { EpgRow(src, it) } }
+            .filter { r ->
+                words.isEmpty() || (r.entry.names + r.entry.id).joinToString(" ").lowercase().let { h -> words.all { it in h } }
+            }
+            .sortedWith(compareBy<EpgRow>({ it.entry.displayName.lowercase() }, { it.source.label }))
+            .toList()
+    }
+
+    fun anchorIndex(): Int {
+        if (rows.isEmpty()) return 0
+        current?.let { a ->
+            val i = rows.indexOfFirst { it.source.sourceId == a.sourceId && it.entry.id == a.xmltvId }
+            if (i >= 0) return i
+        }
+        val key = seed.lowercase()
+        val i = rows.indexOfFirst { it.entry.displayName.lowercase() >= key }
+        return if (i >= 0) i else rows.lastIndex
+    }
+
+    val listState = rememberLazyListState()
+    var focusIndex by remember { mutableIntStateOf(-1) }
+    val itemFocus = remember { FocusRequester() }
+    val buttonsFocus = remember { FocusRequester() }
+    var jumpToken by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(rows, jumpToken) {
+        val idx = anchorIndex()
+        focusIndex = idx
+        if (rows.isNotEmpty()) {
+            listState.scrollToItem((idx - 4).coerceAtLeast(0))
+            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+            runCatching { itemFocus.requestFocus() }
+        } else {
+            runCatching { buttonsFocus.requestFocus() }
+        }
+    }
+
+    // Opens like Nuvio's menu: a quick fade and scale from its corner.
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val progress by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (shown) 1f else 0f,
+        animationSpec = androidx.compose.animation.core.tween(260),
+        label = "epgPanel"
+    )
+
+    // Panel surface, matching Nuvio's side menu for the chosen menu appearance.
+    val amoled = NuvioTheme.colors.BackgroundElevated == Color.Black
+    val classic = style == LiveMenuStyle.CLASSIC
+    val panelShape = if (classic) androidx.compose.ui.graphics.RectangleShape
+    else RoundedCornerShape(com.nuvio.tv.ui.theme.NuvioComponents.tokens.sidebar.panelRadius)
+    val panelBackground = when {
+        classic -> NuvioTheme.colors.Background
+        amoled -> Color.Black
+        style == LiveMenuStyle.MODERN_BLUR -> Color(0xFF161618).copy(alpha = 0.65f)
+        else -> Color(0xFF161618).copy(alpha = 0.97f)
+    }
+    val panelBlur = NuvioTheme.effects.blurPanel
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(if (classic) 440.dp else 480.dp)
+            .then(if (classic) Modifier else Modifier.padding(top = 24.dp, bottom = 16.dp, end = 20.dp))
+            .graphicsLayer {
+                alpha = progress
+                val sc = 0.92f + 0.08f * progress
+                scaleX = sc
+                scaleY = sc
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f)
+            }
+            .clip(panelShape)
+            .then(
+                if (style == LiveMenuStyle.MODERN_BLUR) {
+                    Modifier.hazeEffect(state = hazeState) {
+                        blurRadius = panelBlur
+                        noiseFactor = 0.04f
+                        inputScale = dev.chrisbanes.haze.HazeInputScale.Fixed(0.66f)
+                    }
+                } else Modifier
+            )
+            .background(panelBackground, panelShape)
+            .then(
+                if (!classic && amoled && style != LiveMenuStyle.MODERN_BLUR) {
+                    Modifier.border(1.dp, NuvioTheme.colors.Border.copy(alpha = 0.9f), panelShape)
+                } else Modifier
+            )
+            .padding(
+                horizontal = if (classic) NuvioTheme.spacing.card.outer else 16.dp,
+                vertical = 20.dp
+            )
+    ) {
+        // Header
+        LiveText("Assign EPG", modifier = Modifier.padding(start = 12.dp), size = 22.sp, weight = FontWeight.Bold)
+        val filterName = sources.firstOrNull { it.sourceId == sourceFilter }?.name
+        val sub = listOfNotNull(
+            channel.name,
+            filterName,
+            query.takeIf { it.isNotBlank() }?.let { "\"$it\"" }
+        ).joinToString("  ·  ")
+        LiveText(sub, modifier = Modifier.padding(start = 12.dp, top = 2.dp), color = NuvioTheme.colors.TextSecondary, size = 13.sp, marquee = true)
+        Spacer(Modifier.height(14.dp))
+
+        // Buttons, as pills like Nuvio's menu items
+        val buttons = listOf<Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>>(
+            Triple(Icons.Default.Search, "Search") { searchOpen = true },
+            Triple(Icons.Default.FilterAlt, "Filter") { filterOpen = true },
+            Triple(Icons.Default.ManageSearch, "Find") { query = ""; sourceFilter = null; jumpToken++ },
+            Triple(Icons.Default.LinkOff, "Automatic") { onAutomatic() }
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            buttons.forEachIndexed { i, (icon, label, action) ->
+                EpgPanelButton(
+                    icon = icon,
+                    label = label,
+                    style = style,
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(if (i == 0) Modifier.focusRequester(buttonsFocus) else Modifier)
+                        .onPreviewKeyEvent { e ->
+                            // Keep focus inside the panel.
+                            e.type == KeyEventType.KeyDown && (
+                                (e.key == Key.DirectionLeft && i == 0) ||
+                                    (e.key == Key.DirectionRight && i == buttons.lastIndex) ||
+                                    (e.key == Key.DirectionDown && rows.isNotEmpty() && runCatching { itemFocus.requestFocus() }.isSuccess)
+                                )
+                        },
+                    onClick = action
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(NuvioTheme.colors.Border.copy(alpha = 0.5f))
+        )
+        Spacer(Modifier.height(8.dp))
+
+        if (rows.isEmpty()) {
+            LiveText(
+                when {
+                    loading && sources.isEmpty() -> "Guides are still loading…"
+                    sources.isEmpty() -> "No guides loaded. Add an EPG source in Live TV settings."
+                    else -> "No guide channels match."
+                },
+                modifier = Modifier.padding(12.dp),
+                color = NuvioTheme.colors.TextSecondary,
+                maxLines = 3
+            )
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .onPreviewKeyEvent { e ->
+                    e.type == KeyEventType.KeyDown && (e.key == Key.DirectionLeft || e.key == Key.DirectionRight)
+                },
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(vertical = 4.dp)
+        ) {
+            itemsIndexed(rows, key = { _, r -> r.source.sourceId + "|" + r.entry.id }) { index, r ->
+                val selected = current != null && current.sourceId == r.source.sourceId && current.xmltvId == r.entry.id
+                EpgPanelRow(
+                    row = r,
+                    selected = selected,
+                    style = style,
+                    modifier = if (index == focusIndex) Modifier.focusRequester(itemFocus) else Modifier,
+                    onClick = { onPick(r.source, r.entry) }
+                )
+            }
+        }
+    }
+
+    if (searchOpen) {
+        TextInputDialog(
+            title = "Search guide channels",
+            initial = query.ifBlank { seed },
+            hint = "Channel name or ID",
+            confirmLabel = "Search",
+            onDismiss = { searchOpen = false },
+            onConfirm = { q -> query = q.trim(); searchOpen = false }
+        )
+    }
+    if (filterOpen) {
+        ActionMenuDialog(
+            title = "Show channels from",
+            actions = buildList<Pair<String, () -> Unit>> {
+                add(("All guides" + if (sourceFilter == null) "  ✓" else "") to { sourceFilter = null; filterOpen = false })
+                sources.forEach { src ->
+                    add(("${src.name} · ${src.label} (${src.channels.size})" + if (sourceFilter == src.sourceId) "  ✓" else "") to {
+                        sourceFilter = src.sourceId
+                        filterOpen = false
+                    })
+                }
+            },
+            onDismiss = { filterOpen = false }
+        )
+    }
+}
+
+/** Item colours copied from Nuvio's side menu, for whichever menu appearance is selected. */
+private data class MenuItemColors(val background: Color, val content: Color, val secondary: Color)
+
+@Composable
+private fun menuItemColors(style: LiveMenuStyle, focused: Boolean, selected: Boolean): MenuItemColors {
+    val colors = NuvioTheme.colors
+    val target = if (style == LiveMenuStyle.CLASSIC) {
+        // Classic drawer: theme focus fill; the current choice filled with the accent.
+        when {
+            focused -> MenuItemColors(colors.FocusBackground, colors.TextPrimary, colors.TextSecondary)
+            selected -> MenuItemColors(colors.Secondary, colors.OnSecondary, colors.OnSecondary.copy(alpha = 0.8f))
+            else -> MenuItemColors(Color.Transparent, colors.TextSecondary, colors.TextTertiary)
+        }
+    } else {
+        // Modern panel: soft white when focused, accent tint and accent text for the current choice.
+        val accent = NuvioTheme.palette.secondary
+        MenuItemColors(
+            background = when {
+                focused && selected -> accent.copy(alpha = 0.28f)
+                focused -> Color.White.copy(alpha = 0.12f)
+                selected -> accent.copy(alpha = 0.15f)
+                else -> Color.Transparent
+            },
+            content = when {
+                selected -> accent
+                focused -> colors.TextPrimary
+                else -> colors.text.onOverlay
+            },
+            secondary = colors.TextSecondary
+        )
+    }
+    val bg by androidx.compose.animation.animateColorAsState(target.background, androidx.compose.animation.core.tween(150), label = "menuItemBg")
+    val fg by androidx.compose.animation.animateColorAsState(target.content, androidx.compose.animation.core.tween(150), label = "menuItemFg")
+    return MenuItemColors(bg, fg, target.secondary)
+}
+
+@Composable
+private fun menuItemShape(style: LiveMenuStyle): androidx.compose.ui.graphics.Shape =
+    if (style == LiveMenuStyle.CLASSIC) NuvioTheme.shapes.navItem
+    else RoundedCornerShape(com.nuvio.tv.ui.theme.NuvioRadii.tokens.full)
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun EpgPanelRow(row: EpgRow, selected: Boolean, style: LiveMenuStyle, modifier: Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val colors = menuItemColors(style, focused, selected)
+    val scale by androidx.compose.animation.core.animateFloatAsState(if (focused) 1.04f else 1f, label = "epgRowScale")
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(menuItemShape(style))
+            .background(colors.background)
+            .onFocusChanged { focused = it.isFocused }
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 18.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Radio: filled for the guide channel currently in use.
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .border(2.dp, colors.content, RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (selected) Box(Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(colors.content))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            LiveText(
+                row.entry.displayName,
+                color = colors.content,
+                size = 15.sp,
+                weight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                marquee = focused
+            )
+            LiveText(row.source.label, color = colors.secondary, size = 12.sp)
+        }
+        if (!row.entry.icon.isNullOrBlank()) {
+            Spacer(Modifier.width(8.dp))
+            ChannelLogo(row.entry.icon, 22.dp)
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun EpgPanelButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    style: LiveMenuStyle,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    val colors = menuItemColors(style, focused, selected = false)
+    val scale by androidx.compose.animation.core.animateFloatAsState(if (focused) 1.06f else 1f, label = "epgButtonScale")
+    Column(
+        modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(if (style == LiveMenuStyle.CLASSIC) NuvioTheme.shapes.navItem else RoundedCornerShape(18.dp))
+            .background(colors.background)
+            .onFocusChanged { focused = it.isFocused }
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(icon, contentDescription = label, tint = colors.content, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.height(4.dp))
+        LiveText(label, color = colors.content, size = 12.sp)
+    }
+}
+
+private const val EPG_PICKER_LIMIT = 300
+
+private fun epgSearchSeed(name: String): String =
+    name.replace(Regex("""^[A-Za-z]{2,3}\s*[:|]\s*"""), "")
+        .replace(Regex("""\b(FHD|UHD|HD|SD|4K|HEVC|H265|RAW|BACKUP)\b""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""[\[(].*?[\])]"""), "")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+
+/** Every word of the query must appear in one of the channel's names or its id. */
+private fun filterEpgChannels(
+    channels: List<com.nuvio.tv.livetv.model.EpgChannelEntry>,
+    query: String
+): List<com.nuvio.tv.livetv.model.EpgChannelEntry> {
+    val words = query.lowercase().split(Regex("""\s+""")).filter { it.isNotBlank() }
+    if (words.isEmpty()) return channels.take(EPG_PICKER_LIMIT)
+    val scored = channels.mapNotNull { c ->
+        val haystack = (c.names + c.id).joinToString(" ").lowercase()
+        if (words.all { it in haystack }) {
+            val exact = c.names.any { it.equals(query.trim(), ignoreCase = true) }
+            c to if (exact) 0 else 1
+        } else null
+    }
+    return scored.sortedBy { it.second }.map { it.first }.take(EPG_PICKER_LIMIT)
 }
 
 private data class TextPrompt(

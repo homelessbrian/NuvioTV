@@ -85,6 +85,7 @@ class LiveTvPreferences @Inject constructor(
         val groupNames = stringPreferencesKey("group_names")
         val groupOrder = stringPreferencesKey("group_order")
         val customGroups = stringPreferencesKey("custom_groups")
+        val epgOverrides = stringPreferencesKey("epg_overrides")
     }
 
     val playlists: Flow<List<PlaylistSource>> = store.data
@@ -142,7 +143,11 @@ class LiveTvPreferences @Inject constructor(
             channelNumbers = decodeStringMap(p[Keys.channelNumbers]).mapNotNull { (k, v) -> v.toIntOrNull()?.let { k to it } }.toMap(),
             groupNames = decodeStringMap(p[Keys.groupNames]),
             groupOrder = decodeStringList(p[Keys.groupOrder]),
-            customGroups = decodeCustomGroups(p[Keys.customGroups])
+            customGroups = decodeCustomGroups(p[Keys.customGroups]),
+            epgOverrides = decodeStringMap(p[Keys.epgOverrides]).mapNotNull { (k, v) ->
+                val parts = v.split(EPG_SEP, limit = 2)
+                if (parts.size == 2) k to com.nuvio.tv.livetv.model.EpgAssignment(parts[0], parts[1]) else null
+            }.toMap()
         )
     }.distinctUntilChanged()
 
@@ -264,6 +269,18 @@ class LiveTvPreferences @Inject constructor(
             keys.add((i + delta).coerceIn(0, keys.size), key)
             g.copy(channelKeys = keys)
         }
+    }
+
+    suspend fun setEpgOverride(key: String, assignment: com.nuvio.tv.livetv.model.EpgAssignment?) {
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.epgOverrides]).toMutableMap()
+            if (assignment == null) m.remove(key) else m[key] = assignment.sourceId + EPG_SEP + assignment.xmltvId
+            p[Keys.epgOverrides] = encodeStringMap(m)
+        }
+    }
+
+    suspend fun clearEpgOverrides() {
+        store.edit { it[Keys.epgOverrides] = encodeStringMap(emptyMap()) }
     }
 
     suspend fun resetChannelEdits() {
@@ -433,6 +450,10 @@ class LiveTvPreferences @Inject constructor(
     }
 
     private fun encodeStringList(list: List<String>): String = JSONArray(list).toString()
+
+    private companion object {
+        const val EPG_SEP = "\u0001"
+    }
 
     private fun decodeStringMap(raw: String?): Map<String, String> {
         if (raw.isNullOrBlank()) return emptyMap()

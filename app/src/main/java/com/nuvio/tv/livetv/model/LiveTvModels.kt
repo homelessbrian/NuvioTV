@@ -142,8 +142,30 @@ data class LiveUserState(
     val channelNumbers: Map<String, Int> = emptyMap(),
     val groupNames: Map<String, String> = emptyMap(),
     val groupOrder: List<String> = emptyList(),
-    val customGroups: List<CustomGroup> = emptyList()
+    val customGroups: List<CustomGroup> = emptyList(),
+    /** Channel key -> EPG assigned by hand from the long-press menu. */
+    val epgOverrides: Map<String, EpgAssignment> = emptyMap()
 )
+
+/** A channel's guide, picked by hand: which EPG source, and which channel inside it. */
+data class EpgAssignment(val sourceId: String, val xmltvId: String)
+
+/** One loaded EPG source and its channel list, for the "Change EPG" picker. */
+data class EpgSourceChannels(
+    val sourceId: String,
+    val name: String,
+    /** Short label shown under each channel in the picker, e.g. "github.com". */
+    val label: String,
+    val channels: List<EpgChannelEntry>
+)
+
+data class EpgChannelEntry(
+    val id: String,
+    val names: List<String>,
+    val icon: String?
+) {
+    val displayName: String get() = names.firstOrNull() ?: id
+}
 
 /** A row in the TiviMate-style group panel. */
 data class ChannelGroup(

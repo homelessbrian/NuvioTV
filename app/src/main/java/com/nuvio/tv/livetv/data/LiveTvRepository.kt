@@ -2,7 +2,9 @@ package com.nuvio.tv.livetv.data
 
 import android.content.Context
 import android.util.Log
+import com.nuvio.tv.livetv.model.EpgChannelEntry
 import com.nuvio.tv.livetv.model.EpgProgram
+import com.nuvio.tv.livetv.model.EpgSourceChannels
 import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.model.LiveTvSettings
@@ -14,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -63,6 +66,10 @@ class LiveTvRepository @Inject constructor(
     /** Programmes keyed by [LiveChannel.key], sorted by start. Offset is not applied here. */
     private val _programs = MutableStateFlow<Map<String, List<EpgProgram>>>(emptyMap())
     val programs: StateFlow<Map<String, List<EpgProgram>>> = _programs.asStateFlow()
+
+    /** Every loaded EPG source with its channel list (for "Change EPG"). */
+    private val _epgSources = MutableStateFlow<List<EpgSourceChannels>>(emptyList())
+    val epgSources: StateFlow<List<EpgSourceChannels>> = _epgSources.asStateFlow()
 
     private val _status = MutableStateFlow(LiveTvStatus())
     val status: StateFlow<LiveTvStatus> = _status.asStateFlow()
@@ -329,20 +336,25 @@ class LiveTvRepository @Inject constructor(
         val windowStart = now - settings.epgPastHours.coerceAtLeast(1) * HOUR
         val windowEnd = now + settings.epgFutureDays.coerceAtLeast(1) * 24 * HOUR
 
+        // Hand-picked guides (long-press > Change EPG) win over automatic matching.
+        val overrides = prefs.userState.first().epgOverrides
+            .filterKeys { key -> channels.any { it.key == key } }
+
         val byTvgId = HashMap<String, MutableList<LiveChannel>>()
         val byName = HashMap<String, MutableList<LiveChannel>>()
         channels.forEach { c ->
+            if (c.key in overrides) return@forEach
             c.tvgId?.lowercase()?.let { byTvgId.getOrPut(it) { ArrayList() }.add(c) }
             normalize(c.tvgName ?: "").takeIf { it.isNotEmpty() }?.let { byName.getOrPut(it) { ArrayList() }.add(c) }
             normalize(c.name).takeIf { it.isNotEmpty() }?.let { byName.getOrPut(it) { ArrayList() }.add(c) }
         }
 
         val result = HashMap<String, List<EpgProgram>>()
+        val sourceLists = ArrayList<EpgSourceChannels>()
         for (target in targets) {
             val file = epgFile(target.fileId)
             if (!file.exists()) continue
-            val remaining = channels.count { it.key !in result }
-            if (remaining == 0) break
+            val pinnedHere = overrides.filterValues { it.sourceId == target.fileId }
             // xmltv id -> channels it feeds
             val mapping = HashMap<String, MutableSet<LiveChannel>>()
             val parsed = runCatching {
@@ -359,10 +371,23 @@ class LiveTvRepository @Inject constructor(
                             hits.removeAll { it.key in result }
                             if (hits.isNotEmpty()) mapping[xc.id] = hits
                         }
-                        if (xmlChannels.isEmpty()) null else mapping.keys.toSet()
+                        if (xmlChannels.isEmpty()) null
+                        else mapping.keys + pinnedHere.values.map { it.xmltvId }
                     }
                 }
             }.onFailure { Log.w(TAG, "EPG parse ${target.name} failed", it) }.getOrNull() ?: continue
+
+            // Keep this guide's channel list for the picker.
+            val entries = if (parsed.channels.isNotEmpty()) {
+                parsed.channels.values.map { EpgChannelEntry(it.id, it.displayNames, it.icon) }
+            } else {
+                parsed.programs.keys.map { EpgChannelEntry(it, emptyList(), null) }
+            }
+            val label = runCatching { java.net.URI(target.url).host?.removePrefix("www.") }.getOrNull()
+                ?.takeIf { it.isNotBlank() } ?: target.name
+            sourceLists += EpgSourceChannels(target.fileId, target.name, label, entries.sortedBy { it.displayName.lowercase() })
+
+            pinnedHere.forEach { (key, a) -> result[key] = parsed.programs[a.xmltvId].orEmpty() }
 
             if (mapping.isEmpty()) {
                 // Guide had no <channel> list before programmes: match programme channel ids directly.
@@ -381,7 +406,19 @@ class LiveTvRepository @Inject constructor(
                 prefs.updateEpgSources { l -> l.map { if (it.id == target.sourceId) it.copy(programCount = count) else it } }
             }
         }
+        _epgSources.value = sourceLists
         _programs.value = result
+    }
+
+    /** Re-reads the cached guides, e.g. after an EPG assignment changed. No downloads. */
+    fun rematchEpg() {
+        scope.launch {
+            mutex.withLock {
+                setStatus(loading = true, message = "Updating guide…")
+                buildPrograms(prefs.currentSettings(), collectEpgTargets())
+                _status.value = LiveTvStatus(loading = false, loadedOnce = true)
+            }
+        }
     }
 
     // ---------------------------------------------------------------- IO helpers

@@ -75,6 +75,10 @@ class LiveTvSettingsViewModel @Inject constructor(
     fun clearRecent() = viewModelScope.launch { prefs.clearRecent() }
     fun resetChannelEdits() = viewModelScope.launch { prefs.resetChannelEdits() }
     fun resetGroupEdits() = viewModelScope.launch { prefs.resetGroupEdits() }
+    fun resetEpgAssignments() = viewModelScope.launch {
+        prefs.clearEpgOverrides()
+        repository.rematchEpg()
+    }
     fun deleteCustomGroup(id: String) = viewModelScope.launch { prefs.deleteCustomGroup(id) }
 
     /** Readable name for a hidden channel key, even if its playlist is currently disabled. */

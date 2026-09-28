@@ -292,6 +292,12 @@ fun LiveTvSettingsContent(
                         onClick = { viewModel.resetChannelEdits() }
                     )
                     SettingsActionRow("Reset group names and order", null, onClick = { viewModel.resetGroupEdits() })
+                    SettingsActionRow(
+                        "Reset EPG assignments",
+                        "Channels you gave a different guide go back to automatic matching",
+                        "${user.epgOverrides.size}",
+                        onClick = { viewModel.resetEpgAssignments() }
+                    )
                 }
             }
         }

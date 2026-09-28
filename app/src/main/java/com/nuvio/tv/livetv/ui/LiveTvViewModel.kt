@@ -32,6 +32,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Matches Nuvio's side-menu setting: classic drawer, modern floating panel, or modern with blur. */
+enum class LiveMenuStyle { CLASSIC, MODERN, MODERN_BLUR }
+
 /** In-memory session shared by the guide and the full-screen player (current group, etc). */
 @Singleton
 class LiveTvSession @Inject constructor() {
@@ -63,8 +66,22 @@ class LiveTvViewModel @Inject constructor(
     private val prefs: LiveTvPreferences,
     val playback: LiveTvPlaybackController,
     private val session: LiveTvSession,
-    private val posterResolver: com.nuvio.tv.livetv.data.LiveTvPosterResolver
+    private val posterResolver: com.nuvio.tv.livetv.data.LiveTvPosterResolver,
+    layoutPrefs: com.nuvio.tv.data.local.LayoutPreferenceDataStore
 ) : ViewModel() {
+
+    /** Nuvio's side-menu appearance (Layout settings), so Live TV panels can match it. */
+    val menuStyle: StateFlow<LiveMenuStyle> = combine(
+        layoutPrefs.modernSidebarEnabled,
+        layoutPrefs.modernSidebarBlurEnabled
+    ) { modern, blur ->
+        when {
+            !modern -> LiveMenuStyle.CLASSIC
+            blur && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S -> LiveMenuStyle.MODERN_BLUR
+            else -> LiveMenuStyle.MODERN
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, LiveMenuStyle.CLASSIC)
+
 
     val settings: StateFlow<LiveTvSettings> = prefs.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, LiveTvSettings())
@@ -249,6 +266,20 @@ class LiveTvViewModel @Inject constructor(
         if (session.currentGroupId.value == groupId) selectGroup(uiState.value.defaultGroupId)
     }
     fun refresh() = repository.refreshAll(force = true)
+
+    // ------------------------------------------------------------ per-channel EPG
+
+    val epgSources: StateFlow<List<com.nuvio.tv.livetv.model.EpgSourceChannels>> = repository.epgSources
+
+    fun setChannelEpg(channel: LiveChannel, sourceId: String, xmltvId: String) = viewModelScope.launch {
+        prefs.setEpgOverride(channel.key, com.nuvio.tv.livetv.model.EpgAssignment(sourceId, xmltvId))
+        repository.rematchEpg()
+    }
+
+    fun resetChannelEpg(channel: LiveChannel) = viewModelScope.launch {
+        prefs.setEpgOverride(channel.key, null)
+        repository.rematchEpg()
+    }
 
     /** The poster Nuvio's catalogs would show for this programme, or null if there's no good match. */
     suspend fun posterFor(
