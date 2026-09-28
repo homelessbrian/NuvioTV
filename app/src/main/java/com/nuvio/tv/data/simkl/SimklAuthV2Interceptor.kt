@@ -65,7 +65,10 @@ class SimklAuthV2Interceptor(
         if (!prefs.getBoolean(KEY_IS_V2, false)) {
             val v1 = chain.proceed(request)
             val body = v1.peekBody(64 * 1024).string()
-            if (!(v1.code == 400 && body.contains("oauth2/device"))) return v1
+            // Simkl's JSON escapes the slashes ("\/oauth2\/device"), so match on the error code.
+            val isV2App = v1.code in 400..403 &&
+                (body.contains("unauthorized_client") || body.contains("oauth2"))
+            if (!isV2App) return v1
             v1.close()
             prefs.edit().putBoolean(KEY_IS_V2, true).apply()
         }
