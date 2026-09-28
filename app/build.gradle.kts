@@ -336,6 +336,14 @@ android {
 // Live TV fork versioning. Each build's versionCode is Nuvio's code x 100 plus a fork build
 // number, so fork updates released between Nuvio versions install as normal upgrades.
 // The release workflow passes -PlivetvBuildNumber and -PlivetvVersionName.
+// Live TV fork: Google Drive sync (OAuth client of type "TVs and Limited Input devices").
+android.defaultConfig.buildConfigField(
+    "String", "GOOGLE_DRIVE_CLIENT_ID", "\"${localProperties.getProperty("GOOGLE_DRIVE_CLIENT_ID", "")}\""
+)
+android.defaultConfig.buildConfigField(
+    "String", "GOOGLE_DRIVE_CLIENT_SECRET", "\"${localProperties.getProperty("GOOGLE_DRIVE_CLIENT_SECRET", "")}\""
+)
+
 val livetvBuildNumber = (findProperty("livetvBuildNumber") as String?)?.toIntOrNull() ?: 0
 android.defaultConfig.versionCode = (android.defaultConfig.versionCode ?: 1) * 100 + livetvBuildNumber
 (findProperty("livetvVersionName") as String?)?.takeIf { it.isNotBlank() }?.let {

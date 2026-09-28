@@ -91,6 +91,14 @@ class LiveTvRepository @Inject constructor(
         scope.launch { refreshInternal(forcePlaylists = force, forceEpg = force) }
     }
 
+    /** After a restore from Google Drive: rebuild from the new sources, downloading what's missing. */
+    fun reloadAfterSync() {
+        scope.launch {
+            rebuild()
+            refreshInternal(forcePlaylists = false, forceEpg = false)
+        }
+    }
+
     fun refreshEpgOnly() {
         scope.launch { refreshInternal(forcePlaylists = false, forceEpg = true) }
     }

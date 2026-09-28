@@ -76,6 +76,7 @@ private sealed interface LiveDialog {
     data object SortChoice : LiveDialog
     data object HighlightChoice : LiveDialog
     data object CustomGroups : LiveDialog
+    data object ConfirmRestore : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -122,6 +123,8 @@ fun LiveTvSettingsContent(
     val user by viewModel.userState.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<LiveDialog?>(null) }
+    val drive by viewModel.driveSync.state.collectAsStateWithLifecycle()
+    var driveExpanded by remember { mutableStateOf(false) }
 
     fun update(t: (LiveTvSettings) -> LiveTvSettings) = viewModel.update(t)
 
@@ -140,6 +143,20 @@ fun LiveTvSettingsContent(
             contentPadding = PaddingValues(bottom = 18.dp),
             verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
         ) {
+            // ------------------------------------------------------------ Google Drive sync
+            item(key = "drive") {
+                DriveSyncCard(
+                    state = drive,
+                    expanded = driveExpanded,
+                    onToggleExpanded = { driveExpanded = !driveExpanded },
+                    onConnect = { viewModel.driveSync.beginSignIn() },
+                    onAutoSync = { viewModel.driveSync.setAutoSync(it) },
+                    onBackUp = { viewModel.driveSync.backUpNow() },
+                    onRestore = { dialog = LiveDialog.ConfirmRestore },
+                    onDisconnect = { viewModel.driveSync.disconnect() }
+                )
+            }
+
             // ------------------------------------------------------------ playlists
             item(key = "playlists") {
                 SettingsGroupCard(title = "Playlists") {
@@ -307,6 +324,10 @@ fun LiveTvSettingsContent(
         }
     }
 
+    drive.signIn?.let { prompt ->
+        DriveSignInDialog(prompt = prompt, onCancel = { viewModel.driveSync.cancelSignIn() })
+    }
+
     // ---------------------------------------------------------------- dialogs
     val close = { dialog = null }
     when (val d = dialog) {
@@ -395,6 +416,13 @@ fun LiveTvSettingsContent(
                 "Delete EPG source" to { dialog = LiveDialog.ConfirmDeleteEpg(d.source) }
             ),
             onDismiss = close
+        )
+        LiveDialog.ConfirmRestore -> ConfirmDeleteDialog(
+            title = "Restore from Google Drive?",
+            message = "This TV's Live TV setup (playlists, guides, favorites and settings) is replaced with the copy in your Google Drive.",
+            onDismiss = close,
+            onConfirm = { viewModel.driveSync.restoreNow(); close() },
+            confirmLabel = "Restore"
         )
         is LiveDialog.ConfirmDeletePlaylist -> ConfirmDeleteDialog(
             title = "Delete \"${d.source.name}\"?",
@@ -515,6 +543,100 @@ fun LiveTvSettingsContent(
     }
 }
 
+// ==================================================================== Google Drive sync
+
+/** Collapsed to one line until selected; then shows sign-in, backup and restore. */
+@Composable
+private fun DriveSyncCard(
+    state: com.nuvio.tv.livetv.sync.DriveSyncState,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onConnect: () -> Unit,
+    onAutoSync: (Boolean) -> Unit,
+    onBackUp: () -> Unit,
+    onRestore: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    val status = when {
+        !state.available -> "Not available in this build"
+        !state.connected -> "Off"
+        state.busy -> "Syncing…"
+        state.lastSyncMs > 0 -> "On · last synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(state.lastSyncMs))
+        else -> "On"
+    }
+    SettingsGroupCard {
+        SettingsActionRow(
+            title = "Google Drive sync",
+            subtitle = if (expanded) "Keep your Live TV setup the same on every TV" else status,
+            value = if (expanded) "Hide" else if (state.connected) "On" else "Off",
+            onClick = onToggleExpanded
+        )
+        if (expanded) {
+            when {
+                !state.available -> Text(
+                    text = "Google Drive sync needs to be set up by whoever builds this app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NuvioTheme.colors.TextSecondary
+                )
+                !state.connected -> {
+                    Text(
+                        text = "Your playlists, guides, favorites, hidden channels and Live TV settings are saved in your own Google Drive, in a private app folder only this app can see. Nothing is stored anywhere else.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                    SettingsActionRow("Connect Google Drive", "Sign in with a code on your phone", onClick = onConnect)
+                }
+                else -> {
+                    SettingsActionRow("Account", null, state.email ?: "Connected", onClick = {})
+                    SettingsToggleRow(
+                        "Sync automatically",
+                        "Back up changes, and pick up changes made on your other TVs",
+                        state.autoSync,
+                        { onAutoSync(!state.autoSync) }
+                    )
+                    SettingsActionRow("Back up now", "Save this TV's setup to Google Drive", onClick = onBackUp)
+                    SettingsActionRow("Restore from Google Drive", "Replace this TV's setup with the saved copy", onClick = onRestore)
+                    SettingsActionRow("Disconnect", "Stop syncing on this TV (your backup stays in Drive)", onClick = onDisconnect)
+                }
+            }
+            state.message?.let {
+                Text(text = it, style = MaterialTheme.typography.bodySmall, color = NuvioTheme.colors.TextSecondary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DriveSignInDialog(prompt: com.nuvio.tv.livetv.sync.SignInPrompt, onCancel: () -> Unit) {
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { cancelFocus.requestFocus() }
+    }
+    NuvioDialog(
+        onDismiss = onCancel,
+        title = "Connect Google Drive",
+        subtitle = "On your phone or computer, go to the address below, enter the code, and allow access. This screen continues by itself.",
+        width = 560.dp
+    ) {
+        Text(
+            text = prompt.url.removePrefix("https://").removePrefix("http://"),
+            style = MaterialTheme.typography.titleLarge,
+            color = NuvioTheme.colors.TextPrimary
+        )
+        Text(
+            text = prompt.userCode,
+            style = MaterialTheme.typography.displaySmall,
+            color = NuvioTheme.colors.Secondary
+        )
+        SettingsDialogActionRow {
+            androidx.compose.foundation.layout.Box(Modifier.focusRequester(cancelFocus)) {
+                SettingsDialogActionButton(text = "Cancel", onClick = onCancel)
+            }
+        }
+    }
+}
+
 // ==================================================================== dialogs
 
 private data class FormField(val label: String, val hint: String, val initial: String = "")
@@ -600,7 +722,13 @@ private fun ActionListDialog(
 }
 
 @Composable
-private fun ConfirmDeleteDialog(title: String, message: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+private fun ConfirmDeleteDialog(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+    confirmLabel: String = "Delete"
+) {
     val cancelFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(80)
@@ -612,7 +740,7 @@ private fun ConfirmDeleteDialog(title: String, message: String, onDismiss: () ->
             androidx.compose.foundation.layout.Box(Modifier.focusRequester(cancelFocus)) {
                 SettingsDialogActionButton(text = "Cancel", onClick = onDismiss)
             }
-            SettingsDialogActionButton(text = "Delete", onClick = onConfirm, primary = true)
+            SettingsDialogActionButton(text = confirmLabel, onClick = onConfirm, primary = true)
         }
     }
 }

@@ -67,8 +67,15 @@ class LiveTvViewModel @Inject constructor(
     val playback: LiveTvPlaybackController,
     private val session: LiveTvSession,
     private val posterResolver: com.nuvio.tv.livetv.data.LiveTvPosterResolver,
-    layoutPrefs: com.nuvio.tv.data.local.LayoutPreferenceDataStore
+    layoutPrefs: com.nuvio.tv.data.local.LayoutPreferenceDataStore,
+    driveSync: com.nuvio.tv.livetv.sync.LiveTvDriveSync
 ) : ViewModel() {
+
+    init {
+        // Google Drive sync (if connected): pick up a newer setup from another TV.
+        driveSync.start()
+    }
+
 
     /** Nuvio's side-menu appearance (Layout settings), so Live TV panels can match it. */
     val menuStyle: StateFlow<LiveMenuStyle> = combine(

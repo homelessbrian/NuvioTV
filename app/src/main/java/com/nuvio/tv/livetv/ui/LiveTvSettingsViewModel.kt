@@ -19,7 +19,8 @@ import javax.inject.Inject
 @HiltViewModel
 class LiveTvSettingsViewModel @Inject constructor(
     private val repository: LiveTvRepository,
-    private val prefs: LiveTvPreferences
+    private val prefs: LiveTvPreferences,
+    val driveSync: com.nuvio.tv.livetv.sync.LiveTvDriveSync
 ) : ViewModel() {
 
     val playlists: StateFlow<List<PlaylistSource>> =
@@ -34,6 +35,7 @@ class LiveTvSettingsViewModel @Inject constructor(
 
     init {
         repository.ensureLoaded()
+        driveSync.start()
     }
 
     fun update(transform: (LiveTvSettings) -> LiveTvSettings) {

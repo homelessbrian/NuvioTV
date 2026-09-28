@@ -369,6 +369,90 @@ class LiveTvPreferences @Inject constructor(
         store.edit { it[Keys.lastGroup] = groupId }
     }
 
+    // ---------- Google Drive sync ----------
+
+    /** Fires whenever anything in Live TV's stored data changes. */
+    val changes: Flow<Unit> = store.data.map { }
+
+    /**
+     * Everything worth carrying to another TV, as JSON: sources, settings, favorites, hidden
+     * channels, groups, renames and EPG assignments. Left out: what this TV last watched, and
+     * download status (last updated, errors, counts), which differs per TV and changes constantly.
+     */
+    suspend fun exportForSync(): JSONObject {
+        val p = store.data.first()
+        val out = JSONObject()
+        p.asMap().forEach { (key, value) ->
+            val name = key.name
+            if (name in SYNC_EXCLUDED) return@forEach
+            val entry = when (value) {
+                is Boolean -> JSONObject().put("t", "b").put("v", value)
+                is Int -> JSONObject().put("t", "i").put("v", value)
+                is Long -> JSONObject().put("t", "l").put("v", value)
+                is Set<*> -> JSONObject().put("t", "s").put("v", JSONArray(value.map { it.toString() }))
+                is String -> {
+                    val v = when (name) {
+                        Keys.playlists.name -> encodePlaylists(decodePlaylists(value).map {
+                            it.copy(lastUpdatedMs = 0, lastError = null, channelCount = 0)
+                        })
+                        Keys.epgs.name -> encodeEpgs(decodeEpgs(value).map {
+                            it.copy(lastUpdatedMs = 0, lastError = null, programCount = 0)
+                        })
+                        else -> value
+                    }
+                    JSONObject().put("t", "str").put("v", v)
+                }
+                else -> null
+            } ?: return@forEach
+            out.put(name, entry)
+        }
+        return out
+    }
+
+    /** Replaces this TV's Live TV setup with [data] from [exportForSync], keeping per-TV state. */
+    suspend fun importFromSync(data: JSONObject) {
+        store.edit { p ->
+            val localPlaylists = decodePlaylists(p[Keys.playlists]).associateBy { it.id }
+            val localEpgs = decodeEpgs(p[Keys.epgs]).associateBy { it.id }
+            // Remove synced keys the other TV doesn't have, then write everything it does.
+            p.asMap().keys.filter { it.name !in SYNC_EXCLUDED && !data.has(it.name) }.forEach {
+                @Suppress("UNCHECKED_CAST")
+                p.remove(it as Preferences.Key<Any>)
+            }
+            data.keys().forEach { name ->
+                if (name in SYNC_EXCLUDED) return@forEach
+                val e = data.optJSONObject(name) ?: return@forEach
+                when (e.optString("t")) {
+                    "b" -> p[booleanPreferencesKey(name)] = e.optBoolean("v")
+                    "i" -> p[intPreferencesKey(name)] = e.optInt("v")
+                    "l" -> p[androidx.datastore.preferences.core.longPreferencesKey(name)] = e.optLong("v")
+                    "s" -> {
+                        val arr = e.optJSONArray("v") ?: JSONArray()
+                        p[stringSetPreferencesKey(name)] = (0 until arr.length()).map { arr.getString(it) }.toSet()
+                    }
+                    "str" -> {
+                        var v = e.optString("v")
+                        // Keep this TV's download status for sources it already had.
+                        if (name == Keys.playlists.name) {
+                            v = encodePlaylists(decodePlaylists(v).map { r ->
+                                localPlaylists[r.id]?.let { l ->
+                                    r.copy(lastUpdatedMs = l.lastUpdatedMs, lastError = l.lastError, channelCount = l.channelCount)
+                                } ?: r
+                            })
+                        } else if (name == Keys.epgs.name) {
+                            v = encodeEpgs(decodeEpgs(v).map { r ->
+                                localEpgs[r.id]?.let { l ->
+                                    r.copy(lastUpdatedMs = l.lastUpdatedMs, lastError = l.lastError, programCount = l.programCount)
+                                } ?: r
+                            })
+                        }
+                        p[stringPreferencesKey(name)] = v
+                    }
+                }
+            }
+        }
+    }
+
     // ---------- JSON helpers ----------
 
     private fun decodePlaylists(raw: String?): List<PlaylistSource> {
@@ -456,6 +540,8 @@ class LiveTvPreferences @Inject constructor(
 
     private companion object {
         const val EPG_SEP = "\u0001"
+        /** Per-TV keys that Google Drive sync never copies. */
+        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent")
     }
 
     private fun decodeStringMap(raw: String?): Map<String, String> {
