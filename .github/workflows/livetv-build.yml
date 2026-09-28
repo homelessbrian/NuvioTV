@@ -35,6 +35,8 @@ jobs:
           SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
           SIMKL_APP_NAME: ${{ secrets.SIMKL_APP_NAME }}
           MDBLIST_CLIENT_ID: ${{ secrets.MDBLIST_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
         run: |
           : > keys.properties
           add() { if [ -n "$2" ]; then echo "$1=$2" >> keys.properties; fi; }
@@ -60,6 +62,8 @@ jobs:
           add SIMKL_CLIENT_ID "$SIMKL_CLIENT_ID"
           add SIMKL_APP_NAME "$SIMKL_APP_NAME"
           add MDBLIST_CLIENT_ID "$MDBLIST_CLIENT_ID"
+          add GOOGLE_DRIVE_CLIENT_ID "$GOOGLE_DRIVE_CLIENT_ID"
+          add GOOGLE_DRIVE_CLIENT_SECRET "$GOOGLE_DRIVE_CLIENT_SECRET"
           # The build reads some values from each file, so write both.
           cp keys.properties local.properties
           cp keys.properties local.dev.properties
