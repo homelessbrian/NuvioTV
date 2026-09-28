@@ -276,6 +276,9 @@ class LiveTvViewModel @Inject constructor(
         repository.rematchEpg()
     }
 
+    /** Re-downloads every guide and rebuilds the assignable channel lists. */
+    fun fullEpgScan() = repository.refreshEpgOnly()
+
     fun resetChannelEpg(channel: LiveChannel) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, null)
         repository.rematchEpg()

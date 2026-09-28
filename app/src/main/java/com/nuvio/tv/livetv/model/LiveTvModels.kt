@@ -156,7 +156,9 @@ data class EpgSourceChannels(
     val name: String,
     /** Short label shown under each channel in the picker, e.g. "github.com". */
     val label: String,
-    val channels: List<EpgChannelEntry>
+    val channels: List<EpgChannelEntry>,
+    /** Guide channel ids already feeding a playlist channel (matched or assigned). */
+    val usedIds: Set<String> = emptySet()
 )
 
 data class EpgChannelEntry(

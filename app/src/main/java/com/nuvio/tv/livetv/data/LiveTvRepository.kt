@@ -385,7 +385,7 @@ class LiveTvRepository @Inject constructor(
             }
             val label = runCatching { java.net.URI(target.url).host?.removePrefix("www.") }.getOrNull()
                 ?.takeIf { it.isNotBlank() } ?: target.name
-            sourceLists += EpgSourceChannels(target.fileId, target.name, label, entries.sortedBy { it.displayName.lowercase() })
+            val sortedEntries = entries.sortedBy { it.displayName.lowercase() }
 
             pinnedHere.forEach { (key, a) -> result[key] = parsed.programs[a.xmltvId].orEmpty() }
 
@@ -397,11 +397,15 @@ class LiveTvRepository @Inject constructor(
                 }
             }
             var count = 0
+            val used = HashSet<String>(pinnedHere.values.map { it.xmltvId })
             mapping.forEach { (xmlId, chans) ->
                 val list = parsed.programs[xmlId] ?: return@forEach
                 count += list.size
-                chans.forEach { c -> if (c.key !in result) result[c.key] = list }
+                var fed = false
+                chans.forEach { c -> if (c.key !in result) { result[c.key] = list; fed = true } }
+                if (fed) used += xmlId
             }
+            sourceLists += EpgSourceChannels(target.fileId, target.name, label, sortedEntries, used)
             if (target.sourceId != null) {
                 prefs.updateEpgSources { l -> l.map { if (it.id == target.sourceId) it.copy(programCount = count) else it } }
             }

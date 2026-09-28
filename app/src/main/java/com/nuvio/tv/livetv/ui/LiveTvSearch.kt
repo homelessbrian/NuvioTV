@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
@@ -173,10 +174,11 @@ private fun LiveSearchCard(
     val poster by produceState<String?>(initialValue = null, p?.title) {
         value = posterFor(hit)
     }
+    val upcoming = p != null && p.startMs > now
     val when_ = when {
         p == null -> null
-        live -> "Now · ${formatRange(p.startMs, p.stopMs, use24h)}"
-        else -> formatDayClock(p.startMs, now, use24h)
+        live -> "On now · ${formatRange(p.startMs, p.stopMs, use24h)}"
+        else -> "Starts ${formatDayClock(p.startMs, now, use24h)} · ${startsInLabel(p.startMs - now)}"
     }
     Row(
         modifier = modifier
@@ -213,6 +215,21 @@ private fun LiveSearchCard(
             } else {
                 ChannelLogo(hit.channel.logo, 40.dp)
             }
+            // LIVE / UPCOMING badge so it's obvious at a glance whether you can watch it now.
+            if (p != null && (live || upcoming)) {
+                LiveText(
+                    if (live) "LIVE" else "UPCOMING",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (live) NuvioTheme.colors.Error else Color.Black.copy(alpha = 0.75f))
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                    color = Color.White,
+                    size = 10.sp,
+                    weight = FontWeight.Bold
+                )
+            }
         }
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
             LiveText(
@@ -225,7 +242,15 @@ private fun LiveSearchCard(
             )
             val meta = listOfNotNull(when_, p?.episode).joinToString("  ·  ")
             if (meta.isNotBlank()) {
-                LiveText(meta, color = focusedSecondaryTextColor(focused), size = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                LiveText(
+                    meta,
+                    // Upcoming start times stand out in the accent colour.
+                    color = if (upcoming) NuvioTheme.colors.Secondary else focusedSecondaryTextColor(focused),
+                    size = 12.sp,
+                    weight = if (upcoming) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.padding(top = 2.dp),
+                    marquee = focused
+                )
             }
             if (live) {
                 Spacer(Modifier.height(6.dp))
@@ -250,6 +275,15 @@ private fun LiveSearchCard(
                 )
             }
         }
+    }
+}
+
+private fun startsInLabel(ms: Long): String {
+    val min = (ms / 60_000L).coerceAtLeast(1)
+    return when {
+        min < 60 -> "in $min min"
+        min < 24 * 60 -> "in ${min / 60}h ${min % 60}m"
+        else -> "in ${min / (24 * 60)} days"
     }
 }
 

@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.FilterAlt
@@ -154,7 +155,9 @@ fun LiveTvGuideScreen(
     var numberBuffer by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    val channels = ui.channels
+    // "Unassigned channels" (from the Assign EPG panel): only channels with no guide data.
+    var epgUnassignedOnly by remember { mutableStateOf(false) }
+    val channels = if (epgUnassignedOnly) ui.channels.filter { programs[it.key].isNullOrEmpty() } else ui.channels
     val selectedGroupTitle = ui.groups.firstOrNull { it.id == ui.selectedGroupId }?.title ?: "All channels"
 
     // Reset the cursor when the group changes; land on the playing channel if it is in the list.
@@ -441,7 +444,16 @@ fun LiveTvGuideScreen(
                             .padding(end = 24.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Spacer(Modifier.width(channelColWidth))
+                        Box(Modifier.width(channelColWidth).padding(start = 8.dp)) {
+                            if (epgUnassignedOnly) {
+                                LiveText(
+                                    "Unassigned channels",
+                                    color = NuvioTheme.colors.Secondary,
+                                    size = 13.sp,
+                                    weight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             val w = maxWidth
                             for (i in 0 until (WINDOW_MS / SLOT_MS).toInt()) {
@@ -602,11 +614,15 @@ fun LiveTvGuideScreen(
                 sources = epgSources,
                 current = user.epgOverrides[ch.key],
                 loading = status.loading,
+                statusMessage = status.message.takeIf { status.loading },
+                unassignedOnly = epgUnassignedOnly,
+                onToggleUnassigned = { epgUnassignedOnly = !epgUnassignedOnly },
+                onFullScan = { viewModel.fullEpgScan() },
                 style = menuStyle,
                 hazeState = panelHaze,
                 modifier = Modifier.align(Alignment.CenterEnd),
                 onPick = { src, entry -> viewModel.setChannelEpg(ch, src.sourceId, entry.id); closePanel() },
-                onAutomatic = { viewModel.resetChannelEpg(ch); closePanel() }
+                onUnassign = { viewModel.resetChannelEpg(ch); closePanel() }
             )
         }
 
@@ -1355,11 +1371,15 @@ private fun EpgSidePanel(
     sources: List<com.nuvio.tv.livetv.model.EpgSourceChannels>,
     current: com.nuvio.tv.livetv.model.EpgAssignment?,
     loading: Boolean,
+    statusMessage: String?,
+    unassignedOnly: Boolean,
+    onToggleUnassigned: () -> Unit,
+    onFullScan: () -> Unit,
     style: LiveMenuStyle,
     hazeState: dev.chrisbanes.haze.HazeState,
     modifier: Modifier,
     onPick: (com.nuvio.tv.livetv.model.EpgSourceChannels, com.nuvio.tv.livetv.model.EpgChannelEntry) -> Unit,
-    onAutomatic: () -> Unit
+    onUnassign: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
     var sourceFilter by remember { mutableStateOf<String?>(null) }
@@ -1367,11 +1387,20 @@ private fun EpgSidePanel(
     var filterOpen by remember { mutableStateOf(false) }
     val seed = remember(channel.key) { epgSearchSeed(channel.name) }
 
-    val rows = remember(sources, query, sourceFilter) {
+    val rows = remember(sources, query, sourceFilter, unassignedOnly, current) {
         val words = query.lowercase().split(Regex("""\s+""")).filter { it.isNotBlank() }
         sources.asSequence()
             .filter { sourceFilter == null || it.sourceId == sourceFilter }
-            .flatMap { src -> src.channels.asSequence().map { EpgRow(src, it) } }
+            .flatMap { src ->
+                src.channels.asSequence()
+                    .filter { e ->
+                        // Unassigned: guide channels not feeding any playlist channel yet
+                        // (this channel's own pick stays visible).
+                        !unassignedOnly || e.id !in src.usedIds ||
+                            (current != null && current.sourceId == src.sourceId && current.xmltvId == e.id)
+                    }
+                    .map { EpgRow(src, it) }
+            }
             .filter { r ->
                 words.isEmpty() || (r.entry.names + r.entry.id).joinToString(" ").lowercase().let { h -> words.all { it in h } }
             }
@@ -1466,8 +1495,9 @@ private fun EpgSidePanel(
         // Header
         LiveText("Assign EPG", modifier = Modifier.padding(start = 12.dp), size = 22.sp, weight = FontWeight.Bold)
         val filterName = sources.firstOrNull { it.sourceId == sourceFilter }?.name
-        val sub = listOfNotNull(
+        val sub = statusMessage ?: listOfNotNull(
             channel.name,
+            if (unassignedOnly) "Unassigned channels" else null,
             filterName,
             query.takeIf { it.isNotBlank() }?.let { "\"$it\"" }
         ).joinToString("  ·  ")
@@ -1477,9 +1507,10 @@ private fun EpgSidePanel(
         // Buttons, as pills like Nuvio's menu items
         val buttons = listOf<Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>>(
             Triple(Icons.Default.Search, "Search") { searchOpen = true },
-            Triple(Icons.Default.FilterAlt, "Filter") { filterOpen = true },
-            Triple(Icons.Default.ManageSearch, "Find") { query = ""; sourceFilter = null; jumpToken++ },
-            Triple(Icons.Default.LinkOff, "Automatic") { onAutomatic() }
+            // Toggles the guide's channel list and this list between everything and unassigned only.
+            Triple(Icons.Default.FilterAlt, if (unassignedOnly) "All channels" else "Unassigned") { onToggleUnassigned() },
+            Triple(Icons.Default.Refresh, "Full scan") { onFullScan() },
+            Triple(Icons.Default.LinkOff, "Unassign") { onUnassign() }
         )
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -1495,10 +1526,10 @@ private fun EpgSidePanel(
                         .then(if (i == 0) Modifier.focusRequester(buttonsFocus) else Modifier)
                         .onPreviewKeyEvent { e ->
                             // Keep focus inside the panel.
+                            // Keep focus inside the panel; Down moves into the list normally.
                             e.type == KeyEventType.KeyDown && (
                                 (e.key == Key.DirectionLeft && i == 0) ||
-                                    (e.key == Key.DirectionRight && i == buttons.lastIndex) ||
-                                    (e.key == Key.DirectionDown && rows.isNotEmpty() && runCatching { itemFocus.requestFocus() }.isSuccess)
+                                    (e.key == Key.DirectionRight && i == buttons.lastIndex)
                                 )
                         },
                     onClick = action
