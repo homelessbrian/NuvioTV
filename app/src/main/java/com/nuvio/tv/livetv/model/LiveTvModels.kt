@@ -23,14 +23,46 @@ data class PlaylistSource(
 
     fun resolvedUrl(): String {
         if (!isXtream) return url.trim()
-        val base = xtreamServer.trim().trimEnd('/')
-        return "$base/get.php?username=${xtreamUsername.trim()}&password=${xtreamPassword.trim()}&type=m3u_plus&output=ts"
+        return "${xtreamBase()}/get.php?username=${enc(xtreamUsername)}&password=${enc(xtreamPassword)}&type=m3u_plus&output=ts"
     }
 
     fun xtreamEpgUrl(): String? {
         if (!isXtream) return null
-        val base = xtreamServer.trim().trimEnd('/')
-        return "$base/xmltv.php?username=${xtreamUsername.trim()}&password=${xtreamPassword.trim()}"
+        return "${xtreamBase()}/xmltv.php?username=${enc(xtreamUsername)}&password=${enc(xtreamPassword)}"
+    }
+
+    fun xtreamApiUrl(): String =
+        "${xtreamBase()}/player_api.php?username=${enc(xtreamUsername)}&password=${enc(xtreamPassword)}"
+
+    /** Just scheme://host:port, even if a full link (get.php?..., player_api.php, /c/) was pasted. */
+    fun xtreamBase(): String = cleanXtreamServer(xtreamServer)
+
+    private fun enc(s: String) = java.net.URLEncoder.encode(s.trim(), "UTF-8")
+
+    companion object {
+        fun cleanXtreamServer(raw: String): String {
+            var s = raw.trim()
+            if (s.isEmpty()) return s
+            if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "http://$s"
+            return runCatching {
+                val u = java.net.URI(s)
+                val host = u.host ?: return@runCatching s.trimEnd('/')
+                val port = if (u.port > 0) ":${u.port}" else ""
+                "${u.scheme.lowercase()}://$host$port"
+            }.getOrDefault(s.trimEnd('/'))
+        }
+
+        /** Username / password from a pasted link like ".../get.php?username=a&password=b". */
+        fun credentialsFromLink(raw: String): Pair<String, String>? {
+            val query = raw.substringAfter('?', "")
+            if (query.isEmpty()) return null
+            val params = query.split('&').associate {
+                it.substringBefore('=').lowercase() to java.net.URLDecoder.decode(it.substringAfter('=', ""), "UTF-8")
+            }
+            val user = params["username"].orEmpty()
+            val pass = params["password"].orEmpty()
+            return if (user.isNotBlank() && pass.isNotBlank()) user to pass else null
+        }
     }
 }
 

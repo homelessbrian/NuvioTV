@@ -23,6 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
@@ -107,18 +108,30 @@ class LiveTvRepository @Inject constructor(
 
     suspend fun addXtream(name: String, server: String, username: String, password: String): String {
         val id = UUID.randomUUID().toString()
-        val normalizedServer = server.trim().let { if (it.startsWith("http")) it else "http://$it" }
+        // Accept a pasted full link: keep just the server, and take the login from it if needed.
+        val fromLink = PlaylistSource.credentialsFromLink(server)
+        val user = username.trim().ifBlank { fromLink?.first.orEmpty() }
+        val pass = password.trim().ifBlank { fromLink?.second.orEmpty() }
         prefs.updatePlaylists {
             it + PlaylistSource(
                 id = id, name = name.ifBlank { "Xtream" }, url = "",
-                xtreamServer = normalizedServer, xtreamUsername = username, xtreamPassword = password
+                xtreamServer = PlaylistSource.cleanXtreamServer(server),
+                xtreamUsername = user, xtreamPassword = pass
             )
         }
         scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(id)) }
         return id
     }
 
-    suspend fun updatePlaylist(source: PlaylistSource) {
+    suspend fun updatePlaylist(input: PlaylistSource) {
+        val source = if (input.isXtream) {
+            val fromLink = PlaylistSource.credentialsFromLink(input.xtreamServer)
+            input.copy(
+                xtreamServer = PlaylistSource.cleanXtreamServer(input.xtreamServer),
+                xtreamUsername = input.xtreamUsername.trim().ifBlank { fromLink?.first.orEmpty() },
+                xtreamPassword = input.xtreamPassword.trim().ifBlank { fromLink?.second.orEmpty() }
+            )
+        } else input
         prefs.updatePlaylists { list -> list.map { if (it.id == source.id) source else it } }
         scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(source.id)) }
     }
@@ -195,7 +208,9 @@ class LiveTvRepository @Inject constructor(
                 now - file.lastModified() > settings.playlistRefreshHours.coerceAtLeast(1) * HOUR
             if (forcePlaylists || stale || pl.id in forceIds) {
                 setStatus(loading = true, message = "Updating playlist \"${pl.name}\"…")
-                val result = runCatching { download(pl.resolvedUrl(), file, pl.userAgent) }
+                val result = runCatching {
+                    if (pl.isXtream) downloadXtream(pl, file) else download(pl.resolvedUrl(), file, pl.userAgent)
+                }
                 val err = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
                 prefs.updatePlaylists { list ->
                     list.map {
@@ -438,7 +453,7 @@ class LiveTvRepository @Inject constructor(
             .header("User-Agent", userAgent.ifBlank { DEFAULT_UA })
             .build()
         http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("HTTP ${response.code}")
+            if (!response.isSuccessful) error(httpError(response.code))
             val body = response.body ?: error("Empty response")
             val tmp = File(target.parentFile, target.name + ".tmp")
             body.byteStream().use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
@@ -451,6 +466,140 @@ class LiveTvRepository @Inject constructor(
                 tmp.delete()
             }
         }
+    }
+
+    // ---------------------------------------------------------------- Xtream Codes API
+
+    /**
+     * Loads an Xtream login through the Xtream API (player_api.php), the way TiviMate does:
+     * account check, categories, then live streams, written out as an M3U file so the rest of
+     * Live TV treats it like any playlist. Much lighter for the provider than the one-shot
+     * get.php playlist, which many panels time out on (HTTP 502) or switch off. Falls back to
+     * get.php if the API isn't available.
+     */
+    private suspend fun downloadXtream(pl: PlaylistSource, target: File) = withContext(Dispatchers.IO) {
+        require(pl.xtreamBase().isNotBlank()) { "No server set" }
+        require(pl.xtreamUsername.isNotBlank() && pl.xtreamPassword.isNotBlank()) { "Username and password are required" }
+        val api = pl.xtreamApiUrl()
+        val apiResult = runCatching {
+            // 1. Account
+            val info = JSONObject(getText(api, pl.userAgent))
+            info.optJSONObject("user_info")?.let { ui ->
+                if (ui.optString("auth") == "0") throw XtreamLoginError("Login failed: check the username and password")
+                val status = ui.optString("status")
+                if (status.isNotBlank() && !status.equals("Active", ignoreCase = true)) {
+                    throw XtreamLoginError("Account $status")
+                }
+                ui.optString("exp_date").toLongOrNull()?.let { exp ->
+                    if (exp > 0 && exp * 1000 < System.currentTimeMillis()) {
+                        val date = java.text.DateFormat.getDateInstance().format(java.util.Date(exp * 1000))
+                        throw XtreamLoginError("Account expired on $date")
+                    }
+                }
+            } ?: if (info.has("user_info")) Unit else error("Not an Xtream API response")
+
+            // 2. Categories
+            val categories = HashMap<String, String>()
+            runCatching {
+                val arr = org.json.JSONArray(getText("$api&action=get_live_categories", pl.userAgent))
+                for (i in 0 until arr.length()) {
+                    val c = arr.optJSONObject(i) ?: continue
+                    categories[c.optString("category_id")] = c.optString("category_name")
+                }
+            }
+
+            // 3. Live streams, streamed straight into an M3U file
+            writeXtreamPlaylist(pl, "$api&action=get_live_streams", categories, target)
+        }
+        val error = apiResult.exceptionOrNull() ?: return@withContext
+        if (error is XtreamLoginError) throw error
+        Log.w(TAG, "Xtream API failed for ${pl.name}, trying get.php: ${error.message}")
+        // Fallback: the classic one-shot playlist. If that fails too, report the API error.
+        runCatching { download(pl.resolvedUrl(), target, pl.userAgent) }
+            .onFailure { throw IllegalStateException(error.message ?: it.message) }
+    }
+
+    private class XtreamLoginError(message: String) : Exception(message)
+
+    private fun writeXtreamPlaylist(pl: PlaylistSource, url: String, categories: Map<String, String>, target: File) {
+        target.parentFile?.mkdirs()
+        val tmp = File(target.parentFile, target.name + ".tmp")
+        val base = pl.xtreamBase()
+        val user = java.net.URLEncoder.encode(pl.xtreamUsername.trim(), "UTF-8")
+        val pass = java.net.URLEncoder.encode(pl.xtreamPassword.trim(), "UTF-8")
+        var count = 0
+        val request = Request.Builder().url(url).header("User-Agent", pl.userAgent.ifBlank { DEFAULT_UA }).build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error(httpError(response.code))
+            val body = response.body ?: error("Empty response")
+            tmp.bufferedWriter().use { out ->
+                out.write("#EXTM3U\n")
+                android.util.JsonReader(body.charStream()).use { reader ->
+                    reader.beginArray()
+                    while (reader.hasNext()) {
+                        val f = HashMap<String, String>()
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            val name = reader.nextName()
+                            when (reader.peek()) {
+                                android.util.JsonToken.STRING -> f[name] = reader.nextString()
+                                android.util.JsonToken.NUMBER -> f[name] = reader.nextString()
+                                android.util.JsonToken.BOOLEAN -> f[name] = reader.nextBoolean().toString()
+                                else -> reader.skipValue()
+                            }
+                        }
+                        reader.endObject()
+                        val streamId = f["stream_id"]
+                        if (streamId.isNullOrBlank()) continue
+                        val title = (f["name"] ?: "Channel $streamId").replace("\n", " ").trim()
+                        val attrs = buildString {
+                            fun attr(k: String, v: String?) {
+                                if (!v.isNullOrBlank()) append(" $k=\"${v.replace("\"", "'")}\"")
+                            }
+                            attr("tvg-id", f["epg_channel_id"])
+                            attr("tvg-name", title)
+                            attr("tvg-logo", f["stream_icon"])
+                            attr("group-title", categories[f["category_id"]] ?: "Uncategorised")
+                            attr("tvg-chno", f["num"])
+                            if (f["tv_archive"] == "1") {
+                                attr("catchup", "xc")
+                                attr("catchup-days", f["tv_archive_duration"]?.takeIf { it != "0" } ?: "1")
+                            }
+                        }
+                        out.write("#EXTINF:-1$attrs,$title\n")
+                        out.write("$base/live/$user/$pass/$streamId.ts\n")
+                        count++
+                    }
+                    reader.endArray()
+                }
+            }
+        }
+        if (count == 0) {
+            tmp.delete()
+            error("The provider returned no live channels")
+        }
+        if (!tmp.renameTo(target)) {
+            tmp.copyTo(target, overwrite = true)
+            tmp.delete()
+        }
+    }
+
+    private fun getText(url: String, userAgent: String): String {
+        val request = Request.Builder().url(url).header("User-Agent", userAgent.ifBlank { DEFAULT_UA }).build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error(httpError(response.code))
+            return response.body?.string() ?: error("Empty response")
+        }
+    }
+
+    /** Plain-English reasons for the HTTP errors people actually hit. */
+    private fun httpError(code: Int): String = when (code) {
+        401, 403 -> "HTTP $code: the provider refused the request (wrong login, or it blocks this app; try setting a user agent)"
+        404 -> "HTTP 404: nothing at that address (check the server, port and link)"
+        429 -> "HTTP 429: too many requests, try again in a few minutes"
+        502, 503, 504, 520, 521, 522, 523, 524 -> "HTTP $code: the provider's server didn't respond, try again later"
+        884 -> "HTTP 884: the provider blocked this app (try setting a user agent)"
+        else -> "HTTP $code"
     }
 
     private fun openMaybeGzip(file: File): InputStream {
