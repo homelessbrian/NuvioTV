@@ -126,6 +126,26 @@ class LiveTvPlaybackController @Inject constructor(
         play(ch, url, _state.value.catchupTitle)
     }
 
+    private var pausedForBackground = false
+
+    /** The app left the screen (Home button, another app): stop the sound. */
+    fun onAppBackground() {
+        val p = _player ?: return
+        if (p.playWhenReady) {
+            pausedForBackground = true
+            p.pause()
+        }
+    }
+
+    /** Back in the app: carry on, jumping to the live edge for live channels. */
+    fun onAppForeground() {
+        if (!pausedForBackground) return
+        pausedForBackground = false
+        val p = _player ?: return
+        if (_state.value.catchupTitle == null && p.isCurrentMediaItemLive) p.seekToDefaultPosition()
+        p.play()
+    }
+
     fun togglePause() {
         val p = _player ?: return
         if (p.isPlaying) p.pause() else p.play()

@@ -1127,6 +1127,13 @@ private fun PlaybackNavHost(
             SearchScreen(
                 viewModel = searchViewModel,
                 onOpenLiveTv = {
+                    // Put the guide underneath, so Back from full screen lands on the guide
+                    // with this channel highlighted (not back in search).
+                    navController.navigate(Screen.LiveTv.route) {
+                        popUpTo(navController.graph.startDestinationId) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
                     navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }
                 },
                 onNavigateToDetail = { itemId, itemType, addonBaseUrl ->

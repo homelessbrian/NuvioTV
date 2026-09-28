@@ -254,6 +254,26 @@ internal fun LivePlayerSurface(
     }
 }
 
+/** Pauses Live TV when the app goes to the background (Home button) and resumes on return. */
+@Composable
+internal fun PauseLiveTvInBackground(playback: com.nuvio.tv.livetv.player.LiveTvPlaybackController) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(context, playback) {
+        var c: android.content.Context? = context
+        while (c is android.content.ContextWrapper && c !is androidx.lifecycle.LifecycleOwner) c = c.baseContext
+        val lifecycle = (c as? androidx.lifecycle.LifecycleOwner)?.lifecycle
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> playback.onAppBackground()
+                androidx.lifecycle.Lifecycle.Event.ON_START -> playback.onAppForeground()
+                else -> Unit
+            }
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
+    }
+}
+
 internal fun formatClock(ms: Long, use24h: Boolean): String =
     SimpleDateFormat(if (use24h) "HH:mm" else "h:mm a", Locale.getDefault()).format(Date(ms))
 

@@ -85,6 +85,8 @@ fun LiveTvPlayerScreen(
     val scope = rememberCoroutineScope()
     val view = LocalView.current
 
+    PauseLiveTvInBackground(viewModel.playback)
+
     DisposableEffect(Unit) {
         viewModel.playback.attach()
         view.keepScreenOn = true

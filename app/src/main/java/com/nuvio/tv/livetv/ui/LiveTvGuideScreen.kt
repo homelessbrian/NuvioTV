@@ -116,6 +116,8 @@ fun LiveTvGuideScreen(
     val now by viewModel.now.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
+    PauseLiveTvInBackground(viewModel.playback)
+
     // Keep the shared player alive while the guide is on screen.
     DisposableEffect(Unit) {
         viewModel.playback.attach()
@@ -219,7 +221,7 @@ fun LiveTvGuideScreen(
     //  2. Otherwise, if something is already playing, highlight it.
     //  3. Otherwise "Resume last channel in preview" starts the last channel in the preview.
     LaunchedEffect(Unit) {
-        viewModel.autoPlayCandidate()?.let { ch ->
+        if (viewModel.playbackState.value.channelKey == null) viewModel.autoPlayCandidate()?.let { ch ->
             viewModel.preview(ch)
             onOpenFullscreen()
             return@LaunchedEffect
@@ -439,13 +441,7 @@ fun LiveTvGuideScreen(
                             .padding(end = 24.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        LiveText(
-                            text = selectedGroupTitle,
-                            modifier = Modifier.width(channelColWidth).padding(start = 8.dp),
-                            color = NuvioTheme.colors.Secondary,
-                            weight = FontWeight.SemiBold,
-                            size = 15.sp
-                        )
+                        Spacer(Modifier.width(channelColWidth))
                         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             val w = maxWidth
                             for (i in 0 until (WINDOW_MS / SLOT_MS).toInt()) {
