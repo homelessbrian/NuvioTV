@@ -122,14 +122,21 @@ class LiveTvDriveSync @Inject constructor(
         signInJob?.cancel()
         signInJob = scope.launch {
             _state.value = _state.value.copy(busy = true, message = null, signIn = null)
-            val codes = runCatching {
-                postForm(
-                    "https://oauth2.googleapis.com/device/code",
-                    mapOf("client_id" to clientId, "scope" to SCOPES)
-                )
-            }.getOrElse {
-                _state.value = _state.value.copy(busy = false, message = "Couldn't reach Google. Try again.")
-                return@launch
+            // Ask for the private app folder (plus the email, to show which account is connected).
+            // If Google won't allow that set for this project, fall back step by step, ending with
+            // a normal Drive file the app creates ("Nuvio Live TV backup").
+            var codes = JSONObject()
+            var mode = MODE_APPDATA
+            for ((scopes, m) in SCOPE_ATTEMPTS) {
+                codes = runCatching {
+                    postForm("https://oauth2.googleapis.com/device/code", mapOf("client_id" to clientId, "scope" to scopes))
+                }.getOrElse {
+                    _state.value = _state.value.copy(busy = false, message = "Couldn't reach Google. Try again.")
+                    return@launch
+                }
+                mode = m
+                if (codes.optString("error") != "invalid_scope") break
+                Log.w(TAG, "Scopes refused ($scopes): ${codes.optString("error_description")}")
             }
             val deviceCode = codes.optString("device_code")
             val userCode = codes.optString("user_code")
@@ -157,6 +164,7 @@ class LiveTvDriveSync @Inject constructor(
                 }.getOrNull() ?: continue
                 when (token.optString("error")) {
                     "" -> {
+                        store.edit().putString(KEY_MODE, mode).apply()
                         onSignedIn(token)
                         return@launch
                     }
@@ -198,7 +206,7 @@ class LiveTvDriveSync @Inject constructor(
 
     fun disconnect() {
         val refresh = store.getString(KEY_REFRESH, null)
-        store.edit().remove(KEY_REFRESH).remove(KEY_EMAIL).remove(KEY_FILE_ID).remove(KEY_LAST_HASH).apply()
+        store.edit().remove(KEY_REFRESH).remove(KEY_EMAIL).remove(KEY_FILE_ID).remove(KEY_LAST_HASH).remove(KEY_MODE).apply()
         accessToken = null
         _state.value = _state.value.copy(connected = false, email = null, message = "Disconnected. Your backup stays in your Google Drive.")
         if (refresh != null) scope.launch {
@@ -234,7 +242,8 @@ class LiveTvDriveSync @Inject constructor(
                 .toString()
             val fileId = fileId(token)
             if (fileId == null) {
-                val meta = JSONObject().put("name", FILE_NAME).put("parents", org.json.JSONArray().put("appDataFolder"))
+                val meta = JSONObject().put("name", FILE_NAME)
+                if (isAppDataMode) meta.put("parents", org.json.JSONArray().put("appDataFolder"))
                 val multipart = MultipartBody.Builder().setType("multipart/related".toMediaType())
                     .addPart(meta.toString().toRequestBody(JSON))
                     .addPart(body.toRequestBody(JSON))
@@ -358,7 +367,11 @@ class LiveTvDriveSync @Inject constructor(
         store.getString(KEY_FILE_ID, null)?.let { return it }
         val text = execute(
             Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27$FILE_NAME%27&fields=files(id)")
+                .url(
+                    "https://www.googleapis.com/drive/v3/files?spaces=${if (isAppDataMode) "appDataFolder" else "drive"}" +
+                        "&q=" + java.net.URLEncoder.encode("name='$FILE_NAME' and trashed=false", "UTF-8").replace("+", "%20") +
+                        "&fields=files(id)"
+                )
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()
@@ -386,12 +399,20 @@ class LiveTvDriveSync @Inject constructor(
         }
     }
 
+    private val isAppDataMode: Boolean
+        get() = store.getString(KEY_MODE, MODE_APPDATA) == MODE_APPDATA
+
+    /** Plain-English reason, plus Google's own wording so problems can be tracked down. */
     private fun googleError(json: JSONObject): String {
-        val e = json.optString("error")
+        val e = json.optString("error").ifBlank { json.optString("error_code") }
+        val detail = json.optString("error_description").takeIf { it.isNotBlank() }?.let { " Google says: $it" }.orEmpty()
         return when (e) {
-            "invalid_client", "unauthorized_client" -> "This build's Google sign-in isn't set up correctly."
-            "invalid_scope" -> "Google refused the Drive permission for this app."
-            else -> "Google sign-in failed ($e)."
+            "invalid_client" -> "Google doesn't recognize this build's sign-in client. Check that the client ID and secret are right, and that its type is \"TVs and Limited Input devices\".$detail"
+            "unauthorized_client" -> "This sign-in client isn't allowed to use TV sign-in. Create one of type \"TVs and Limited Input devices\".$detail"
+            "invalid_scope" -> "Google refused the Drive permission for this app.$detail"
+            "org_internal" -> "This app is limited to one organization. Set the audience to External in Google Cloud.$detail"
+            "rate_limit_exceeded" -> "Too many attempts. Wait a minute and try again."
+            else -> "Google sign-in failed ($e).$detail"
         }
     }
 
@@ -406,8 +427,15 @@ class LiveTvDriveSync @Inject constructor(
 
     private companion object {
         const val TAG = "LiveTvDriveSync"
-        const val SCOPES = "openid email https://www.googleapis.com/auth/drive.appdata"
-        const val FILE_NAME = "nuvio-livetv-sync.json"
+        const val MODE_APPDATA = "appdata"
+        const val MODE_FILE = "file"
+        /** Tried in order until Google accepts one. */
+        val SCOPE_ATTEMPTS = listOf(
+            "openid email https://www.googleapis.com/auth/drive.appdata" to MODE_APPDATA,
+            "https://www.googleapis.com/auth/drive.appdata" to MODE_APPDATA,
+            "https://www.googleapis.com/auth/drive.file" to MODE_FILE
+        )
+        const val FILE_NAME = "Nuvio Live TV backup.json"
         val JSON = "application/json; charset=UTF-8".toMediaType()
         const val KEY_REFRESH = "refresh_token"
         const val KEY_EMAIL = "email"
@@ -417,5 +445,6 @@ class LiveTvDriveSync @Inject constructor(
         const val KEY_LAST_SYNC = "last_sync"
         const val KEY_APPLIED_AT = "applied_at"
         const val KEY_DEVICE_ID = "device_id"
+        const val KEY_MODE = "mode"
     }
 }
