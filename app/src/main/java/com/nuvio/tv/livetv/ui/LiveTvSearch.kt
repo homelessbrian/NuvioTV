@@ -326,3 +326,68 @@ object LiveTvSearchBridge {
         return t.replace(Regex("""\s+"""), " ").trim().trimEnd(':', '-', '–').trim()
     }
 }
+
+/**
+ * Long-press menu for a Live TV search result: favorites, groups, rename, renumber, hide.
+ */
+@Composable
+private fun ChannelQuickMenu(channel: LiveChannel, viewModel: LiveTvViewModel, onDismiss: () -> Unit) {
+    var step by remember { mutableStateOf("menu") }
+    val first = remember { FocusRequester() }
+    when (step) {
+        "rename" -> TextInputDialog(
+            title = "Rename channel",
+            initial = channel.name,
+            hint = "Leave empty to use the playlist name",
+            confirmLabel = "Save",
+            onDismiss = onDismiss,
+            onConfirm = { viewModel.renameChannel(channel, it); onDismiss() }
+        )
+        "number" -> TextInputDialog(
+            title = "Channel number",
+            initial = channel.number.toString(),
+            hint = "Leave empty to use the playlist number",
+            confirmLabel = "Save",
+            numeric = true,
+            onDismiss = onDismiss,
+            onConfirm = { viewModel.setChannelNumber(channel, it.trim().toIntOrNull()); onDismiss() }
+        )
+        "newgroup" -> TextInputDialog(
+            title = "New group",
+            initial = "",
+            hint = "Group name",
+            confirmLabel = "Save",
+            onDismiss = onDismiss,
+            onConfirm = { name -> viewModel.createGroupWith(name, channel); onDismiss() }
+        )
+        "group" -> GroupPickerDialog(
+            channel = channel,
+            groups = viewModel.uiState.value.customGroups,
+            onDismiss = onDismiss,
+            onPick = { g -> viewModel.addToGroup(g.id, channel); onDismiss() },
+            onNewGroup = { step = "newgroup" }
+        )
+        else -> {
+            val isFavorite = channel.key in viewModel.userState.value.favorites
+            LiveDialog(onDismiss = onDismiss, width = 440.dp) {
+                LiveText("${channel.number}  ${channel.name}", size = 20.sp, weight = FontWeight.Bold)
+                LiveText(channel.group, color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                Spacer(Modifier.height(14.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MenuItem(if (isFavorite) "Remove from favorites" else "Add to favorites", Modifier.focusRequester(first)) {
+                        viewModel.toggleFavorite(channel)
+                        onDismiss()
+                    }
+                    MenuItem("Add to group…") { step = "group" }
+                    MenuItem("Rename channel") { step = "rename" }
+                    MenuItem("Change channel number") { step = "number" }
+                    MenuItem("Hide channel") {
+                        viewModel.hideChannel(channel)
+                        onDismiss()
+                    }
+                }
+            }
+            LaunchedEffect(Unit) { kotlinx.coroutines.delay(60); runCatching { first.requestFocus() } }
+        }
+    }
+}
