@@ -75,6 +75,7 @@ class LiveTvPreferences @Inject constructor(
         val smallHeader = booleanPreferencesKey("small_header")
         val aspectMode = stringPreferencesKey("aspect_mode")
         val sequentialNumbers = booleanPreferencesKey("sequential_numbers")
+        val overlayMode = booleanPreferencesKey("overlay_mode")
         val channelOrder = stringPreferencesKey("channel_order")
         val channelCopies = stringPreferencesKey("channel_copies")
 
@@ -134,7 +135,8 @@ class LiveTvPreferences @Inject constructor(
             showGroupCounts = p[Keys.showGroupCounts] ?: d.showGroupCounts,
             smallHeader = p[Keys.smallHeader] ?: d.smallHeader,
             aspectMode = p[Keys.aspectMode] ?: d.aspectMode,
-            sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers
+            sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers,
+            overlayMode = p[Keys.overlayMode] ?: d.overlayMode
         )
     }.distinctUntilChanged()
 
@@ -214,6 +216,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.smallHeader] = s.smallHeader
         p[Keys.aspectMode] = s.aspectMode
         p[Keys.sequentialNumbers] = s.sequentialNumbers
+        p[Keys.overlayMode] = s.overlayMode
     }
 
     // ---------- channel management ----------

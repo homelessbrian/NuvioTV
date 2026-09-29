@@ -334,6 +334,12 @@ fun LiveTvSettingsContent(
             item(key = "playback") {
                 SettingsGroupCard(title = "Playback", subtitle = "What happens when you pick and watch a channel") {
                     SettingsToggleRow(
+                        "Overlay mode",
+                        "Left while watching shows channels and schedules over the video. Off: Left goes back to the guide's group list.",
+                        s.overlayMode,
+                        { update { it.copy(overlayMode = !it.overlayMode) } }
+                    )
+                    SettingsToggleRow(
                         "OK opens full screen",
                         "Pressing OK on a show goes straight to full screen instead of playing it in the preview first",
                         s.openFullscreenOnSelect,

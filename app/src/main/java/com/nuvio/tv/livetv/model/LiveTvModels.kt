@@ -169,7 +169,9 @@ data class LiveTvSettings(
     /** Full-screen picture size, using Nuvio's own modes (Fit, Crop, Stretch, Cinema Zoom, …). */
     val aspectMode: String = "ORIGINAL",
     /** Number channels 1, 2, 3… in the order they appear in each group (TiviMate's override). */
-    val sequentialNumbers: Boolean = false
+    val sequentialNumbers: Boolean = false,
+    /** Left while watching opens overlay mode; off: Left returns to the guide's group list. */
+    val overlayMode: Boolean = true
 )
 
 data class LiveUserState(
@@ -220,7 +222,9 @@ data class ChannelGroup(
     val id: String,
     val title: String,
     val count: Int,
-    val special: Boolean = false
+    val special: Boolean = false,
+    /** The playlist a playlist group comes from (null for special and your own groups). */
+    val sourceId: String? = null
 ) {
     companion object {
         const val ALL = "__all__"

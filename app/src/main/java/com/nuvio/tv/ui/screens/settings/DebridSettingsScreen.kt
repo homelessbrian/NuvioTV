@@ -1262,6 +1262,7 @@ private fun DebridDeviceAuthDialog(
         statusMessage = if (session == null) {
             startResult.exceptionOrNull()?.message?.takeIf { it.contains("PREMIUMIZE_CLIENT_ID") }
                 ?.let { missingConfigurationMessage }
+                ?: startResult.exceptionOrNull()?.message?.takeIf { it.startsWith("Premiumize said:") } // Live TV fork
                 ?: failedMessage
         } else {
             waitingMessage

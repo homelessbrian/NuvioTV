@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -400,6 +401,10 @@ private fun ChannelsPanel(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             LiveText(ch.name, color = colors.text, size = 15.sp, modifier = Modifier.weight(1f, fill = false), marquee = isFocused)
+                            if (ch.catchup != null) {
+                                Spacer(Modifier.width(4.dp))
+                                Icon(androidx.compose.material.icons.Icons.Default.History, contentDescription = "Catch-up", tint = NuvioTheme.colors.TextSecondary, modifier = Modifier.size(13.dp))
+                            }
                             if (ch.key in favorites) LiveText("  ★", color = NuvioTheme.colors.Rating, size = 12.sp)
                         }
                         LiveText(

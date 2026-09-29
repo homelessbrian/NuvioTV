@@ -73,6 +73,8 @@ private fun aspectModeOf(name: String): com.nuvio.tv.ui.screens.player.AspectMod
 fun LiveTvPlayerScreen(
     onBack: () -> Unit,
     onFindInNuvio: () -> Unit = {},
+    /** Overlay mode off: Left goes back to the guide with the group list open. */
+    onBackToGroups: () -> Unit = onBack,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -109,6 +111,38 @@ fun LiveTvPlayerScreen(
     val current: LiveChannel? = viewModel.channelByKey(playback.channelKey)
 
     fun showBanner() { bannerVisible = true; bannerToken++ }
+
+    // Catch-up seeking: Left/Right move a target time; the seek happens once you stop pressing.
+    val catchupSession by viewModel.catchup.collectAsStateWithLifecycle()
+    var scrubTargetMs by remember { mutableStateOf<Long?>(null) }
+    var scrubToken by remember { mutableIntStateOf(0) }
+    var positionMs by remember { mutableStateOf(0L) }
+    LaunchedEffect(playback.catchupTitle, catchupSession) {
+        while (playback.catchupTitle != null && catchupSession != null) {
+            viewModel.catchupPositionMs()?.let { positionMs = it }
+            delay(500)
+        }
+    }
+    LaunchedEffect(scrubToken) {
+        val target = scrubTargetMs ?: return@LaunchedEffect
+        delay(700)
+        viewModel.seekCatchupTo(target)
+        positionMs = target
+        scrubTargetMs = null
+    }
+    fun scrub(forward: Boolean, repeat: Int) {
+        val s = catchupSession ?: return
+        val step = when {
+            repeat > 20 -> 300_000L
+            repeat > 8 -> 120_000L
+            else -> 30_000L
+        }
+        val length = s.program.stopMs - s.program.startMs
+        val from = scrubTargetMs ?: positionMs
+        scrubTargetMs = (from + if (forward) step else -step).coerceIn(0L, length)
+        scrubToken++
+        showBanner()
+    }
 
     LaunchedEffect(bannerToken, settings.infoBannerSeconds) {
         delay(settings.infoBannerSeconds.coerceAtLeast(2) * 1000L)
@@ -170,6 +204,8 @@ fun LiveTvPlayerScreen(
                             longPressFired = false
                         } else when {
                             playback.error != null && playback.reconnectAttempt > 8 -> viewModel.playback.retry()
+                            // Catch-up: OK pauses and resumes, and shows the seek bar.
+                            archive -> { viewModel.playback.togglePause(); showBanner() }
                             // OK shows the info bar; OK again hides it.
                             bannerVisible -> bannerVisible = false
                             else -> showBanner()
@@ -183,12 +219,15 @@ fun LiveTvPlayerScreen(
                     e.key == Key.DirectionUp || e.key == Key.ChannelUp -> { zap(1); true }
                     e.key == Key.DirectionDown || e.key == Key.ChannelDown -> { zap(-1); true }
                     e.key == Key.DirectionLeft -> {
-                        if (archive) { viewModel.playback.seekBy(-30_000); showBanner() } else listVisible = true
+                        when {
+                            archive -> scrub(forward = false, repeat = e.nativeKeyEvent.repeatCount)
+                            settings.overlayMode -> listVisible = true
+                            else -> { viewModel.requestGroupsOnReturn(); onBackToGroups() }
+                        }
                         true
                     }
                     e.key == Key.DirectionRight -> {
-                        if (archive) viewModel.playback.seekBy(30_000)
-                        showBanner()
+                        if (archive) scrub(forward = true, repeat = e.nativeKeyEvent.repeatCount) else showBanner()
                         true
                     }
                     e.key == Key.Info -> { showBanner(); true }
@@ -271,6 +310,19 @@ fun LiveTvPlayerScreen(
             }
         }
 
+        // Catch-up seek bar.
+        val cs = catchupSession
+        if (cs != null && playback.catchupTitle != null && (bannerVisible || scrubTargetMs != null)) {
+            CatchupSeekBar(
+                program = cs.program,
+                positionMs = scrubTargetMs ?: positionMs,
+                scrubbing = scrubTargetMs != null,
+                paused = !playback.isPlaying && !playback.isBuffering,
+                use24h = settings.use24HourClock,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 64.dp, end = 64.dp)
+            )
+        }
+
         // Overlay mode (TiviMate style): channels, groups and each channel's schedule over the video.
         if (listVisible) {
             LiveTvOverlayMode(
@@ -317,6 +369,8 @@ fun LiveTvPlayerScreen(
                 isFavorite = ch.key in user.favorites,
                 aspectLabel = context.getString(aspectModeOf(settings.aspectMode).labelResId),
                 archive = playback.catchupTitle != null,
+                canRestart = playback.catchupTitle == null && viewModel.canWatchFromStart(ch),
+                onRestart = { dialog = PlayerDialog.NONE; viewModel.watchFromStart(ch); showBanner() },
                 onDismiss = { dialog = PlayerDialog.NONE; scope.launch { delay(60); runCatching { rootFocus.requestFocus() } } },
                 onAudio = { dialog = PlayerDialog.AUDIO },
                 onSubtitles = { dialog = PlayerDialog.SUBTITLES },
@@ -331,7 +385,7 @@ fun LiveTvPlayerScreen(
                     dialog = PlayerDialog.NONE
                     viewModel.previousChannel()?.let { viewModel.preview(it) }
                 },
-                onBackToLive = { dialog = PlayerDialog.NONE; viewModel.playback.play(ch) },
+                onBackToLive = { dialog = PlayerDialog.NONE; viewModel.backToLive(ch) },
                 onRetry = { dialog = PlayerDialog.NONE; viewModel.playback.retry() },
                 currentTitle = viewModel.currentProgram(ch.key)?.let { com.nuvio.tv.livetv.data.LiveTvPosterResolver.searchTitleFor(it, ch) },
                 onFind = { title ->
@@ -467,6 +521,8 @@ private fun PlayerOptionsDialog(
     isFavorite: Boolean,
     aspectLabel: String,
     archive: Boolean,
+    canRestart: Boolean,
+    onRestart: () -> Unit,
     onDismiss: () -> Unit,
     onAudio: () -> Unit,
     onSubtitles: () -> Unit,
@@ -485,7 +541,8 @@ private fun PlayerOptionsDialog(
         Spacer(Modifier.height(12.dp))
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (archive) MenuItem("Back to live", Modifier.focusRequester(first), onBackToLive)
-            MenuItem("Audio track", if (archive) Modifier else Modifier.focusRequester(first), onAudio)
+            if (canRestart) MenuItem("Watch from the beginning", Modifier.focusRequester(first), onRestart)
+            MenuItem("Audio track", if (archive || canRestart) Modifier else Modifier.focusRequester(first), onAudio)
             currentTitle?.let { t -> MenuItem("Find & stream \"$t\" in Nuvio", onClick = { onFind(t) }) }
             MenuItem("Subtitles", onClick = onSubtitles)
             MenuItem("Screen size: $aspectLabel", onClick = onAspect)
@@ -562,4 +619,65 @@ private fun ScreenSizeDialog(
         }
     }
     LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+/** Where you are in a catch-up program: time into it, a bar you can scrub, and the end time. */
+@Composable
+private fun CatchupSeekBar(
+    program: com.nuvio.tv.livetv.model.EpgProgram,
+    positionMs: Long,
+    scrubbing: Boolean,
+    paused: Boolean,
+    use24h: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val length = (program.stopMs - program.startMs).coerceAtLeast(1)
+    val fraction = (positionMs.toFloat() / length).coerceIn(0f, 1f)
+    val nowOnAir = System.currentTimeMillis()
+    val availableFraction = ((nowOnAir - program.startMs).toFloat() / length).coerceIn(0f, 1f)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.7f))
+            .padding(horizontal = 18.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LiveText(
+                (if (paused) "❚❚  " else "") + program.title,
+                size = 16.sp, weight = FontWeight.SemiBold, modifier = Modifier.weight(1f)
+            )
+            LiveText(
+                if (scrubbing) "Jump to ${formatClock(program.startMs + positionMs, use24h)}" else "Catch-up",
+                color = NuvioTheme.colors.Secondary, size = 13.sp, weight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(8.dp)) {
+            // Whole program, then what's been broadcast so far, then how far you are.
+            Box(Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)).background(Color.White.copy(alpha = 0.18f)))
+            Box(Modifier.fillMaxWidth(availableFraction).fillMaxHeight().clip(RoundedCornerShape(4.dp)).background(Color.White.copy(alpha = 0.32f)))
+            Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().clip(RoundedCornerShape(4.dp)).background(NuvioTheme.colors.Secondary))
+        }
+        Spacer(Modifier.height(6.dp))
+        Row {
+            LiveText(formatDuration(positionMs), color = NuvioTheme.colors.TextSecondary, size = 13.sp, modifier = Modifier.weight(1f))
+            LiveText(
+                "${formatClock(program.startMs, use24h)} – ${formatClock(program.stopMs, use24h)}  ·  -${formatDuration(length - positionMs)}",
+                color = NuvioTheme.colors.TextSecondary, size = 13.sp
+            )
+        }
+        LiveText(
+            "◀ ▶ skip  ·  OK pause  ·  hold to skip faster",
+            color = NuvioTheme.colors.TextTertiary, size = 11.sp, modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val sec = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
 }

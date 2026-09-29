@@ -270,8 +270,14 @@ class DebridSettingsViewModel @Inject constructor(
             DebridProviders.PREMIUMIZE_ID -> {
                 val clientId = premiumizeClientIdOrThrow()
                 val response = premiumizeApi.startDeviceAuthorization(clientId = clientId)
-                val data = response.body()?.takeIf { response.isSuccessful } ?: return null
-                val deviceCode = data.deviceCode?.takeIf { it.isNotBlank() } ?: return null
+                // Live TV fork: say what Premiumize answered instead of a generic failure.
+                val data = response.body()?.takeIf { response.isSuccessful }
+                    ?: throw IllegalStateException(
+                        "Premiumize said: " + (runCatching { response.errorBody()?.string() }.getOrNull()
+                            ?.takeIf { it.isNotBlank() }?.take(200) ?: "HTTP ${response.code()}")
+                    )
+                val deviceCode = data.deviceCode?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Premiumize said: no sign-in code was returned (check the client ID).")
                 val userCode = data.userCode?.takeIf { it.isNotBlank() } ?: return null
                 val verificationUrl = data.verificationUri?.takeIf { it.isNotBlank() } ?: return null
                 DebridDeviceAuthorization(

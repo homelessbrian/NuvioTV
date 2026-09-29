@@ -42,6 +42,9 @@ class LiveTvSession @Inject constructor() {
     var autoPlayedThisLaunch = false
     /** Set when full screen opens, so Back to the guide returns to the channel, not the groups. */
     var returningFromFullscreen = false
+    /** Overlay mode off: Left in full screen returns to the guide with the groups open. */
+    var openGroupsOnReturn = false
+    val collapsedPlaylists = MutableStateFlow<Set<String>>(emptySet())
 }
 
 data class LiveTvUiState(
@@ -215,9 +218,11 @@ class LiveTvViewModel @Inject constructor(
             val cur = playlistGroups[c.groupId]
             playlistGroups[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
         }
+        val groupSource = HashMap<String, String>()
+        visible.forEach { c -> groupSource.putIfAbsent(c.groupId, c.sourceId) }
         playlistGroups.forEach { (id, v) ->
             val copied = user.channelCopies[id].orEmpty().count { k -> byKey[k]?.let { it.groupId != id } == true }
-            regular += ChannelGroup(id, v.first, v.second + copied)
+            regular += ChannelGroup(id, v.first, v.second + copied, sourceId = groupSource[id])
         }
         val orderIndex = user.groupOrder.withIndex().associate { (i, id) -> id to i }
         val orderedRegular = regular.withIndex()
@@ -275,6 +280,7 @@ class LiveTvViewModel @Inject constructor(
     }
 
     fun preview(channel: LiveChannel) {
+        _catchup.value = null
         playback.play(channel)
         // Remember the group you watched in, so Live TV reopens there.
         val group = session.currentGroupId.value?.takeIf { it != ChannelGroup.SEARCH }
@@ -304,6 +310,13 @@ class LiveTvViewModel @Inject constructor(
         viewModelScope.launch { prefs.updateSettings(transform) }
     }
 
+    fun requestGroupsOnReturn() {
+        session.openGroupsOnReturn = true
+    }
+
+    fun consumeGroupsOnReturn(): Boolean =
+        session.openGroupsOnReturn.also { session.openGroupsOnReturn = false }
+
     fun markFullscreenOpened() {
         session.returningFromFullscreen = true
     }
@@ -316,15 +329,66 @@ class LiveTvViewModel @Inject constructor(
     suspend fun awaitGroups(): LiveTvUiState? =
         withTimeoutOrNull(10_000) { uiState.first { it.groups.size > 1 } }
 
-    fun playCatchup(channel: LiveChannel, program: EpgProgram): Boolean {
+    /** The catch-up program playing, and where in it the current stream starts. */
+    data class CatchupSession(val channel: LiveChannel, val program: EpgProgram, val baseOffsetMs: Long)
+
+    private val _catchup = MutableStateFlow<CatchupSession?>(null)
+    val catchup: StateFlow<CatchupSession?> = _catchup
+
+    /** Plays [program] from the archive, starting [offsetMs] into it. */
+    fun playCatchup(channel: LiveChannel, program: EpgProgram, offsetMs: Long = 0L): Boolean {
         val catchup = channel.catchup ?: return false
         val now = System.currentTimeMillis()
         if (!CatchupUrlBuilder.isAvailable(catchup, program.startMs, now)) return false
         val shift = settings.value.epgOffsetMinutes * 60_000L
-        val url = CatchupUrlBuilder.build(channel.url, catchup, program.startMs - shift, program.stopMs - shift, now)
+        val start = program.startMs + offsetMs.coerceAtLeast(0)
+        val url = CatchupUrlBuilder.build(channel.url, catchup, start - shift, program.stopMs - shift, now)
             ?: return false
         playback.play(channel, overrideUrl = url, catchupTitle = program.title)
+        _catchup.value = CatchupSession(channel, program, offsetMs.coerceAtLeast(0))
         return true
+    }
+
+    /** True if the show on now can be restarted from its beginning (the channel has catch-up). */
+    fun canWatchFromStart(channel: LiveChannel): Boolean {
+        val p = currentProgram(channel.key) ?: return false
+        return CatchupUrlBuilder.isAvailable(channel.catchup, p.startMs, System.currentTimeMillis())
+    }
+
+    /** Restarts the show that's on now, from its beginning. */
+    fun watchFromStart(channel: LiveChannel): Boolean =
+        currentProgram(channel.key)?.let { playCatchup(channel, it, 0L) } ?: false
+
+    /** Where playback is, as time into the catch-up program. */
+    fun catchupPositionMs(): Long? {
+        val s = _catchup.value ?: return null
+        val pos = playback.player?.currentPosition ?: 0L
+        return s.baseOffsetMs + pos.coerceAtLeast(0)
+    }
+
+    /**
+     * Seeks the catch-up program to [offsetMs]. Seeks inside the stream when the provider allows
+     * it; otherwise asks the provider for the archive again, starting at that point.
+     */
+    fun seekCatchupTo(offsetMs: Long) {
+        val s = _catchup.value ?: return
+        val now = System.currentTimeMillis()
+        val latest = (minOf(s.program.stopMs, now - 15_000) - s.program.startMs).coerceAtLeast(0)
+        val target = offsetMs.coerceIn(0, latest)
+        val p = playback.player
+        val inStream = target - s.baseOffsetMs
+        if (p != null && p.isCurrentMediaItemSeekable && p.duration != androidx.media3.common.C.TIME_UNSET &&
+            inStream >= 0 && inStream <= p.duration
+        ) {
+            p.seekTo(inStream)
+        } else {
+            playCatchup(s.channel, s.program, target)
+        }
+    }
+
+    fun backToLive(channel: LiveChannel) {
+        _catchup.value = null
+        playback.play(channel)
     }
 
     fun toggleFavorite(channel: LiveChannel) = viewModelScope.launch { prefs.toggleFavorite(channel.key) }
@@ -382,6 +446,25 @@ class LiveTvViewModel @Inject constructor(
     }
 
     fun renameGroup(groupId: String, name: String?) = viewModelScope.launch { prefs.setGroupName(groupId, name) }
+
+    /** Playlist id -> name, for the playlist headings in the group list. */
+    val playlistNames: StateFlow<Map<String, String>> = prefs.playlists
+        .map { list -> list.associate { it.id to it.name } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /** Playlists folded away in the group list (kept while the app is open). */
+    val collapsedPlaylists = session.collapsedPlaylists
+
+    fun togglePlaylistCollapsed(id: String) {
+        val cur = session.collapsedPlaylists.value
+        session.collapsedPlaylists.value = if (id in cur) cur - id else cur + id
+    }
+
+    /** Saves the whole group order at once (Reorder groups). */
+    fun saveGroupOrder(ids: List<String>) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch { prefs.moveGroup(ids.first(), 0, ids) }
+    }
 
     fun moveGroup(groupId: String, delta: Int) {
         viewModelScope.launch { prefs.moveGroup(groupId, delta, uiState.value.orderableGroupIds) }

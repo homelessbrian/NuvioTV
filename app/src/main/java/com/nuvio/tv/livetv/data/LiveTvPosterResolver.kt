@@ -12,7 +12,9 @@ import com.nuvio.tv.domain.repository.CatalogRepository
 import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.ui.LiveTvSearchBridge
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -47,45 +49,69 @@ class LiveTvPosterResolver @Inject constructor(
         val description: String? = null
     )
 
+    /** Tracks whether a lookup actually reached any catalog (so failures aren't remembered). */
+    private class Attempt { @Volatile var reached = false }
+
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    private val inFlight = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<String?>>()
+    // A few lookups at once, so one slow title doesn't hold up every other poster.
+    private val permits = kotlinx.coroutines.sync.Semaphore(3)
+
     suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
         val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (clues.year ?: "") +
             "|" + (clues.description?.hashCode() ?: 0)
         cache[key]?.let { return it.poster }
-        return mutex.withLock {
-            cache[key]?.let { return@withLock it.poster }
-            // First the whole title. If nothing matches and the guide glued the show and episode
-            // together ("The Game - The Trey Wiggs Taps Back Episode"), try the show name alone.
-            var poster = runCatching { lookup(query, hint, clues) }.getOrNull()
-            if (poster == null) {
-                for (show in showNameCandidates(programTitle, hint)) {
-                    if (normalize(show) == normalize(query)) continue
-                    // The guide's year belongs to the episode, not the show, so leave it out here.
-                    poster = runCatching {
-                        lookup(show, hint?.copy(strong = false), clues.copy(year = null))
-                    }.getOrNull()
-                    if (poster != null) break
+        val job = inFlight.getOrPut(key) {
+            scope.async {
+                try {
+                    permits.withPermit { resolve(programTitle, query, hint, clues, key) }
+                } finally {
+                    inFlight.remove(key)
                 }
             }
-            cache[key] = Result(poster)
-            poster
         }
+        return runCatching { job.await() }.getOrNull()
     }
 
-    private suspend fun lookup(query: String, hint: TypeHint?, clues: Clues): String? {
-        val addons = withTimeoutOrNull(5_000) { addonRepository.getInstalledAddons().first() }
-            ?.enabledAddons() ?: return null
+    private suspend fun resolve(programTitle: String, query: String, hint: TypeHint?, clues: Clues, key: String): String? {
+        cache[key]?.let { return it.poster }
+        val attempt = Attempt()
+        // First the whole title. If nothing matches and the guide glued the show and episode
+        // together ("The Game - The Trey Wiggs Taps Back Episode"), try the show name alone.
+        var poster = runCatching { lookup(query, hint, clues, attempt) }.getOrNull()
+        if (poster == null) {
+            for (show in showNameCandidates(programTitle, hint)) {
+                if (normalize(show) == normalize(query)) continue
+                // The guide's year belongs to the episode, not the show, so leave it out here.
+                poster = runCatching {
+                    lookup(show, hint?.copy(strong = false), clues.copy(year = null), attempt)
+                }.getOrNull()
+                if (poster != null) break
+            }
+        }
+        // Only remember "no poster" when the catalogs actually answered. If addons hadn't
+        // loaded yet or the network failed, try again next time instead of showing a logo forever.
+        if (poster != null || attempt.reached) cache[key] = Result(poster)
+        return poster
+    }
+
+    private suspend fun lookup(query: String, hint: TypeHint?, clues: Clues, attempt: Attempt): String? {
+        // Wait for the installed addons to load (the first value can be an empty placeholder).
+        val addons = withTimeoutOrNull(8_000) {
+            addonRepository.getInstalledAddons().first { it.enabledAddons().isNotEmpty() }
+        }?.enabledAddons() ?: return null
         val all = searchTargets(addons)
-        if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS), clues)
+        if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS), clues, attempt)
         val preferredType = if (hint.kind == Kind.MOVIE) "movie" else "series"
         // Search the right kind of catalog first. With a strong hint (episode number, or the guide
         // says "Movie"), never take the other kind: that's how a sitcom ends up with a movie poster.
         val preferred = all.filter { it.second.apiType == preferredType }.take(MAX_CATALOGS)
-        lookupIn(query, preferred, clues)?.let { return it }
+        lookupIn(query, preferred, clues, attempt)?.let { return it }
         if (hint.strong) return null
         val others = all.filter { it.second.apiType != preferredType }.take(MAX_CATALOGS)
-        return lookupIn(query, others, clues)
+        return lookupIn(query, others, clues, attempt)
     }
 
     /**
@@ -97,7 +123,8 @@ class LiveTvPosterResolver @Inject constructor(
     private suspend fun lookupIn(
         query: String,
         targets: List<Pair<Addon, CatalogDescriptor>>,
-        clues: Clues
+        clues: Clues,
+        attempt: Attempt
     ): String? {
         val wanted = normalize(query)
         val exact = LinkedHashMap<String, MetaPreview>()
@@ -116,6 +143,7 @@ class LiveTvPosterResolver @Inject constructor(
                     posterScreen = CustomPosterScreen.HOME
                 ).first { it !is NetworkResult.Loading }
             }
+            if (result is NetworkResult.Success) attempt.reached = true
             val items = (result as? NetworkResult.Success)?.data?.items.orEmpty()
             items.filter { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
                 .forEach { exact.putIfAbsent(it.imdbId ?: it.id, it) }
