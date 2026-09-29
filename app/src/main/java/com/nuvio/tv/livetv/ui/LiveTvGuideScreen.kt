@@ -161,6 +161,9 @@ fun LiveTvGuideScreen(
     // Reorder groups: the group being moved, and the group order while you move it.
     var groupReorderId by remember { mutableStateOf<String?>(null) }
     var groupWorking by remember { mutableStateOf<List<ChannelGroup>>(emptyList()) }
+    // Manage visibility for groups: every group (hidden ones too) and which ones are hidden.
+    var groupVisibilityList by remember { mutableStateOf<List<ChannelGroup>?>(null) }
+    var groupHiddenPending by remember { mutableStateOf<Set<String>>(emptySet()) }
     val playlistNames by viewModel.playlistNames.collectAsStateWithLifecycle()
     val collapsedPlaylists by viewModel.collapsedPlaylists.collectAsStateWithLifecycle()
     var savedMovedKey by remember { mutableStateOf<String?>(null) }
@@ -507,7 +510,24 @@ fun LiveTvGuideScreen(
                 )
                 if (groupsWidth > 1.dp) GroupColumn(
                     width = groupsWidth,
-                    groups = if (groupReorderId != null) ui.groups.filter { it.special } + groupWorking else ui.groups,
+                    groups = when {
+                        groupVisibilityList != null -> groupVisibilityList!!
+                        groupReorderId != null -> ui.groups.filter { it.special } + groupWorking
+                        else -> ui.groups
+                    },
+                    hiddenPending = if (groupVisibilityList != null) groupHiddenPending else null,
+                    onToggleGroupVisible = { id ->
+                        groupHiddenPending = if (id in groupHiddenPending) groupHiddenPending - id else groupHiddenPending + id
+                    },
+                    onHideAllGroups = { groupHiddenPending = groupVisibilityList.orEmpty().map { it.id }.toSet() },
+                    onShowAllGroups = { groupHiddenPending = emptySet() },
+                    onVisibilityDone = {
+                        val list = groupVisibilityList.orEmpty()
+                        viewModel.saveGroupVisibility(list, groupHiddenPending)
+                        // If the group on screen was just hidden, move to the main group.
+                        if (ui.selectedGroupId in groupHiddenPending) viewModel.selectGroup(ui.defaultGroupId)
+                        groupVisibilityList = null
+                    },
                     playlistNames = playlistNames,
                     collapsed = collapsedPlaylists,
                     onToggleCollapse = { viewModel.togglePlaylistCollapsed(it) },
@@ -781,6 +801,24 @@ fun LiveTvGuideScreen(
             }
         }
 
+        if (groupVisibilityList != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 36.dp, bottom = 24.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(NuvioTheme.colors.BackgroundElevated.copy(alpha = 0.96f))
+                    .border(1.dp, NuvioTheme.colors.Border, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                LiveText("Manage group visibility", size = 15.sp, weight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                LiveText("OK: show or hide group", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                LiveText("Left: hide all", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                LiveText("Right: show all", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                LiveText("Back: save and return", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+            }
+        }
         if (groupReorderId != null) {
             Column(
                 modifier = Modifier
@@ -1015,6 +1053,13 @@ fun LiveTvGuideScreen(
                             hint = if (isCustom) "Group name" else "Leave empty to use the playlist name",
                             onConfirm = { viewModel.renameGroup(g.id, it) }
                         )
+                    })
+                    add("Manage visibility" to {
+                        groupMenu = null
+                        val all = viewModel.groupsWithHidden()
+                        groupVisibilityList = all
+                        groupHiddenPending = user.hiddenGroups intersect all.map { it.id }.toSet()
+                        scope.launch { delay(80); runCatching { groupsFocus.requestFocus() } }
                     })
                     add("Reorder groups" to {
                         groupMenu = null
@@ -1500,14 +1545,34 @@ private fun GroupColumn(
     onToggleCollapse: (String) -> Unit = {},
     reorderingId: String? = null,
     onReorderMove: (Int) -> Unit = {},
-    onReorderDone: () -> Unit = {}
+    onReorderDone: () -> Unit = {},
+    /** Non-null while managing group visibility: the groups set to hidden. */
+    hiddenPending: Set<String>? = null,
+    onToggleGroupVisible: (String) -> Unit = {},
+    onHideAllGroups: () -> Unit = {},
+    onShowAllGroups: () -> Unit = {},
+    onVisibilityDone: () -> Unit = {}
 ) {
+    var focusedGroupId by remember { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier
             .fillMaxHeight()
             .width(width)
             .padding(end = 8.dp, bottom = 12.dp)
             .onPreviewKeyEvent { e ->
+                if (hiddenPending != null) {
+                    // Manage visibility: OK toggles, Left hides all, Right shows all, Back saves.
+                    val isOk = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+                    return@onPreviewKeyEvent when {
+                        isOk && e.type == KeyEventType.KeyUp -> { focusedGroupId?.let(onToggleGroupVisible); true }
+                        isOk -> true
+                        e.type != KeyEventType.KeyDown -> e.key == Key.Back || e.key == Key.DirectionLeft || e.key == Key.DirectionRight
+                        e.key == Key.DirectionLeft -> { onHideAllGroups(); true }
+                        e.key == Key.DirectionRight -> { onShowAllGroups(); true }
+                        e.key == Key.Back -> { onVisibilityDone(); true }
+                        else -> false // Up / Down move through the groups as usual
+                    }
+                }
                 if (reorderingId != null) {
                     // Reorder groups: Up/Down moves the group, OK or Back saves.
                     val isOk = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
@@ -1535,7 +1600,7 @@ private fun GroupColumn(
         // which folds away when selected. (Not while reordering: that's one plain list.)
         val listed = groups.filter { it.id != ChannelGroup.SEARCH }
         val sources = listed.mapNotNull { it.sourceId }.distinct()
-        val sectioned = reorderingId == null && sources.size > 1
+        val sectioned = reorderingId == null && hiddenPending == null && sources.size > 1
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -1545,14 +1610,23 @@ private fun GroupColumn(
                 item(key = g.id) {
                     val selected = g.id == selectedId
                     val moving = g.id == reorderingId
-                    val requester = if (reorderingId != null) moving else selected
+                    val requester = when {
+                        reorderingId != null -> moving
+                        hiddenPending != null ->
+                            g.id == (if (groups.any { it.id == selectedId }) selectedId else groups.firstOrNull()?.id)
+                        else -> selected
+                    }
                     GroupItem(
                         group = g,
                         selected = selected || moving,
                         showCount = showCounts,
                         moving = moving,
+                        visible = hiddenPending?.let { g.id !in it },
                         modifier = if (requester) Modifier.focusRequester(focusRequester) else Modifier,
-                        onFocused = { if (reorderingId == null) onFocusGroup(g) },
+                        onFocused = {
+                            focusedGroupId = g.id
+                            if (reorderingId == null && hiddenPending == null) onFocusGroup(g)
+                        },
                         onClick = { onSelect(g) },
                         onLongClick = if (g.special) null else ({ onGroupMenu(g) })
                     )
@@ -1663,6 +1737,7 @@ private fun GroupItem(
     selected: Boolean,
     showCount: Boolean,
     moving: Boolean = false,
+    visible: Boolean? = null,
     modifier: Modifier,
     onFocused: () -> Unit,
     onClick: () -> Unit,
@@ -1712,7 +1787,14 @@ private fun GroupItem(
             weight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             marquee = focused
         )
-        if (moving) {
+        if (visible != null) {
+            Icon(
+                imageVector = if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                contentDescription = if (visible) "Shown" else "Hidden",
+                tint = if (visible) NuvioTheme.colors.Secondary else NuvioTheme.colors.TextTertiary,
+                modifier = Modifier.size(16.dp)
+            )
+        } else if (moving) {
             LiveText("⇅", color = colors.text, size = 16.sp, weight = FontWeight.Bold)
         } else if (showCount && group.id != ChannelGroup.SEARCH) {
             LiveText(group.count.toString(), color = focusedSecondaryTextColor(focused), size = 12.sp)

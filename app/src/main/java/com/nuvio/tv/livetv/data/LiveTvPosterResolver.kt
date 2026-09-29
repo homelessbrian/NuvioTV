@@ -78,18 +78,27 @@ class LiveTvPosterResolver @Inject constructor(
     private suspend fun resolve(programTitle: String, query: String, hint: TypeHint?, clues: Clues, key: String): String? {
         cache[key]?.let { return it.poster }
         val attempt = Attempt()
-        // First the whole title. If nothing matches and the guide glued the show and episode
-        // together ("The Game - The Trey Wiggs Taps Back Episode"), try the show name alone.
-        var poster = runCatching { lookup(query, hint, clues, attempt) }.getOrNull()
-        if (poster == null) {
-            for (show in showNameCandidates(programTitle, hint)) {
-                if (normalize(show) == normalize(query)) continue
-                // The guide's year belongs to the episode, not the show, so leave it out here.
-                poster = runCatching {
-                    lookup(show, hint?.copy(strong = false), clues.copy(year = null), attempt)
-                }.getOrNull()
-                if (poster != null) break
+        // Titles like "The Game - The Trey Wiggs Taps Back Episode" glue the show and episode
+        // together. For series, try the show name first (that's what catalogs know); otherwise
+        // the whole title first. Only one extra lookup, and only when the title has a separator.
+        val shows = showNameCandidates(programTitle, hint).filter { normalize(it) != normalize(query) }.take(1)
+        val attempts = buildList {
+            if (hint?.kind == Kind.SERIES) shows.forEach { add(it to true) }
+            add(query to false)
+            if (hint?.kind != Kind.SERIES) shows.forEach { add(it to true) }
+        }
+        var poster: String? = null
+        for ((q, isShowName) in attempts) {
+            poster = try {
+                // For a show name, the guide's year belongs to the episode, so leave it out.
+                if (isShowName) lookup(q, hint?.copy(strong = false), clues.copy(year = null), attempt)
+                else lookup(q, hint, clues, attempt)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
             }
+            if (poster != null) break
         }
         // Only remember "no poster" when the catalogs actually answered. If addons hadn't
         // loaded yet or the network failed, try again next time instead of showing a logo forever.
@@ -130,27 +139,32 @@ class LiveTvPosterResolver @Inject constructor(
         val exact = LinkedHashMap<String, MetaPreview>()
         var closeMatch: MetaPreview? = null
 
-        for ((addon, catalog) in targets) {
-            val result = withTimeoutOrNull(8_000) {
-                catalogRepository.getCatalog(
-                    addonBaseUrl = addon.baseUrl,
-                    addonId = addon.id,
-                    addonName = addon.displayName,
-                    catalogId = catalog.id,
-                    catalogName = catalog.name,
-                    type = catalog.apiType,
-                    extraArgs = mapOf("search" to query),
-                    posterScreen = CustomPosterScreen.HOME
-                ).first { it !is NetworkResult.Loading }
-            }
+        // Ask every catalog at once (not one after another), so a slow addon costs a few seconds
+        // instead of holding up the poster while each catalog is tried in turn.
+        val results = kotlinx.coroutines.coroutineScope {
+            targets.map { (addon, catalog) ->
+                async {
+                    withTimeoutOrNull(6_000) {
+                        catalogRepository.getCatalog(
+                            addonBaseUrl = addon.baseUrl,
+                            addonId = addon.id,
+                            addonName = addon.displayName,
+                            catalogId = catalog.id,
+                            catalogName = catalog.name,
+                            type = catalog.apiType,
+                            extraArgs = mapOf("search" to query),
+                            posterScreen = CustomPosterScreen.HOME
+                        ).first { it !is NetworkResult.Loading }
+                    }
+                }
+            }.map { it.await() }
+        }
+
+        for (result in results) {
             if (result is NetworkResult.Success) attempt.reached = true
             val items = (result as? NetworkResult.Success)?.data?.items.orEmpty()
             items.filter { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
                 .forEach { exact.putIfAbsent(it.imdbId ?: it.id, it) }
-            // With no year to check, the first exact match is as good as it gets.
-            if (clues.year == null && clues.people.isEmpty() && clues.description.isNullOrBlank() && exact.isNotEmpty()) break
-            // A result from the right year settles it.
-            if (clues.year != null && exact.values.any { yearOf(it) == clues.year }) break
             if (closeMatch == null) {
                 closeMatch = items.take(5).firstOrNull { item ->
                     val n = normalize(item.name)

@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.size
@@ -415,6 +416,12 @@ fun LiveTvSettingsContent(
             // ------------------------------------------------------------ Nuvio
             item(key = "nuvio") {
                 SettingsGroupCard(title = "In the rest of Nuvio") {
+                    SettingsToggleRow(
+                        "Open Live TV when Nuvio starts",
+                        "Starts on the Live TV guide instead of Nuvio's home screen. Back still takes you to the menu.",
+                        s.startOnLiveTv,
+                        { update { it.copy(startOnLiveTv = !it.startOnLiveTv) } }
+                    )
                     SettingsToggleRow(
                         "Hide from side menu",
                         "Removes Live TV from Nuvio's main menu. You can still reach it from Settings.",
@@ -829,6 +836,15 @@ private fun SourceFormDialog(
         runCatching { firstField.requestFocus() }
     }
     NuvioDialog(onDismiss = onDismiss, title = title, width = 620.dp) {
+        // The fields scroll inside the dialog, so Save and Cancel always stay on screen
+        // (with a user agent field and the guide switch, they used to fall off the bottom).
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 300.dp)
+                .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)
+        ) {
         fields.forEachIndexed { i, field ->
             Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)) {
                 Text(
@@ -852,6 +868,7 @@ private fun SourceFormDialog(
                 checked = toggleValue,
                 onToggle = { toggleValue = !toggleValue }
             )
+        }
         }
         SettingsDialogActionRow {
             SettingsDialogActionButton(text = "Cancel", onClick = onDismiss)

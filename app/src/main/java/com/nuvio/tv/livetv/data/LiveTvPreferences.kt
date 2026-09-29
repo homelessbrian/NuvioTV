@@ -76,6 +76,7 @@ class LiveTvPreferences @Inject constructor(
         val aspectMode = stringPreferencesKey("aspect_mode")
         val sequentialNumbers = booleanPreferencesKey("sequential_numbers")
         val overlayMode = booleanPreferencesKey("overlay_mode")
+        val startOnLiveTv = booleanPreferencesKey("start_on_live_tv")
         val channelOrder = stringPreferencesKey("channel_order")
         val channelCopies = stringPreferencesKey("channel_copies")
 
@@ -136,7 +137,8 @@ class LiveTvPreferences @Inject constructor(
             smallHeader = p[Keys.smallHeader] ?: d.smallHeader,
             aspectMode = p[Keys.aspectMode] ?: d.aspectMode,
             sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers,
-            overlayMode = p[Keys.overlayMode] ?: d.overlayMode
+            overlayMode = p[Keys.overlayMode] ?: d.overlayMode,
+            startOnLiveTv = p[Keys.startOnLiveTv] ?: d.startOnLiveTv
         )
     }.distinctUntilChanged()
 
@@ -217,6 +219,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.aspectMode] = s.aspectMode
         p[Keys.sequentialNumbers] = s.sequentialNumbers
         p[Keys.overlayMode] = s.overlayMode
+        p[Keys.startOnLiveTv] = s.startOnLiveTv
     }
 
     // ---------- channel management ----------
@@ -374,6 +377,14 @@ class LiveTvPreferences @Inject constructor(
         store.edit { p ->
             val cur = p[Keys.hiddenChannels] ?: emptySet()
             p[Keys.hiddenChannels] = if (hidden) cur + key else cur - key
+        }
+    }
+
+    /** Applies a batch of group show/hide changes at once (Manage visibility for groups). */
+    suspend fun updateHiddenGroups(show: Set<String>, hide: Set<String>) {
+        store.edit { p ->
+            val cur = p[Keys.hiddenGroups] ?: emptySet()
+            p[Keys.hiddenGroups] = (cur - show) + hide
         }
     }
 

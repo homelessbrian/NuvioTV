@@ -60,7 +60,9 @@ class LiveTvSearchResults(
     val use24h: Boolean,
     val open: (LiveSearchHit) -> Unit,
     val posterFor: suspend (LiveSearchHit) -> String?,
-    internal val viewModel: LiveTvViewModel? = null
+    internal val viewModel: LiveTvViewModel? = null,
+    /** Playlist id -> name, shown on each card when you have more than one playlist. */
+    val playlistNames: Map<String, String> = emptyMap()
 )
 
 private const val MAX_HITS = 40
@@ -81,6 +83,7 @@ fun rememberLiveTvSearchResults(
     val programs by viewModel.programs.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val now by viewModel.now.collectAsStateWithLifecycle()
+    val playlistNames by viewModel.playlistNames.collectAsStateWithLifecycle()
     val q = query.trim()
 
     val hits = remember(q, ui.allVisibleChannels, programs, now, settings.showInSearch) {
@@ -117,7 +120,8 @@ fun rememberLiveTvSearchResults(
             onOpened()
         },
         posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } },
-        viewModel = viewModel
+        viewModel = viewModel,
+        playlistNames = playlistNames
     )
 }
 
@@ -152,6 +156,7 @@ fun LiveTvSearchRow(
             itemsIndexed(results.hits, key = { _, h -> h.channel.key }) { index, hit ->
                 LiveSearchCard(
                     hit = hit,
+                    playlistName = results.playlistNames[hit.channel.sourceId],
                     use24h = results.use24h,
                     posterFor = results.posterFor,
                     modifier = Modifier
@@ -165,10 +170,15 @@ fun LiveTvSearchRow(
     }
 }
 
+/**
+ * A narrow poster card (about 6 fit across): poster with a LIVE / UPCOMING badge, then the show,
+ * when it's on, the channel, and the playlist it comes from.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LiveSearchCard(
     hit: LiveSearchHit,
+    playlistName: String?,
     use24h: Boolean,
     posterFor: suspend (LiveSearchHit) -> String?,
     modifier: Modifier,
@@ -176,7 +186,7 @@ private fun LiveSearchCard(
     onLongClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(10.dp)
     val colors = liveCellColors(focused = focused, idle = guideSurface())
     val now = System.currentTimeMillis()
     val p = hit.program
@@ -185,15 +195,14 @@ private fun LiveSearchCard(
         value = posterFor(hit)
     }
     val upcoming = p != null && p.startMs > now
-    val when_ = when {
+    val whenLine = when {
         p == null -> null
-        live -> "On now · ${formatRange(p.startMs, p.stopMs, use24h)}"
-        else -> "Starts ${formatDayClock(p.startMs, now, use24h)} · ${startsInLabel(p.startMs - now)}"
+        live -> "${minutesLeftLabel(p.stopMs, now)} · ends ${formatClock(p.stopMs, use24h)}"
+        else -> "${formatDayClock(p.startMs, now, use24h)} · ${startsInLabel(p.startMs - now)}"
     }
-    Row(
+    Column(
         modifier = modifier
-            .width(440.dp)
-            .height(168.dp)
+            .width(150.dp)
             .clip(shape)
             .background(colors.background)
             .border(2.dp, colors.border, shape)
@@ -204,15 +213,14 @@ private fun LiveSearchCard(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(6.dp)
     ) {
         // Poster as Nuvio's catalogs would show it; the channel logo when there's no match.
         Box(
             modifier = Modifier
-                .width(96.dp)
-                .fillMaxHeight()
-                .clip(RoundedCornerShape(8.dp))
+                .fillMaxWidth()
+                .height(206.dp)
+                .clip(RoundedCornerShape(7.dp))
                 .background(guideSurfaceVariant()),
             contentAlignment = Alignment.Center
         ) {
@@ -224,9 +232,8 @@ private fun LiveSearchCard(
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                ChannelLogo(hit.channel.logo, 40.dp)
+                ChannelLogo(hit.channel.logo, 48.dp)
             }
-            // LIVE / UPCOMING badge so it's obvious at a glance whether you can watch it now.
             if (p != null && (live || upcoming)) {
                 LiveText(
                     if (live) "LIVE" else "UPCOMING",
@@ -241,50 +248,46 @@ private fun LiveSearchCard(
                     weight = FontWeight.Bold
                 )
             }
+            if (live) {
+                ProgressBar(p!!.progress(now), Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(6.dp))
+            }
         }
-        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+        Spacer(Modifier.height(6.dp))
+        LiveText(
+            p?.title ?: hit.channel.name,
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.text,
+            size = 14.sp,
+            weight = FontWeight.Bold,
+            marquee = focused
+        )
+        whenLine?.let {
             LiveText(
-                p?.title ?: hit.channel.name,
-                modifier = Modifier.fillMaxWidth(),
-                color = colors.text,
-                size = 17.sp,
-                weight = FontWeight.Bold,
+                it,
+                color = if (upcoming) NuvioTheme.colors.Secondary else focusedSecondaryTextColor(focused),
+                size = 11.sp,
+                weight = if (upcoming) FontWeight.SemiBold else FontWeight.Normal,
                 marquee = focused
             )
-            val meta = listOfNotNull(when_, p?.episode).joinToString("  ·  ")
-            if (meta.isNotBlank()) {
-                LiveText(
-                    meta,
-                    // Upcoming start times stand out in the accent color.
-                    color = if (upcoming) NuvioTheme.colors.Secondary else focusedSecondaryTextColor(focused),
-                    size = 12.sp,
-                    weight = if (upcoming) FontWeight.SemiBold else FontWeight.Normal,
-                    modifier = Modifier.padding(top = 2.dp),
-                    marquee = focused
-                )
-            }
-            if (live) {
-                Spacer(Modifier.height(6.dp))
-                ProgressBar(p!!.progress(now), Modifier.fillMaxWidth())
-            }
-            Spacer(Modifier.height(6.dp))
+        }
+        Spacer(Modifier.height(3.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChannelLogo(hit.channel.logo, 14.dp)
+            Spacer(Modifier.width(4.dp))
             LiveText(
-                p?.description ?: "",
+                "${hit.channel.number}  ${hit.channel.name}",
                 color = focusedSecondaryTextColor(focused),
-                size = 13.sp,
-                maxLines = 3,
-                modifier = Modifier.weight(1f)
+                size = 11.sp,
+                marquee = focused
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ChannelLogo(hit.channel.logo, 18.dp)
-                Spacer(Modifier.width(6.dp))
-                LiveText(
-                    "${hit.channel.number}  ${hit.channel.name}",
-                    color = focusedSecondaryTextColor(focused),
-                    size = 12.sp,
-                    marquee = focused
-                )
-            }
+        }
+        playlistName?.let {
+            LiveText(
+                it,
+                color = if (focused) focusedSecondaryTextColor(true) else NuvioTheme.colors.TextTertiary,
+                size = 10.sp,
+                marquee = focused
+            )
         }
     }
 }

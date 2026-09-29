@@ -171,7 +171,9 @@ data class LiveTvSettings(
     /** Number channels 1, 2, 3… in the order they appear in each group (TiviMate's override). */
     val sequentialNumbers: Boolean = false,
     /** Left while watching opens overlay mode; off: Left returns to the guide's group list. */
-    val overlayMode: Boolean = true
+    val overlayMode: Boolean = true,
+    /** Open Live TV instead of Nuvio's home screen when the app starts. */
+    val startOnLiveTv: Boolean = false
 )
 
 data class LiveUserState(

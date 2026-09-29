@@ -300,6 +300,18 @@ class LiveTvViewModel @Inject constructor(
         ).channels
     }
 
+    /** Every group you can hide (not Favorites, Recently watched or All), hidden ones included. */
+    fun groupsWithHidden(): List<ChannelGroup> {
+        val user = userState.value.copy(hiddenGroups = emptySet())
+        return buildUi(displayChannels.value, user, settings.value, uiState.value.selectedGroupId, "", true)
+            .groups.filter { !it.special && !it.id.startsWith(ChannelGroup.CUSTOM_PREFIX) }
+    }
+
+    fun saveGroupVisibility(inList: List<ChannelGroup>, hidden: Set<String>) = viewModelScope.launch {
+        val ids = inList.map { it.id }.toSet()
+        prefs.updateHiddenGroups(show = ids - hidden, hide = hidden intersect ids)
+    }
+
     /** Saves Manage visibility: [hidden] is the full set of hidden keys among [inList]. */
     fun saveVisibility(inList: List<LiveChannel>, hidden: Set<String>) = viewModelScope.launch {
         val keys = inList.map { it.key }.toSet()

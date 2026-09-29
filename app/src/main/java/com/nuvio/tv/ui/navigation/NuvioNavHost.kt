@@ -212,6 +212,10 @@ private fun PlaybackNavHost(
                 }
             }
 
+            // Live TV fork: "Open Live TV when Nuvio starts".
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                com.nuvio.tv.livetv.startup.LiveTvStartup.maybeOpenLiveTv(context, navController)
+            }
             HomeScreen(
                 onNavigateToDetail = { itemId, itemType, addonBaseUrl ->
                     val heroBackdrop = HeroBackdropState.consumeAndClear()
