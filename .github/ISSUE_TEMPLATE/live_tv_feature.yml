@@ -1,0 +1,95 @@
+name: "📺 Live TV Feature Request"
+description: "Suggest a new Live TV feature or improvement"
+title: "[Live TV]: "
+labels:
+  - feature-request
+  - triage
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 📺 Nuvio With Live TV
+
+        This repository is focused specifically on Live TV functionality.
+
+        Please only submit requests related to Live TV, IPTV, EPG,
+        playlists, channels, or other Live TV functionality.
+
+        Requests unrelated to Live TV may be closed.
+
+        Before submitting, please search existing issues for similar requests.
+
+  - type: input
+    id: feature
+    attributes:
+      label: Feature request
+      description: Give your idea a short, descriptive name.
+      placeholder: "Add recently watched channels to the Live TV home section"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like to see?
+      description: Describe the feature or change you'd like.
+      placeholder: |
+        Explain what you'd like Nuvio With Live TV to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Why would this be useful?
+      description: Explain what problem this would solve or how it would improve Live TV.
+      placeholder: |
+        Explain how this would improve your Live TV experience.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Live TV area
+      multiple: true
+      options:
+        - Live TV Home
+        - Channel List
+        - TV Guide / EPG
+        - Favorites
+        - Recently Watched
+        - Groups / Categories
+        - M3U Playlists
+        - Xtream Codes
+        - XMLTV
+        - Catch-up
+        - Channel Logos
+        - Live TV Player
+        - Search
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Examples or screenshots
+      description: Screenshots, mockups, or examples from other IPTV apps are welcome.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Anything else that might help explain the request.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: This request is specifically related to Live TV functionality.
+          required: true
+        - label: I searched existing issues and did not find an existing request.
+          required: true

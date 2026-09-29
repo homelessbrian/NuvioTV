@@ -1,0 +1,114 @@
+name: "🐛 Live TV Bug Report"
+description: "Report a problem with Live TV functionality"
+title: "[Bug][Live TV]: "
+labels:
+  - bug
+  - triage
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🐛 Live TV Bug Report
+
+        This form is for bugs specifically related to Live TV functionality.
+
+        Please do not use this form for problems with the original
+        Nuvio movie, TV show, or unrelated functionality.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Clearly describe the problem.
+      placeholder: |
+        Tell us what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Tell us exactly how to reproduce the problem.
+      placeholder: |
+        1. Open Nuvio With Live TV
+        2. Open Live TV
+        3. Select...
+        4. The problem occurs...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Live TV area
+      options:
+        - Live TV Home
+        - Channel List
+        - TV Guide / EPG
+        - Favorites
+        - Recently Watched
+        - Groups / Categories
+        - M3U Playlists
+        - Xtream Codes
+        - XMLTV
+        - Catch-up
+        - Channel Logos
+        - Live TV Player
+        - Search
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Nuvio With Live TV version
+      placeholder: "Example: 2.9"
+
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: "Example: NVIDIA Shield TV Pro"
+
+  - type: textarea
+    id: provider
+    attributes:
+      label: Playlist / provider information
+      description: |
+        If relevant, tell us whether you are using M3U, Xtream Codes,
+        XMLTV, etc. Do not post usernames, passwords, server URLs,
+        or other private account information.
+      placeholder: |
+        Example: Xtream Codes + XMLTV
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or logs
+      description: Drag screenshots or relevant logs here.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Anything else that may help reproduce the issue.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: This problem is specifically related to Live TV functionality.
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true

@@ -1,0 +1,69 @@
+name: "🎨 Live TV UI / UX Suggestion"
+description: "Suggest an improvement to the Live TV interface or user experience"
+title: "[UI/UX][Live TV]: "
+labels:
+  - ui-ux
+  - triage
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🎨 Live TV UI / UX
+
+        Use this form for suggestions specifically related to the
+        Live TV interface or user experience.
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What could be improved?
+      description: Describe the current experience.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would you change?
+      description: Describe your proposed change.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Live TV area
+      options:
+        - Live TV Home
+        - Channel List
+        - TV Guide / EPG
+        - Favorites
+        - Recently Watched
+        - Groups / Categories
+        - Channel Search
+        - Live TV Player
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Screenshots or examples
+      description: |
+        Screenshots, mockups, or examples from other IPTV applications
+        are highly encouraged.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: This suggestion is specifically related to Live TV.
+          required: true
