@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,7 +59,8 @@ class LiveTvSearchResults(
     val hits: List<LiveSearchHit>,
     val use24h: Boolean,
     val open: (LiveSearchHit) -> Unit,
-    val posterFor: suspend (LiveSearchHit) -> String?
+    val posterFor: suspend (LiveSearchHit) -> String?,
+    internal val viewModel: LiveTvViewModel? = null
 )
 
 private const val MAX_HITS = 40
@@ -114,7 +116,8 @@ fun rememberLiveTvSearchResults(
             viewModel.markFullscreenOpened()
             onOpened()
         },
-        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } }
+        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } },
+        viewModel = viewModel
     )
 }
 
@@ -131,6 +134,10 @@ fun LiveTvSearchRow(
     upFocusRequester: FocusRequester? = null
 ) {
     if (results.hits.isEmpty()) return
+    var menuFor by remember { mutableStateOf<LiveChannel?>(null) }
+    menuFor?.let { ch ->
+        results.viewModel?.let { vm -> ChannelQuickMenu(ch, vm, onDismiss = { menuFor = null }) }
+    }
     Column(modifier = modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         LiveText(
             "Live TV",
@@ -150,7 +157,8 @@ fun LiveTvSearchRow(
                     modifier = Modifier
                         .then(if (index == 0 && entryFocusRequester != null) Modifier.focusRequester(entryFocusRequester) else Modifier)
                         .focusProperties { if (upFocusRequester != null) up = upFocusRequester },
-                    onClick = { results.open(hit) }
+                    onClick = { results.open(hit) },
+                    onLongClick = { menuFor = hit.channel }
                 )
             }
         }
@@ -164,7 +172,8 @@ private fun LiveSearchCard(
     use24h: Boolean,
     posterFor: suspend (LiveSearchHit) -> String?,
     modifier: Modifier,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
@@ -192,7 +201,8 @@ private fun LiveSearchCard(
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = onLongClick
             )
             .padding(12.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp)

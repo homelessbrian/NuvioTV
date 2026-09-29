@@ -62,13 +62,12 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val resizeModes = listOf(
-    AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
-    AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom",
-    AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch"
-)
+private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES, SCREEN_SIZE }
 
-private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES }
+/** The picture size saved in settings, as one of Nuvio's own player modes. */
+private fun aspectModeOf(name: String): com.nuvio.tv.ui.screens.player.AspectMode =
+    com.nuvio.tv.ui.screens.player.AspectMode.entries.firstOrNull { it.name == name }
+        ?: com.nuvio.tv.ui.screens.player.AspectMode.ORIGINAL
 
 @Composable
 fun LiveTvPlayerScreen(
@@ -102,7 +101,7 @@ fun LiveTvPlayerScreen(
     var bannerToken by remember { mutableIntStateOf(0) }
     var listVisible by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf(PlayerDialog.NONE) }
-    var resizeIndex by remember { mutableIntStateOf(0) }
+    val context = androidx.compose.ui.platform.LocalContext.current
     var numberBuffer by remember { mutableStateOf("") }
     var longPressFired by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
@@ -126,8 +125,7 @@ fun LiveTvPlayerScreen(
         n?.let { viewModel.channelByNumber(it) }?.let { viewModel.preview(it) } ?: run { if (n != null) toast = "No channel $n" }
     }
     LaunchedEffect(listVisible) {
-        if (listVisible) { delay(80); runCatching { listFocus.requestFocus() } }
-        else { delay(60); runCatching { rootFocus.requestFocus() } }
+        if (!listVisible) { delay(60); runCatching { rootFocus.requestFocus() } }
     }
 
     fun zap(direction: Int) {
@@ -216,7 +214,7 @@ fun LiveTvPlayerScreen(
             player = viewModel.playback.player,
             modifier = Modifier.fillMaxSize(),
             useSurfaceView = true,
-            resizeMode = resizeModes[resizeIndex].first
+            aspectMode = aspectModeOf(settings.aspectMode)
         )
 
         // Status in the middle of the screen
@@ -273,54 +271,17 @@ fun LiveTvPlayerScreen(
             }
         }
 
-        // Channel list (left)
-        AnimatedVisibility(
-            visible = listVisible,
-            enter = slideInHorizontally { -it } + fadeIn(),
-            exit = slideOutHorizontally { -it } + fadeOut()
-        ) {
-            val zapList = viewModel.zapList()
-            val startIdx = zapList.indexOfFirst { it.key == playback.channelKey }.coerceAtLeast(0)
-            val state = rememberLazyListState(initialFirstVisibleItemIndex = (startIdx - 4).coerceAtLeast(0))
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(460.dp)
-                    .background(Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.75f))))
-                    .padding(vertical = 24.dp, horizontal = 14.dp)
-                    .onPreviewKeyEvent { e ->
-                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) { listVisible = false; true } else false
-                    }
-            ) {
-                LiveText(
-                    ui.groups.firstOrNull { it.id == ui.selectedGroupId }?.title ?: "Channels",
-                    size = 18.sp, weight = FontWeight.Bold, modifier = Modifier.padding(start = 14.dp, bottom = 10.dp)
-                )
-                LazyColumn(state = state) {
-                    items(zapList, key = { it.key }) { ch ->
-                        val p = programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs }
-                        LiveFocusRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .then(if (ch.key == playback.channelKey) Modifier.focusRequester(listFocus) else Modifier),
-                            selected = ch.key == playback.channelKey,
-                            onClick = { viewModel.preview(ch); listVisible = false },
-                            onLongClick = { viewModel.toggleFavorite(ch) }
-                        ) { f ->
-                            if (settings.showChannelNumbers) {
-                                LiveText(ch.number.toString(), modifier = Modifier.width(44.dp), color = focusedTextColor(f), size = 14.sp)
-                            }
-                            if (settings.showChannelLogos) ChannelLogo(ch.logo, 26.dp)
-                            Column(modifier = Modifier.weight(1f)) {
-                                if (settings.showChannelNames) LiveText(ch.name, color = focusedTextColor(f), size = 15.sp, marquee = f)
-                                p?.let {
-                                    LiveText(it.title, color = focusedSecondaryTextColor(f), size = 12.sp, marquee = f)
-                                }
-                            }
-                        }
-                    }
+        // Overlay mode (TiviMate style): channels, groups and each channel's schedule over the video.
+        if (listVisible) {
+            LiveTvOverlayMode(
+                viewModel = viewModel,
+                onClose = { listVisible = false },
+                onFindInNuvio = { title ->
+                    listVisible = false
+                    LiveTvSearchBridge.request(title)
+                    onFindInNuvio()
                 }
-            }
+            )
         }
 
         if (numberBuffer.isNotEmpty()) {
@@ -354,12 +315,12 @@ fun LiveTvPlayerScreen(
             PlayerOptionsDialog(
                 channel = ch,
                 isFavorite = ch.key in user.favorites,
-                aspectLabel = resizeModes[resizeIndex].second,
+                aspectLabel = context.getString(aspectModeOf(settings.aspectMode).labelResId),
                 archive = playback.catchupTitle != null,
                 onDismiss = { dialog = PlayerDialog.NONE; scope.launch { delay(60); runCatching { rootFocus.requestFocus() } } },
                 onAudio = { dialog = PlayerDialog.AUDIO },
                 onSubtitles = { dialog = PlayerDialog.SUBTITLES },
-                onAspect = { resizeIndex = (resizeIndex + 1) % resizeModes.size; toast = "Aspect: ${resizeModes[resizeIndex].second}" },
+                onAspect = { dialog = PlayerDialog.SCREEN_SIZE },
                 onFavorite = { viewModel.toggleFavorite(ch); dialog = PlayerDialog.NONE },
                 onHide = {
                     viewModel.hideChannel(ch)
@@ -372,7 +333,7 @@ fun LiveTvPlayerScreen(
                 },
                 onBackToLive = { dialog = PlayerDialog.NONE; viewModel.playback.play(ch) },
                 onRetry = { dialog = PlayerDialog.NONE; viewModel.playback.retry() },
-                currentTitle = viewModel.currentProgram(ch.key)?.title,
+                currentTitle = viewModel.currentProgram(ch.key)?.let { com.nuvio.tv.livetv.data.LiveTvPosterResolver.searchTitleFor(it, ch) },
                 onFind = { title ->
                     dialog = PlayerDialog.NONE
                     LiveTvSearchBridge.request(title)
@@ -392,6 +353,18 @@ fun LiveTvPlayerScreen(
             options = viewModel.playback.subtitleTracks(),
             allowOff = true,
             onPick = { viewModel.playback.selectTrack(C.TRACK_TYPE_TEXT, it); dialog = PlayerDialog.NONE },
+            onDismiss = { dialog = PlayerDialog.NONE }
+        )
+        PlayerDialog.SCREEN_SIZE -> ScreenSizeDialog(
+            selected = aspectModeOf(settings.aspectMode),
+            label = { context.getString(it.labelResId) },
+            onPick = { mode ->
+                // Remembered for every channel, until you change it again.
+                viewModel.updateSettings { it.copy(aspectMode = mode.name) }
+                toast = "Screen size: ${context.getString(mode.labelResId)}"
+                dialog = PlayerDialog.NONE
+                scope.launch { delay(60); runCatching { rootFocus.requestFocus() } }
+            },
             onDismiss = { dialog = PlayerDialog.NONE }
         )
         PlayerDialog.NONE -> Unit
@@ -515,7 +488,7 @@ private fun PlayerOptionsDialog(
             MenuItem("Audio track", if (archive) Modifier else Modifier.focusRequester(first), onAudio)
             currentTitle?.let { t -> MenuItem("Find & stream \"$t\" in Nuvio", onClick = { onFind(t) }) }
             MenuItem("Subtitles", onClick = onSubtitles)
-            MenuItem("Aspect ratio: $aspectLabel", onClick = onAspect)
+            MenuItem("Screen size: $aspectLabel", onClick = onAspect)
             MenuItem(if (isFavorite) "Remove from favorites" else "Add to favorites", onClick = onFavorite)
             MenuItem("Previous channel", onClick = onPrevious)
             MenuItem("Reload stream", onClick = onRetry)
@@ -556,6 +529,34 @@ private fun TrackDialog(
                     onClick = { onPick(o) }
                 ) { f ->
                     LiveText((if (o.selected) "✓  " else "") + o.label, color = focusedTextColor(f))
+                }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+/** Picture size, with the same choices as Nuvio's movie player (Fit, Crop, Stretch, Cinema Zoom, …). */
+@Composable
+private fun ScreenSizeDialog(
+    selected: com.nuvio.tv.ui.screens.player.AspectMode,
+    label: (com.nuvio.tv.ui.screens.player.AspectMode) -> String,
+    onPick: (com.nuvio.tv.ui.screens.player.AspectMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val first = remember { FocusRequester() }
+    LiveDialog(onDismiss = onDismiss, width = 420.dp) {
+        LiveText("Screen size", size = 20.sp, weight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            com.nuvio.tv.ui.screens.player.AspectMode.entries.forEach { mode ->
+                val isSelected = mode == selected
+                LiveFocusRow(
+                    modifier = Modifier.fillMaxWidth().then(if (isSelected) Modifier.focusRequester(first) else Modifier),
+                    selected = isSelected,
+                    onClick = { onPick(mode) }
+                ) { f ->
+                    LiveText((if (isSelected) "✓  " else "") + label(mode), color = focusedTextColor(f))
                 }
             }
         }

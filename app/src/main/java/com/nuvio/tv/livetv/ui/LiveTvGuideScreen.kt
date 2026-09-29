@@ -149,6 +149,11 @@ fun LiveTvGuideScreen(
     var focusGroupsOnOpen by remember { mutableStateOf(false) }
     // Manage visibility (TiviMate style): every channel in the group, hidden ones included.
     var visibilityMode by remember { mutableStateOf(false) }
+    // Reorder channels: the channel being moved, and the group's list while you move it.
+    var reorderKey by remember { mutableStateOf<String?>(null) }
+    var reorderList by remember { mutableStateOf<List<LiveChannel>>(emptyList()) }
+    var reorderGroupId by remember { mutableStateOf("") }
+    var copyPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
     var visibilityChannels by remember { mutableStateOf<List<LiveChannel>>(emptyList()) }
     var pendingHidden by remember { mutableStateOf<Set<String>>(emptySet()) }
     // A channel to move the cursor to once it's in the list (after a group switch, etc).
@@ -174,6 +179,7 @@ fun LiveTvGuideScreen(
     var epgUnassignedOnly by remember { mutableStateOf(false) }
     val channels = when {
         visibilityMode -> visibilityChannels
+        reorderKey != null -> reorderList
         epgUnassignedOnly -> ui.channels.filter { programs[it.key].isNullOrEmpty() }
         else -> ui.channels
     }
@@ -300,7 +306,8 @@ fun LiveTvGuideScreen(
     }
 
     fun findInNuvio(program: EpgProgram) {
-        LiveTvSearchBridge.request(program.title)
+        // For a series with a "Show - Episode" title, search for the show.
+        LiveTvSearchBridge.request(com.nuvio.tv.livetv.data.LiveTvPosterResolver.searchTitleFor(program, null))
         onFindInNuvio()
     }
 
@@ -552,6 +559,34 @@ fun LiveTvGuideScreen(
                             }
                             .onPreviewKeyEvent { event ->
                                 val isOk = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+                                if (reorderKey != null) {
+                                    // Up/Down moves the channel; OK or Back saves.
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        val from = reorderList.indexOfFirst { it.key == reorderKey }
+                                        fun moveTo(to: Int) {
+                                            if (from < 0 || to !in reorderList.indices || to == from) return
+                                            reorderList = reorderList.toMutableList().apply { add(to, removeAt(from)) }
+                                            row = to
+                                            ensureRowVisible(to)
+                                        }
+                                        when {
+                                            event.key == Key.DirectionUp -> moveTo(from - 1)
+                                            event.key == Key.DirectionDown -> moveTo(from + 1)
+                                            event.key == Key.PageUp || event.key == Key.ChannelUp -> moveTo((from - 8).coerceAtLeast(0))
+                                            event.key == Key.PageDown || event.key == Key.ChannelDown -> moveTo((from + 8).coerceAtMost(reorderList.lastIndex))
+                                            event.key == Key.Back -> {
+                                                viewModel.saveOrder(reorderGroupId, reorderList.map { it.key })
+                                                highlightKey = reorderKey
+                                                reorderKey = null
+                                            }
+                                        }
+                                    } else if (isOk && event.type == KeyEventType.KeyUp) {
+                                        viewModel.saveOrder(reorderGroupId, reorderList.map { it.key })
+                                        highlightKey = reorderKey
+                                        reorderKey = null
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
                                 if (visibilityMode) {
                                     // OK: show/hide · Left: hide all · Right: show all · Back: save and return
                                     val down = event.type == KeyEventType.KeyDown
@@ -655,7 +690,8 @@ fun LiveTvGuideScreen(
                                             isPlaying = ch.key == playback.channelKey,
                                             focusColumn = if (index == row && (gridFocused || epgPickerFor != null)) column else null,
                                             focusedBlock = if (index == row) focusedBlock else null,
-                                            visible = if (visibilityMode) ch.key !in pendingHidden else null
+                                            visible = if (visibilityMode) ch.key !in pendingHidden else null,
+                                            moving = reorderKey == ch.key
                                         )
                                     }
                                 }
@@ -695,6 +731,23 @@ fun LiveTvGuideScreen(
             }
         }
 
+        if (reorderKey != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 36.dp, bottom = 24.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(NuvioTheme.colors.BackgroundElevated.copy(alpha = 0.96f))
+                    .border(1.dp, NuvioTheme.colors.Border, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                LiveText("Reorder channels", size = 15.sp, weight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                LiveText("Up / Down: move the channel", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                LiveText("CH+ / CH−: move 8 places", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                LiveText("OK or Back: save", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+            }
+        }
         if (visibilityMode) {
             Column(
                 modifier = Modifier
@@ -789,6 +842,18 @@ fun LiveTvGuideScreen(
                     viewModel.hideChannel(target.channel)
                     menuTarget = null
                 },
+                canReorder = viewModel.canReorder(ui.selectedGroupId),
+                onReorder = {
+                    menuTarget = null
+                    reorderGroupId = ui.selectedGroupId
+                    reorderList = channels
+                    reorderKey = target.channel.key
+                    row = channels.indexOfFirst { it.key == target.channel.key }.coerceAtLeast(0)
+                    scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+                },
+                onCopy = { menuTarget = null; copyPickerFor = target.channel },
+                isCopyHere = viewModel.isCopyIn(ui.selectedGroupId, target.channel),
+                onRemoveCopy = { viewModel.removeCopy(ui.selectedGroupId, target.channel); menuTarget = null },
                 onManageVisibility = {
                     menuTarget = null
                     val list = viewModel.channelsWithHidden()
@@ -834,6 +899,24 @@ fun LiveTvGuideScreen(
                 numeric = prompt.numeric,
                 onDismiss = { textPrompt = null },
                 onConfirm = { value -> prompt.onConfirm(value); textPrompt = null }
+            )
+        }
+        copyPickerFor?.let { ch ->
+            GroupPickerDialog(
+                channel = ch,
+                groups = viewModel.copyTargets(ch),
+                title = "Copy \"${ch.name}\" to…",
+                onDismiss = { copyPickerFor = null },
+                onPick = { g -> viewModel.copyToGroup(g.id, ch); copyPickerFor = null },
+                onNewGroup = {
+                    copyPickerFor = null
+                    textPrompt = TextPrompt(
+                        title = "New group",
+                        initial = "",
+                        hint = "Group name",
+                        onConfirm = { name -> viewModel.createGroupWith(name, ch) }
+                    )
+                }
             )
         }
         groupPickerFor?.let { ch ->
@@ -1100,7 +1183,9 @@ private fun GuideRow(
     focusColumn: GuideColumn?,
     focusedBlock: GuideBlock?,
     /** In Manage visibility: true = shown, false = hidden. Null otherwise. */
-    visible: Boolean? = null
+    visible: Boolean? = null,
+    /** Being moved with "Reorder channels". */
+    moving: Boolean = false
 ) {
     val windowEnd = windowStart + WINDOW_MS
     val cellShape = RoundedCornerShape(6.dp)
@@ -1162,6 +1247,10 @@ private fun GuideRow(
             if (isPlaying) {
                 Spacer(Modifier.width(4.dp))
                 Box(Modifier.size(7.dp).clip(RoundedCornerShape(50)).background(NuvioTheme.colors.Error))
+            }
+            if (moving) {
+                Spacer(Modifier.width(6.dp))
+                LiveText("⇅", color = NuvioTheme.colors.Secondary, size = 18.sp, weight = FontWeight.Bold)
             }
             // Manage visibility: an eye for shown channels, a crossed-out eye for hidden ones.
             if (visible != null) {
@@ -1472,6 +1561,11 @@ private fun ChannelContextMenu(
     onChangeEpg: () -> Unit,
     onRenumber: () -> Unit,
     onHide: () -> Unit,
+    canReorder: Boolean,
+    onReorder: () -> Unit,
+    onCopy: () -> Unit,
+    isCopyHere: Boolean,
+    onRemoveCopy: () -> Unit,
     onManageVisibility: () -> Unit,
     onHideGroup: () -> Unit,
     onProgramInfo: () -> Unit,
@@ -1512,6 +1606,9 @@ private fun ChannelContextMenu(
             item { MenuItem("Assign EPG", onClick = onChangeEpg) }
             item { MenuItem("Hide channel", onClick = onHide) }
             item { MenuItem("Manage visibility", onClick = onManageVisibility) }
+            if (canReorder) item { MenuItem("Reorder channels", onClick = onReorder) }
+            item { MenuItem("Copy channel…", onClick = onCopy) }
+            if (isCopyHere) item { MenuItem("Remove copy from this group", onClick = onRemoveCopy) }
             item { MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup) }
             item { MenuItem("Search", onClick = onSearch) }
             item { MenuItem("Update playlists & EPG", onClick = onRefresh) }
@@ -1940,16 +2037,17 @@ private data class TextPrompt(
 )
 
 @Composable
-private fun GroupPickerDialog(
+internal fun GroupPickerDialog(
     channel: LiveChannel,
     groups: List<ChannelGroup>,
     onDismiss: () -> Unit,
     onPick: (ChannelGroup) -> Unit,
-    onNewGroup: () -> Unit
+    onNewGroup: () -> Unit,
+    title: String = "Add \"${channel.name}\" to…"
 ) {
     val first = remember { FocusRequester() }
     LiveDialog(onDismiss = onDismiss, width = 460.dp) {
-        LiveText("Add \"${channel.name}\" to…", size = 20.sp, weight = FontWeight.Bold)
+        LiveText(title, size = 20.sp, weight = FontWeight.Bold)
         Spacer(Modifier.height(14.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             item { MenuItem("+ New group", Modifier.focusRequester(first), onNewGroup) }

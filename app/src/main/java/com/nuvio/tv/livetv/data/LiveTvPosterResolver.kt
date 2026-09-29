@@ -55,7 +55,19 @@ class LiveTvPosterResolver @Inject constructor(
         cache[key]?.let { return it.poster }
         return mutex.withLock {
             cache[key]?.let { return@withLock it.poster }
-            val poster = runCatching { lookup(query, hint, clues) }.getOrNull()
+            // First the whole title. If nothing matches and the guide glued the show and episode
+            // together ("The Game - The Trey Wiggs Taps Back Episode"), try the show name alone.
+            var poster = runCatching { lookup(query, hint, clues) }.getOrNull()
+            if (poster == null) {
+                for (show in showNameCandidates(programTitle, hint)) {
+                    if (normalize(show) == normalize(query)) continue
+                    // The guide's year belongs to the episode, not the show, so leave it out here.
+                    poster = runCatching {
+                        lookup(show, hint?.copy(strong = false), clues.copy(year = null))
+                    }.getOrNull()
+                    if (poster != null) break
+                }
+            }
             cache[key] = Result(poster)
             poster
         }
@@ -187,6 +199,34 @@ class LiveTvPosterResolver @Inject constructor(
 
     companion object {
         private const val MAX_CATALOGS = 6
+
+        /** " - ", " – ", " — " or " | " between a show name and an episode title. */
+        private val SHOW_EPISODE_SEPARATOR = Regex("""\s+[-–—|]\s+""")
+
+        /**
+         * Possible show names hidden in a combined title, best first. "Show - Episode" always
+         * counts; "Show: Episode" only for series, because plenty of films use a colon
+         * ("Star Wars: A New Hope").
+         */
+        fun showNameCandidates(title: String, hint: TypeHint?): List<String> {
+            val cleaned = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
+            val out = LinkedHashSet<String>()
+            SHOW_EPISODE_SEPARATOR.split(cleaned).firstOrNull()?.trim()?.let { if (it.length >= 2 && it != cleaned) out += it }
+            if (hint?.kind == Kind.SERIES && cleaned.contains(": ")) {
+                cleaned.substringBefore(": ").trim().let { if (it.length >= 2) out += it }
+            }
+            return out.toList()
+        }
+
+        /**
+         * What to search for in Nuvio ("Find & stream"): for a series with a combined
+         * "Show - Episode" title, just the show name, so search finds the show.
+         */
+        fun searchTitleFor(program: EpgProgram, channel: LiveChannel?): String {
+            val hint = typeHint(program, channel)
+            if (hint?.kind == Kind.SERIES) showNameCandidates(program.title, hint).firstOrNull()?.let { return it }
+            return program.title
+        }
         private val movieWords = Regex("""\b(movie|movies|film|films|cinema|feature)\b""", RegexOption.IGNORE_CASE)
         private val seriesWords = Regex(
             """\b(series|sitcom|episode|episodes|soap|soap opera|talk show|reality|news|game show|drama series|comedy series)\b""",

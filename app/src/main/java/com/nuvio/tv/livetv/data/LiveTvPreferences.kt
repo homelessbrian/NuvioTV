@@ -73,6 +73,10 @@ class LiveTvPreferences @Inject constructor(
         val resumeInPreview = booleanPreferencesKey("resume_in_preview")
         val showGroupCounts = booleanPreferencesKey("show_group_counts")
         val smallHeader = booleanPreferencesKey("small_header")
+        val aspectMode = stringPreferencesKey("aspect_mode")
+        val sequentialNumbers = booleanPreferencesKey("sequential_numbers")
+        val channelOrder = stringPreferencesKey("channel_order")
+        val channelCopies = stringPreferencesKey("channel_copies")
 
         val hiddenChannels = stringSetPreferencesKey("hidden_channels")
         val hiddenGroups = stringSetPreferencesKey("hidden_groups")
@@ -128,7 +132,9 @@ class LiveTvPreferences @Inject constructor(
             showAllChannelsGroup = p[Keys.showAllGroup] ?: d.showAllChannelsGroup,
             resumeLastInPreview = p[Keys.resumeInPreview] ?: d.resumeLastInPreview,
             showGroupCounts = p[Keys.showGroupCounts] ?: d.showGroupCounts,
-            smallHeader = p[Keys.smallHeader] ?: d.smallHeader
+            smallHeader = p[Keys.smallHeader] ?: d.smallHeader,
+            aspectMode = p[Keys.aspectMode] ?: d.aspectMode,
+            sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers
         )
     }.distinctUntilChanged()
 
@@ -149,7 +155,9 @@ class LiveTvPreferences @Inject constructor(
             epgOverrides = decodeStringMap(p[Keys.epgOverrides]).mapNotNull { (k, v) ->
                 val parts = v.split(EPG_SEP, limit = 2)
                 if (parts.size == 2) k to com.nuvio.tv.livetv.model.EpgAssignment(parts[0], parts[1]) else null
-            }.toMap()
+            }.toMap(),
+            channelOrder = decodeListMap(p[Keys.channelOrder]),
+            channelCopies = decodeListMap(p[Keys.channelCopies])
         )
     }.distinctUntilChanged()
 
@@ -204,6 +212,8 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.resumeInPreview] = s.resumeLastInPreview
         p[Keys.showGroupCounts] = s.showGroupCounts
         p[Keys.smallHeader] = s.smallHeader
+        p[Keys.aspectMode] = s.aspectMode
+        p[Keys.sequentialNumbers] = s.sequentialNumbers
     }
 
     // ---------- channel management ----------
@@ -284,6 +294,57 @@ class LiveTvPreferences @Inject constructor(
 
     suspend fun clearEpgOverrides() {
         store.edit { it[Keys.epgOverrides] = encodeStringMap(emptyMap()) }
+    }
+
+    /** Saves the order of a playlist group or All channels (Reorder channels). */
+    suspend fun setChannelOrder(groupId: String, keys: List<String>) {
+        store.edit { p ->
+            val m = decodeListMap(p[Keys.channelOrder]).toMutableMap()
+            m[groupId] = keys
+            p[Keys.channelOrder] = encodeListMap(m)
+        }
+    }
+
+    suspend fun setFavoritesOrder(keys: List<String>) {
+        store.edit { p ->
+            val cur = decodeStringList(p[Keys.favorites])
+            // Keep any favorites that weren't in the list (e.g. hidden ones) at the end.
+            p[Keys.favorites] = encodeStringList(keys.filter { it in cur } + cur.filter { it !in keys })
+        }
+    }
+
+    suspend fun setCustomGroupOrder(groupId: String, keys: List<String>) = updateCustomGroups { list ->
+        list.map { g ->
+            if (g.id != groupId) g
+            else g.copy(channelKeys = keys.filter { it in g.channelKeys } + g.channelKeys.filter { it !in keys })
+        }
+    }
+
+    /** Copies a channel into another playlist group (it stays in its own group too). */
+    suspend fun copyChannel(groupId: String, key: String) {
+        store.edit { p ->
+            val m = decodeListMap(p[Keys.channelCopies]).toMutableMap()
+            val cur = m[groupId].orEmpty()
+            if (key !in cur) m[groupId] = cur + key
+            p[Keys.channelCopies] = encodeListMap(m)
+        }
+    }
+
+    suspend fun removeChannelCopy(groupId: String, key: String) {
+        store.edit { p ->
+            val m = decodeListMap(p[Keys.channelCopies]).toMutableMap()
+            m[groupId] = m[groupId].orEmpty() - key
+            if (m[groupId].isNullOrEmpty()) m.remove(groupId)
+            p[Keys.channelCopies] = encodeListMap(m)
+        }
+    }
+
+    suspend fun resetChannelOrder() {
+        store.edit { it[Keys.channelOrder] = encodeListMap(emptyMap()) }
+    }
+
+    suspend fun clearChannelCopies() {
+        store.edit { it[Keys.channelCopies] = encodeListMap(emptyMap()) }
     }
 
     suspend fun resetChannelEdits() {
@@ -550,6 +611,23 @@ class LiveTvPreferences @Inject constructor(
         const val EPG_SEP = "\u0001"
         /** Per-TV keys that Google Drive sync never copies. */
         val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent")
+    }
+
+    private fun decodeListMap(raw: String?): Map<String, List<String>> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val o = JSONObject(raw)
+            o.keys().asSequence().associateWith { k ->
+                val arr = o.optJSONArray(k) ?: JSONArray()
+                (0 until arr.length()).map { arr.getString(it) }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeListMap(map: Map<String, List<String>>): String {
+        val o = JSONObject()
+        map.forEach { (k, v) -> o.put(k, JSONArray(v)) }
+        return o.toString()
     }
 
     private fun decodeStringMap(raw: String?): Map<String, String> {

@@ -53,6 +53,9 @@ class LiveTvRepository @Inject constructor(
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
+        // A provider that trickles data forever would otherwise hold up every other update
+        // (deleting a playlist, turning one off) until the app is restarted.
+        .callTimeout(10, TimeUnit.MINUTES)
         .followRedirects(true)
         .followSslRedirects(true)
         .retryOnConnectionFailure(true)
@@ -152,12 +155,32 @@ class LiveTvRepository @Inject constructor(
     suspend fun removePlaylist(id: String) {
         prefs.updatePlaylists { list -> list.filterNot { it.id == id } }
         File(playlistDir, "$id.m3u").delete()
+        embeddedEpgUrls.remove(id)
+        dropPlaylistNow(id)
         scope.launch { rebuild() }
+    }
+
+    /**
+     * Takes a deleted or turned-off playlist's channels out of the guide straight away, without
+     * waiting for the full rebuild (which can be queued behind a long guide download).
+     */
+    private fun dropPlaylistNow(id: String) {
+        val remaining = _channels.value.filterNot { it.sourceId == id }
+        if (remaining.size == _channels.value.size) return
+        val keys = remaining.mapTo(HashSet()) { it.key }
+        _channels.value = remaining
+        _programs.value = _programs.value.filterKeys { it in keys }
     }
 
     suspend fun setPlaylistEnabled(id: String, enabled: Boolean) {
         prefs.updatePlaylists { list -> list.map { if (it.id == id) it.copy(enabled = enabled) else it } }
-        scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false) }
+        if (!enabled) dropPlaylistNow(id)
+        // Rebuild from the cached files first (turning a playlist on or off downloads nothing,
+        // so the refresh alone wouldn't rebuild the channel list), then fetch anything missing.
+        scope.launch {
+            rebuild()
+            refreshInternal(forcePlaylists = false, forceEpg = false)
+        }
     }
 
     suspend fun movePlaylist(id: String, delta: Int) {
@@ -192,7 +215,10 @@ class LiveTvRepository @Inject constructor(
 
     suspend fun setEpgEnabled(id: String, enabled: Boolean) {
         prefs.updateEpgSources { list -> list.map { if (it.id == id) it.copy(enabled = enabled) else it } }
-        scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false) }
+        scope.launch {
+            rebuild()
+            refreshInternal(forcePlaylists = false, forceEpg = false)
+        }
     }
 
     // ---------------------------------------------------------------- core

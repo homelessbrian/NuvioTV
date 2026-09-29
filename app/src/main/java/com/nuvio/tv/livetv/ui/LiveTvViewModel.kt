@@ -181,6 +181,23 @@ class LiveTvViewModel @Inject constructor(
             ChannelSort.NAME -> list.sortedBy { it.name.lowercase() }
         }
 
+        /** Your order from "Reorder channels" wins; channels you haven't placed follow as sorted. */
+        fun ordered(groupId: String, list: List<LiveChannel>): List<LiveChannel> {
+            val order = user.channelOrder[groupId] ?: return sorted(list)
+            val byKeyHere = list.associateBy { it.key }
+            val placed = order.mapNotNull { byKeyHere[it] }
+            val placedKeys = placed.mapTo(HashSet()) { it.key }
+            return placed + sorted(list.filter { it.key !in placedKeys })
+        }
+
+        /** A playlist group's own channels plus channels copied into it. */
+        fun groupChannels(groupId: String): List<LiveChannel> {
+            val own = visible.filter { it.groupId == groupId }
+            val ownKeys = own.mapTo(HashSet()) { it.key }
+            val copies = user.channelCopies[groupId].orEmpty().mapNotNull { byKey[it] }.filter { it.key !in ownKeys }
+            return own + copies
+        }
+
         val groups = mutableListOf<ChannelGroup>()
         groups += ChannelGroup(ChannelGroup.SEARCH, "Search", 0, special = true)
         if (s.showFavoritesGroup) groups += ChannelGroup(ChannelGroup.FAVORITES, "Favorites", favorites.size, special = true)
@@ -198,7 +215,10 @@ class LiveTvViewModel @Inject constructor(
             val cur = playlistGroups[c.groupId]
             playlistGroups[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
         }
-        playlistGroups.forEach { (id, v) -> regular += ChannelGroup(id, v.first, v.second) }
+        playlistGroups.forEach { (id, v) ->
+            val copied = user.channelCopies[id].orEmpty().count { k -> byKey[k]?.let { it.groupId != id } == true }
+            regular += ChannelGroup(id, v.first, v.second + copied)
+        }
         val orderIndex = user.groupOrder.withIndex().associate { (i, id) -> id to i }
         val orderedRegular = regular.withIndex()
             .sortedWith(compareBy<IndexedValue<ChannelGroup>>({ orderIndex[it.value.id] ?: Int.MAX_VALUE }, { it.index }))
@@ -212,8 +232,8 @@ class LiveTvViewModel @Inject constructor(
             else -> ChannelGroup.ALL
         }
         val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: defaultGroupId
-        val list = when {
-            groupId == ChannelGroup.ALL && s.showAllChannelsGroup -> sorted(visible)
+        val rawList = when {
+            groupId == ChannelGroup.ALL && s.showAllChannelsGroup -> ordered(ChannelGroup.ALL, visible)
             groupId == ChannelGroup.FAVORITES -> favorites
             groupId == ChannelGroup.RECENT -> recent
             groupId == ChannelGroup.SEARCH -> {
@@ -224,8 +244,12 @@ class LiveTvViewModel @Inject constructor(
             }
             groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
                 user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty()
-            else -> sorted(visible.filter { it.groupId == groupId })
+            else -> ordered(groupId, groupChannels(groupId))
         }
+        // TiviMate's number override: 1, 2, 3… in the order the group shows them.
+        val list = if (s.sequentialNumbers && groupId != ChannelGroup.SEARCH) {
+            rawList.mapIndexed { i, c -> c.copy(number = i + 1) }
+        } else rawList
         return LiveTvUiState(
             groups = groups,
             selectedGroupId = groupId,
@@ -274,6 +298,10 @@ class LiveTvViewModel @Inject constructor(
     fun saveVisibility(inList: List<LiveChannel>, hidden: Set<String>) = viewModelScope.launch {
         val keys = inList.map { it.key }.toSet()
         prefs.updateHiddenChannels(show = keys - hidden, hide = hidden intersect keys)
+    }
+
+    fun updateSettings(transform: (LiveTvSettings) -> LiveTvSettings) {
+        viewModelScope.launch { prefs.updateSettings(transform) }
     }
 
     fun markFullscreenOpened() {
@@ -399,8 +427,45 @@ class LiveTvViewModel @Inject constructor(
         return list[next]
     }
 
+    /** The channel with this number, looking in the current group first (numbers can repeat). */
     fun channelByNumber(number: Int): LiveChannel? =
-        uiState.value.allVisibleChannels.firstOrNull { it.number == number }
+        uiState.value.channels.firstOrNull { it.number == number }
+            ?: uiState.value.allVisibleChannels.firstOrNull { it.number == number }
+
+    // ------------------------------------------------------------ reorder / copy
+
+    /** Groups you can reorder: not Search or Recently watched (that one follows what you watch). */
+    fun canReorder(groupId: String) = groupId != ChannelGroup.SEARCH && groupId != ChannelGroup.RECENT
+
+    fun saveOrder(groupId: String, keys: List<String>) = viewModelScope.launch {
+        when {
+            groupId == ChannelGroup.FAVORITES -> prefs.setFavoritesOrder(keys)
+            groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) -> prefs.setCustomGroupOrder(groupId, keys)
+            else -> prefs.setChannelOrder(groupId, keys)
+        }
+    }
+
+    /** Copy to a playlist group, or add to one of your own groups. */
+    fun copyToGroup(groupId: String, channel: LiveChannel) = viewModelScope.launch {
+        if (groupId.startsWith(ChannelGroup.CUSTOM_PREFIX)) prefs.addToCustomGroup(groupId, channel.key)
+        else prefs.copyChannel(groupId, channel.key)
+    }
+
+    /** True if [channel] is only in [groupId] because it was copied there. */
+    fun isCopyIn(groupId: String, channel: LiveChannel): Boolean =
+        channel.groupId != groupId && channel.key in userState.value.channelCopies[groupId].orEmpty()
+
+    fun removeCopy(groupId: String, channel: LiveChannel) = viewModelScope.launch {
+        prefs.removeChannelCopy(groupId, channel.key)
+    }
+
+    /** Groups a channel can be copied to (yours and the playlist's), minus the one it's in. */
+    fun copyTargets(channel: LiveChannel): List<ChannelGroup> =
+        uiState.value.groups.filter { g ->
+            !g.special && g.id != channel.groupId &&
+                (g.id.startsWith(ChannelGroup.CUSTOM_PREFIX) ||
+                    channel.key !in userState.value.channelCopies[g.id].orEmpty())
+        }
 
     fun previousChannel(): LiveChannel? = channelByKey(userState.value.previousChannelKey)
 

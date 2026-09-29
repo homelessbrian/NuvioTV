@@ -235,10 +235,13 @@ internal fun LivePlayerSurface(
     player: Player?,
     modifier: Modifier = Modifier,
     useSurfaceView: Boolean,
-    resizeMode: Int = AspectRatioFrameLayout.RESIZE_MODE_FIT
+    resizeMode: Int = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+    /** Nuvio's picture-size mode (full screen only); null keeps the plain [resizeMode]. */
+    aspectMode: com.nuvio.tv.ui.screens.player.AspectMode? = null
 ) {
     val layout = if (useSurfaceView) R.layout.live_tv_surface_player_view else R.layout.live_tv_texture_player_view
     var viewRef by remember { mutableStateOf<PlayerView?>(null) }
+    val currentMode = androidx.compose.runtime.rememberUpdatedState(aspectMode)
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
@@ -246,9 +249,19 @@ internal fun LivePlayerSurface(
         },
         update = { view ->
             if (view.player !== player) view.player = player
-            view.resizeMode = resizeMode
+            view.resizeMode = if (aspectMode != null) AspectRatioFrameLayout.RESIZE_MODE_FIT else resizeMode
+            aspectMode?.let { mode -> view.post { com.nuvio.tv.ui.screens.player.applyExoAspectMode(view, mode) } }
         }
     )
+    // Re-apply the picture size when the video's shape changes (new channel, different resolution).
+    DisposableEffect(viewRef, aspectMode != null) {
+        val view = viewRef
+        if (view == null || aspectMode == null) return@DisposableEffect onDispose { }
+        val remove = com.nuvio.tv.ui.screens.player.addExoAspectLayoutChangeListener(view) { _, _, _, _, _, _, _, _, _ ->
+            currentMode.value?.let { m -> view.post { com.nuvio.tv.ui.screens.player.applyExoAspectMode(view, m) } }
+        }
+        onDispose { remove() }
+    }
     DisposableEffect(Unit) {
         onDispose { viewRef?.player = null }
     }

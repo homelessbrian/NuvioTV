@@ -165,7 +165,11 @@ data class LiveTvSettings(
     /** Show how many channels each group has in the guide's group list. */
     val showGroupCounts: Boolean = true,
     /** Smaller info panel and preview at the top of the guide, so more channels fit. */
-    val smallHeader: Boolean = false
+    val smallHeader: Boolean = false,
+    /** Full-screen picture size, using Nuvio's own modes (Fit, Crop, Stretch, Cinema Zoom, …). */
+    val aspectMode: String = "ORIGINAL",
+    /** Number channels 1, 2, 3… in the order they appear in each group (TiviMate's override). */
+    val sequentialNumbers: Boolean = false
 )
 
 data class LiveUserState(
@@ -182,7 +186,11 @@ data class LiveUserState(
     val groupOrder: List<String> = emptyList(),
     val customGroups: List<CustomGroup> = emptyList(),
     /** Channel key -> EPG assigned by hand from the long-press menu. */
-    val epgOverrides: Map<String, EpgAssignment> = emptyMap()
+    val epgOverrides: Map<String, EpgAssignment> = emptyMap(),
+    /** Group id -> channel keys in the order you set with "Reorder channels". */
+    val channelOrder: Map<String, List<String>> = emptyMap(),
+    /** Group id -> channels copied into it from other groups ("Copy channel"). */
+    val channelCopies: Map<String, List<String>> = emptyMap()
 )
 
 /** A channel's guide, picked by hand: which EPG source, and which channel inside it. */

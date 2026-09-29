@@ -306,6 +306,12 @@ fun LiveTvSettingsContent(
                         { update { it.copy(showGroupCounts = !it.showGroupCounts) } }
                     )
                     SettingsToggleRow(
+                        "Number channels 1, 2, 3… in each group",
+                        "Replaces the playlist's numbers with the order channels appear in each group. 20 favorites become 1 to 20.",
+                        s.sequentialNumbers,
+                        { update { it.copy(sequentialNumbers = !it.sequentialNumbers) } }
+                    )
+                    SettingsToggleRow(
                         "Open on last group",
                         "Opening Live TV shows the group you last watched a channel in",
                         s.rememberLastGroup,
@@ -435,6 +441,14 @@ fun LiveTvSettingsContent(
                         onClick = { viewModel.resetChannelEdits() }
                     )
                     SettingsActionRow("Reset group names and order", "Puts back the group names and order from your playlist", onClick = { viewModel.resetGroupEdits() })
+                    SettingsActionRow(
+                        "Reset channel order", "Undoes \"Reorder channels\" in every group",
+                        "${user.channelOrder.size}", onClick = { viewModel.resetChannelOrder() }
+                    )
+                    SettingsActionRow(
+                        "Remove copied channels", "Takes out every channel you copied into another group. The originals stay.",
+                        "${user.channelCopies.values.sumOf { it.size }}", onClick = { viewModel.clearChannelCopies() }
+                    )
                     SettingsActionRow(
                         "Reset EPG assignments",
                         "Channels you assigned a guide to go back to automatic matching",
