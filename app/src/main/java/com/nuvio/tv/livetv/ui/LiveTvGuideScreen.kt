@@ -323,13 +323,19 @@ fun LiveTvGuideScreen(
     }
 
     // Poster for the highlighted show in the info panel (what Nuvio's catalogs would show).
-    val headerProgramKey = focusedChannel?.key to focusedBlock?.program?.startMs
+    // While browsing the group list, the info panel stays on what's playing in the preview;
+    // it only follows the highlight when you're moving through the channels themselves.
+    val browsingGroups = groupsOpen && !gridFocused
+    val playingChannel = viewModel.channelByKey(playback.channelKey)
+    val headerChannel = if (browsingGroups && playingChannel != null) playingChannel else focusedChannel
+    val headerBlock = if (browsingGroups && playingChannel != null) blockAt(playingChannel, now) else focusedBlock
+    val headerProgramKey = headerChannel?.key to headerBlock?.program?.startMs
     val headerPoster by androidx.compose.runtime.produceState<String?>(initialValue = null, headerProgramKey) {
         value = null
-        val p = focusedBlock?.program ?: return@produceState
+        val p = headerBlock?.program ?: return@produceState
         if (!settings.showProgramDetails) return@produceState
         delay(250) // don't look up every show while scrolling quickly
-        value = viewModel.posterFor(p.title, p, focusedChannel)
+        value = viewModel.posterFor(p.title, p, headerChannel)
     }
 
     fun ensureRowVisible(target: Int) {
@@ -437,8 +443,8 @@ fun LiveTvGuideScreen(
         ) {
             // ---------------------------------------------------------------- header
             GuideHeader(
-                channel = focusedChannel,
-                block = focusedBlock,
+                channel = headerChannel,
+                block = headerBlock,
                 poster = headerPoster,
                 settings = settings,
                 now = now,
