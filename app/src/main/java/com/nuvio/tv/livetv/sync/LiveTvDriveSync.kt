@@ -48,7 +48,8 @@ data class DriveSyncState(
     val signIn: SignInPrompt? = null
 )
 
-data class SignInPrompt(val userCode: String, val url: String, val expiresAtMs: Long)
+/** [qrUrl] is what the QR code opens: a link with the code filled in if Google gives one. */
+data class SignInPrompt(val userCode: String, val url: String, val qrUrl: String, val expiresAtMs: Long)
 
 /**
  * Syncs the Live TV setup through the user's own Google Drive.
@@ -145,9 +146,10 @@ class LiveTvDriveSync @Inject constructor(
                 return@launch
             }
             val url = codes.optString("verification_url").ifBlank { "https://www.google.com/device" }
+            val qrUrl = codes.optString("verification_uri_complete").ifBlank { url }
             val expiresAt = System.currentTimeMillis() + codes.optLong("expires_in", 1800) * 1000
             var interval = codes.optLong("interval", 5).coerceAtLeast(5)
-            _state.value = _state.value.copy(busy = false, signIn = SignInPrompt(userCode, url, expiresAt))
+            _state.value = _state.value.copy(busy = false, signIn = SignInPrompt(userCode, url, qrUrl, expiresAt))
 
             while (System.currentTimeMillis() < expiresAt) {
                 delay(interval * 1000)

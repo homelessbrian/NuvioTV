@@ -111,6 +111,7 @@ fun rememberLiveTvSearchResults(
         use24h = settings.use24HourClock,
         open = { hit ->
             viewModel.preview(hit.channel)
+            viewModel.markFullscreenOpened()
             onOpened()
         },
         posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } }

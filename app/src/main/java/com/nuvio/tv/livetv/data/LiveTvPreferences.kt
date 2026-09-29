@@ -313,6 +313,14 @@ class LiveTvPreferences @Inject constructor(
         }
     }
 
+    /** Applies a batch of show/hide changes at once (Manage visibility). */
+    suspend fun updateHiddenChannels(show: Set<String>, hide: Set<String>) {
+        store.edit { p ->
+            val cur = p[Keys.hiddenChannels] ?: emptySet()
+            p[Keys.hiddenChannels] = (cur - show) + hide
+        }
+    }
+
     suspend fun clearHiddenChannels() {
         store.edit { it[Keys.hiddenChannels] = emptySet() }
     }

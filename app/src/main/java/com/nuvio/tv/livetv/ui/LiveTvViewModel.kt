@@ -40,6 +40,8 @@ enum class LiveMenuStyle { CLASSIC, MODERN, MODERN_BLUR }
 class LiveTvSession @Inject constructor() {
     val currentGroupId = MutableStateFlow<String?>(null)
     var autoPlayedThisLaunch = false
+    /** Set when full screen opens, so Back to the guide returns to the channel, not the groups. */
+    var returningFromFullscreen = false
 }
 
 data class LiveTvUiState(
@@ -241,7 +243,6 @@ class LiveTvViewModel @Inject constructor(
 
     fun selectGroup(id: String) {
         session.currentGroupId.value = id
-        if (id != ChannelGroup.SEARCH) viewModelScope.launch { prefs.setLastGroup(id) }
     }
 
     fun setSearchQuery(q: String) {
@@ -251,8 +252,41 @@ class LiveTvViewModel @Inject constructor(
 
     fun preview(channel: LiveChannel) {
         playback.play(channel)
-        viewModelScope.launch { prefs.recordWatched(channel.key) }
+        // Remember the group you watched in, so Live TV reopens there.
+        val group = session.currentGroupId.value?.takeIf { it != ChannelGroup.SEARCH }
+            ?: uiState.value.selectedGroupId
+        viewModelScope.launch {
+            prefs.recordWatched(channel.key)
+            prefs.setLastGroup(group)
+        }
     }
+
+    /** Every channel in the current group, hidden ones included, for Manage visibility. */
+    fun channelsWithHidden(): List<LiveChannel> {
+        val user = userState.value.copy(hiddenChannels = emptySet())
+        return buildUi(
+            displayChannels.value, user, settings.value,
+            session.currentGroupId.value ?: uiState.value.selectedGroupId, "", true
+        ).channels
+    }
+
+    /** Saves Manage visibility: [hidden] is the full set of hidden keys among [inList]. */
+    fun saveVisibility(inList: List<LiveChannel>, hidden: Set<String>) = viewModelScope.launch {
+        val keys = inList.map { it.key }.toSet()
+        prefs.updateHiddenChannels(show = keys - hidden, hide = hidden intersect keys)
+    }
+
+    fun markFullscreenOpened() {
+        session.returningFromFullscreen = true
+    }
+
+    /** True once, right after coming back from full screen. */
+    fun consumeReturningFromFullscreen(): Boolean =
+        session.returningFromFullscreen.also { session.returningFromFullscreen = false }
+
+    /** The group list, once it has loaded (for opening Live TV on the groups). */
+    suspend fun awaitGroups(): LiveTvUiState? =
+        withTimeoutOrNull(10_000) { uiState.first { it.groups.size > 1 } }
 
     fun playCatchup(channel: LiveChannel, program: EpgProgram): Boolean {
         val catchup = channel.catchup ?: return false
