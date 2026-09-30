@@ -78,6 +78,7 @@ class LiveTvPreferences @Inject constructor(
         val sequentialNumbers = booleanPreferencesKey("sequential_numbers")
         val overlayMode = booleanPreferencesKey("overlay_mode")
         val startOnLiveTv = booleanPreferencesKey("start_on_live_tv")
+        val startPage = stringPreferencesKey("start_page")
         val catchupPreferHls = booleanPreferencesKey("catchup_prefer_hls")
         val parentalPin = stringPreferencesKey("parental_pin")
         val lockAdultContent = booleanPreferencesKey("lock_adult_content")
@@ -153,6 +154,7 @@ class LiveTvPreferences @Inject constructor(
             sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers,
             overlayMode = p[Keys.overlayMode] ?: d.overlayMode,
             startOnLiveTv = p[Keys.startOnLiveTv] ?: d.startOnLiveTv,
+            startPage = p[Keys.startPage] ?: d.startPage,
             catchupPreferHls = p[Keys.catchupPreferHls] ?: d.catchupPreferHls,
             parentalPin = p[Keys.parentalPin] ?: d.parentalPin,
             lockAdultContent = p[Keys.lockAdultContent] ?: d.lockAdultContent,
@@ -246,6 +248,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.sequentialNumbers] = s.sequentialNumbers
         p[Keys.overlayMode] = s.overlayMode
         p[Keys.startOnLiveTv] = s.startOnLiveTv
+        p[Keys.startPage] = s.startPage
         p[Keys.catchupPreferHls] = s.catchupPreferHls
         p[Keys.parentalPin] = s.parentalPin
         p[Keys.lockAdultContent] = s.lockAdultContent

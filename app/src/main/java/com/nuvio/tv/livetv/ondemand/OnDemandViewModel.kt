@@ -70,6 +70,8 @@ class OnDemandViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private var loadJob: Job? = null
+    /** Hidden and locked categories as of the last reload (the settings flow can lag behind). */
+    @Volatile private var excludedNow: Set<String> = emptySet()
     private val posters = ConcurrentHashMap<String, String>()
 
     init {
@@ -140,7 +142,14 @@ class OnDemandViewModel @Inject constructor(
         posters[item.uid]?.let { return it }
         // "Use posters from my addons" off: the provider's image, no lookups at all.
         if (!settings.value.onDemandAddonPosters) return item.icon
+        // Remembered from an earlier visit (kept between app starts).
+        repository.cachedPoster(item)?.let { (cached, checked) ->
+            val fresh = System.currentTimeMillis() - checked < WEEK_MS
+            if (cached.isNotBlank()) { posters[item.uid] = cached; return cached }
+            if (fresh) return item.icon
+        }
         val hit = resolver.matchFor(item.name, item.kind == VodKind.SERIES, item.year)
+        repository.cachePoster(item, hit?.meta?.poster)
         val poster = hit?.meta?.poster ?: item.icon
         if (poster != null) posters[item.uid] = poster
         return poster
@@ -168,6 +177,10 @@ class OnDemandViewModel @Inject constructor(
             val visible = all.filter { it.uid !in user.vodHiddenCategories }
                 .map { OnDemandSection.Category(it, if (multi) names[it.playlistId] else null) }
             val sections = listOf(OnDemandSection.All, OnDemandSection.Recent) + visible
+            val s = prefs.settings.first()
+            excludedNow = user.vodHiddenCategories + all.filter { c ->
+                ParentalControls.isLocked("vod:${c.uid}", c.name, s, user.lockedGroups)
+            }.map { it.uid }
             val selected = _ui.value.selectedKey.takeIf { k -> keepSelection && sections.any { it.key == k } }
                 ?: OnDemandSection.All.key
             _ui.value = _ui.value.copy(
@@ -181,14 +194,7 @@ class OnDemandViewModel @Inject constructor(
     }
 
     /** Hidden categories, plus locked ones (kept out of All, Recently added and search). */
-    private fun excluded(): Set<String> {
-        val u = user.value
-        val s = settings.value
-        val locked = _ui.value.sections.filterIsInstance<OnDemandSection.Category>()
-            .filter { ParentalControls.isLocked("vod:${it.category.uid}", it.category.name, s, u.lockedGroups) }
-            .map { it.key }
-        return u.vodHiddenCategories + locked
-    }
+    private fun excluded(): Set<String> = excludedNow
 
     private fun loadItems(reset: Boolean) {
         loadJob?.cancel()
@@ -213,5 +219,6 @@ class OnDemandViewModel @Inject constructor(
 
     private companion object {
         const val PAGE = 120
+        const val WEEK_MS = 7L * 24 * 60 * 60 * 1000
     }
 }

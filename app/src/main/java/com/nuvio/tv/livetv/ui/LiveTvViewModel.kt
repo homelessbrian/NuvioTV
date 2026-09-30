@@ -250,7 +250,8 @@ class LiveTvViewModel @Inject constructor(
         val groupId = groupIdRaw?.takeIf { id -> groups.any { it.id == id } } ?: defaultGroupId
         val rawList = when {
             groupId == ChannelGroup.ALL && s.showAllChannelsGroup -> ordered(ChannelGroup.ALL, visible)
-            groupId == ChannelGroup.FAVORITES -> favorites
+            // "Playlist order" keeps your own order here; Number / Name sort these too.
+            groupId == ChannelGroup.FAVORITES -> sorted(favorites)
             groupId == ChannelGroup.RECENT -> recent
             groupId == ChannelGroup.SEARCH -> {
                 val q = query.trim()
@@ -260,7 +261,7 @@ class LiveTvViewModel @Inject constructor(
             }
             groupId in lockedIds -> emptyList()
             groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
-                user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty()
+                sorted(user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty())
             else -> ordered(groupId, groupChannels(groupId))
         }
         // TiviMate's number override: 1, 2, 3… in the order the group shows them.

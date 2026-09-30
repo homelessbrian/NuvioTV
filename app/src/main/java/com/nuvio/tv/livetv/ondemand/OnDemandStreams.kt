@@ -83,24 +83,104 @@ object OnDemandStreams {
         }
         val sources = repo.sourcesFor(type, tmdbId, title, year?.take(4)?.toIntOrNull(), season, episode)
         return sources.map { s ->
+            val t = s.tech
+            val quality = t?.quality
             Stream(
-                name = GROUP_NAME,
+                name = listOfNotNull(GROUP_NAME, quality).joinToString("\n"),
                 title = s.label,
-                description = null,
+                description = describe(s),
                 url = s.url,
                 ytId = null,
                 infoHash = null,
                 fileIdx = null,
                 externalUrl = null,
-                behaviorHints = if (s.headers.isEmpty()) null else StreamBehaviorHints(
-                    notWebReady = true,
+                behaviorHints = StreamBehaviorHints(
+                    notWebReady = if (s.headers.isEmpty()) null else true,
                     bingeGroup = null,
                     countryWhitelist = null,
-                    proxyHeaders = ProxyHeaders(request = s.headers, response = null)
+                    proxyHeaders = if (s.headers.isEmpty()) null else ProxyHeaders(request = s.headers, response = null),
+                    videoSize = t?.estimatedBytes,
+                    // A release-style name, so Nuvio's own badge rules (4K, HEVC, HDR, 5.1…)
+                    // recognise the stream the same way they do addon streams.
+                    filename = releaseName(s)
                 ),
                 addonName = GROUP_NAME,
-                addonLogo = null
+                addonLogo = null,
+                quality = quality,
+                qualityValue = t?.height ?: -1
             )
         }
+    }
+
+    /**
+     * The card text, laid out like popular stream addons:
+     *   🎬 Obsession (2025)
+     *   💾 ~5.4 GB | 🗣 English | 📡 My provider
+     *   🎞 4K · HEVC · Dolby Vision · 23.98 fps  🔊 E-AC3 5.1
+     */
+    private fun describe(s: OnDemandRepository.OnDemandSource): String {
+        val t = s.tech
+        val head = "🎬 " + s.title + (s.year?.let { " ($it)" } ?: "") + (s.episodeTag?.let { " · $it" } ?: "")
+        val line2 = listOfNotNull(
+            t?.estimatedBytes?.let { "💾 ~" + formatSize(it) },
+            t?.language?.let { "🗣 $it" },
+            "📡 ${s.providerName}"
+        ).joinToString(" | ")
+        val video = listOfNotNull(
+            t?.quality,
+            t?.videoCodec?.let { codecName(it) },
+            t?.hdr,
+            t?.fps?.let { "%.2f fps".format(it).replace(".00", "") }
+        ).joinToString(" · ")
+        val audio = listOfNotNull(t?.audioCodec?.let { codecName(it) }, t?.channels?.let { channelsName(it) }).joinToString(" ")
+        val line3 = listOfNotNull(
+            video.takeIf { it.isNotBlank() }?.let { "🎞 $it" },
+            audio.takeIf { it.isNotBlank() }?.let { "🔊 $it" },
+            t?.durationSecs?.let { "⏱ ${it / 3600}h ${(it % 3600) / 60}m" }
+        ).joinToString("  ")
+        return listOf(head, line2, line3).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    /** e.g. "Obsession.2025.2160p.HEVC.DV.EAC3.5.1.mkv" */
+    private fun releaseName(s: OnDemandRepository.OnDemandSource): String {
+        val t = s.tech
+        val res = when (t?.quality) { "4K" -> "2160p"; "1080p" -> "1080p"; "720p" -> "720p"; "SD" -> "480p"; else -> null }
+        val hdr = when (t?.hdr) { "Dolby Vision" -> "DV"; "HDR10" -> "HDR10"; "HLG" -> "HLG"; else -> null }
+        return listOfNotNull(
+            s.title.replace(Regex("""[^\p{L}\p{N}]+"""), ".").trim('.'),
+            s.year?.toString(),
+            s.episodeTag,
+            res,
+            t?.videoCodec?.let { codecName(it) },
+            hdr,
+            t?.audioCodec?.let { codecName(it) },
+            t?.channels?.let { channelsName(it) }
+        ).joinToString(".") + "." + (s.ext ?: "mp4")
+    }
+
+    private fun codecName(c: String): String = when (c.lowercase()) {
+        "hevc", "h265" -> "HEVC"
+        "h264", "avc" -> "H.264"
+        "av1" -> "AV1"
+        "vp9" -> "VP9"
+        "mpeg2video" -> "MPEG-2"
+        "eac3" -> "E-AC3"
+        "ac3" -> "AC3"
+        "truehd" -> "TrueHD"
+        "dts" -> "DTS"
+        "aac" -> "AAC"
+        "flac" -> "FLAC"
+        "opus" -> "Opus"
+        "mp3" -> "MP3"
+        else -> c.uppercase()
+    }
+
+    private fun channelsName(n: Int): String = when (n) {
+        1 -> "Mono"; 2 -> "2.0"; 6 -> "5.1"; 8 -> "7.1"; else -> "${n}ch"
+    }
+
+    private fun formatSize(bytes: Long): String {
+        val gb = bytes / 1_000_000_000.0
+        return if (gb >= 1) "%.1f GB".format(gb) else "%d MB".format(bytes / 1_000_000)
     }
 }

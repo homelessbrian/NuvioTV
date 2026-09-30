@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -93,6 +94,8 @@ fun OnDemandScreen(
     val status by viewModel.status.collectAsStateWithLifecycle()
     val unlocked by ParentalControls.unlocked.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val gridFocus = remember { FocusRequester() }
+    val gridStateHolder = remember { androidx.compose.runtime.mutableStateOf<androidx.compose.foundation.lazy.grid.LazyGridState?>(null) }
 
     var searchOpen by remember { mutableStateOf(false) }
     var sectionMenu by remember { mutableStateOf<OnDemandSection?>(null) }
@@ -105,6 +108,16 @@ fun OnDemandScreen(
     var hiddenPending by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val firstFocus = remember { FocusRequester() }
+    val selectedFocus = remember { FocusRequester() }
+    // The category list slides away when you move into the posters (Right), and comes back
+    // when you press Left from the first column.
+    var categoriesOpen by remember { mutableStateOf(true) }
+    var focusedPosterIndex by remember { mutableStateOf(0) }
+    // Back from the posters: bring the categories back first.
+    androidx.activity.compose.BackHandler(enabled = !categoriesOpen) {
+        categoriesOpen = true
+        scope.launch { delay(80); runCatching { selectedFocus.requestFocus() } }
+    }
     LaunchedEffect(Unit) { delay(200); runCatching { firstFocus.requestFocus() } }
 
     fun openSection(section: OnDemandSection) {
@@ -137,13 +150,25 @@ fun OnDemandScreen(
             val sections: List<OnDemandSection> = visibilityList ?: ui.sections
             val listState = rememberLazyListState()
             var focusedKey by remember { mutableStateOf<String?>(null) }
-            LazyColumn(
+            val panelWidth by androidx.compose.animation.core.animateDpAsState(
+                if (categoriesOpen || visibilityList != null) 250.dp else 0.dp,
+                androidx.compose.animation.core.tween(220), label = "categories"
+            )
+            if (panelWidth > 1.dp) LazyColumn(
                 state = listState,
                 modifier = Modifier
-                    .width(250.dp)
+                    .width(panelWidth)
                     .fillMaxHeight()
                     .onPreviewKeyEvent { e ->
-                        if (visibilityList == null) return@onPreviewKeyEvent false
+                        if (visibilityList == null) {
+                            // Right: into the posters; the category list slides away.
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight && ui.items.isNotEmpty()) {
+                                categoriesOpen = false
+                                scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+                                return@onPreviewKeyEvent true
+                            }
+                            return@onPreviewKeyEvent false
+                        }
                         val isOk = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
                         when {
                             isOk && e.type == KeyEventType.KeyUp -> {
@@ -182,7 +207,13 @@ fun OnDemandScreen(
                         selected = section.key == ui.selectedKey && visibilityList == null,
                         locked = locked,
                         visible = if (visibilityList != null) section.key !in hiddenPending else null,
-                        modifier = if (section == sections.first()) Modifier.focusRequester(firstFocus) else Modifier,
+                        modifier = when {
+                            section == sections.first() && section.key == ui.selectedKey ->
+                                Modifier.focusRequester(firstFocus).focusRequester(selectedFocus)
+                            section == sections.first() -> Modifier.focusRequester(firstFocus)
+                            section.key == ui.selectedKey -> Modifier.focusRequester(selectedFocus)
+                            else -> Modifier
+                        },
                         onFocused = { focusedKey = section.key },
                         onClick = { if (visibilityList == null) openSection(section) },
                         onLongClick = { if (visibilityList == null) sectionMenu = section }
@@ -190,11 +221,30 @@ fun OnDemandScreen(
                 }
             }
 
-            Spacer(Modifier.width(18.dp))
+            if (panelWidth > 1.dp) Spacer(Modifier.width(18.dp))
 
             // ---------------------------------------------------------- posters
-            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .onPreviewKeyEvent { e ->
+                        // Left from the first column: bring the categories back.
+                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft && !categoriesOpen) {
+                            val info = gridStateHolder.value?.layoutInfo
+                            val firstRowY = info?.visibleItemsInfo?.firstOrNull()?.offset?.y
+                            val columns = info?.visibleItemsInfo?.count { it.offset.y == firstRowY }?.coerceAtLeast(1) ?: 1
+                            if (focusedPosterIndex % columns == 0) {
+                                categoriesOpen = true
+                                scope.launch { delay(80); runCatching { selectedFocus.requestFocus() } }
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        false
+                    }
+            ) {
                 val gridState = rememberLazyGridState()
+                gridStateHolder.value = gridState
                 LaunchedEffect(gridState, ui.items.size) {
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
                         .collect { last -> if (last >= ui.items.size - 24) viewModel.loadMore() }
@@ -215,13 +265,18 @@ fun OnDemandScreen(
                     )
                     else -> LazyVerticalGrid(
                         state = gridState,
-                        columns = GridCells.Adaptive(118.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.focusRequester(gridFocus),
+                        // Smaller posters, so more fit on screen.
+                        columns = GridCells.Adaptive(96.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(bottom = 32.dp, end = 12.dp, top = 4.dp)
                     ) {
-                        items(ui.items, key = { it.uid }) { item ->
-                            PosterCard(item, viewModel) {
+                        itemsIndexed(ui.items, key = { _, it -> it.uid }) { index, item ->
+                            PosterCard(item, viewModel, onFocused = {
+                                focusedPosterIndex = index
+                                categoriesOpen = false
+                            }) {
                                 scope.launch {
                                     when (val t = viewModel.targetFor(item)) {
                                         is OnDemandTarget.Details -> onOpenDetail(t.itemId, t.itemType, t.addonBaseUrl)
@@ -395,7 +450,7 @@ private fun CategoryRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onClick: () -> Unit) {
+private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onFocused: () -> Unit = {}, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     // The provider's image straight away; your addon's poster once the card has been on
     // screen for a moment (scrolling past doesn't trigger lookups).
@@ -407,7 +462,7 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onClick: () 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -428,9 +483,9 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onClick: () 
                 AsyncImage(model = poster, contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
         }
-        Spacer(Modifier.height(5.dp))
-        LiveText(item.name, size = 12.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
-        item.year?.let { LiveText(it.toString(), size = 10.sp, color = NuvioTheme.colors.TextTertiary) }
+        Spacer(Modifier.height(4.dp))
+        LiveText(item.name, size = 11.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
+        item.year?.let { LiveText(it.toString(), size = 9.sp, color = NuvioTheme.colors.TextTertiary) }
     }
 }
 

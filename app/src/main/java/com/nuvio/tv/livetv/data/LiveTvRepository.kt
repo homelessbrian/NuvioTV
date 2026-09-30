@@ -688,6 +688,7 @@ class LiveTvRepository @Inject constructor(
                         out.write("#EXTINF:-1$attrs,$title\n")
                         out.write("$base/live/$user/$pass/$streamId.ts\n")
                         count++
+                        if (count % 500 == 0) setStatus(loading = true, message = "Loading channels from ${pl.name}… ${"%,d".format(count)}")
                     }
                     reader.endArray()
                 }

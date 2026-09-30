@@ -67,6 +67,8 @@ fun NuvioNavHost(
     }
     // Live TV fork: "Remind me" messages, shown on top of whatever screen you're on.
     com.nuvio.tv.livetv.reminders.LiveTvReminderHost(navController)
+    // Live TV fork: "Loading channels… / Importing movies…" pill while things download.
+    com.nuvio.tv.livetv.ui.LiveTvLoadingHost(navController)
 }
 
 @Composable

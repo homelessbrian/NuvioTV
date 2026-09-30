@@ -48,7 +48,7 @@ data class VodCategory(
  */
 @Singleton
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 1) {
+    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -62,6 +62,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         db.execSQL("CREATE INDEX items_norm ON items(kind, norm)")
         db.execSQL("CREATE INDEX items_tmdb ON items(kind, tmdb)")
         db.execSQL("CREATE INDEX items_added ON items(kind, added)")
+        createPosterTable(db)
         db.execSQL(
             """CREATE TABLE categories (
                 pl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
@@ -70,10 +71,37 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS items")
-        db.execSQL("DROP TABLE IF EXISTS categories")
-        onCreate(db)
+        // Version 2 only adds the poster cache; the imported catalogs are kept.
+        if (oldVersion < 2) createPosterTable(db)
     }
+
+    private fun createPosterTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS posters (uid TEXT PRIMARY KEY, poster TEXT, checked INTEGER NOT NULL)")
+    }
+
+    // ------------------------------------------------------------------ poster cache
+
+    /**
+     * Posters found in your addons, remembered between app starts so On Demand doesn't look
+     * them up again every time. An empty value means "none of your addons had it" (retried
+     * after a week).
+     */
+    fun cachedPoster(uid: String): Pair<String, Long>? =
+        readableDatabase.rawQuery("SELECT poster, checked FROM posters WHERE uid = ?", arrayOf(uid)).use { c ->
+            if (c.moveToFirst()) (c.getString(0) ?: "") to c.getLong(1) else null
+        }
+
+    fun cachePoster(uid: String, poster: String?) {
+        writableDatabase.insertWithOnConflict("posters", null, ContentValues().apply {
+            put("uid", uid); put("poster", poster ?: ""); put("checked", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /** Category names, for parental locks on "Watch On Demand" results. */
+    fun categoryName(playlistId: String, kind: VodKind, id: String): String? =
+        readableDatabase.rawQuery(
+            "SELECT name FROM categories WHERE pl = ? AND kind = ? AND id = ?", arrayOf(playlistId, kind.key, id)
+        ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
 
     // ------------------------------------------------------------------ writing
 

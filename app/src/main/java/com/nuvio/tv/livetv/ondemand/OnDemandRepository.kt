@@ -26,6 +26,43 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** What the provider reports about the file itself (from its own media scan). */
+data class VodTech(
+    val width: Int?,
+    val height: Int?,
+    val videoCodec: String?,
+    val fps: Double?,
+    val hdr: String?,
+    val audioCodec: String?,
+    val channels: Int?,
+    val language: String?,
+    val bitrateKbps: Int?,
+    val durationSecs: Int?
+) {
+    /** "4K", "1080p", "720p" or "SD". */
+    val quality: String?
+        get() {
+            val h = height ?: return null
+            val w = width ?: 0
+            return when {
+                h >= 1600 || w >= 3200 -> "4K"
+                h >= 1000 || w >= 1800 -> "1080p"
+                h >= 700 || w >= 1200 -> "720p"
+                h > 0 -> "SD"
+                else -> null
+            }
+        }
+
+    /** Size worked out from bitrate × length (providers rarely give the file size). */
+    val estimatedBytes: Long?
+        get() {
+            val br = bitrateKbps ?: return null
+            val d = durationSecs ?: return null
+            if (br <= 0 || d <= 0) return null
+            return br.toLong() * 1000L / 8L * d
+        }
+}
+
 /** One episode of a provider series, ready to play. */
 data class VodEpisode(
     val season: Int,
@@ -35,7 +72,8 @@ data class VodEpisode(
     val title: String,
     val plot: String?,
     val image: String?,
-    val url: String
+    val url: String,
+    val tech: VodTech? = null
 )
 
 /** What the provider says about a movie or series (for the fallback detail screen). */
@@ -46,7 +84,8 @@ data class VodInfo(
     val genre: String?,
     val releaseDate: String?,
     val durationText: String?,
-    val episodes: List<VodEpisode> = emptyList()
+    val episodes: List<VodEpisode> = emptyList(),
+    val tech: VodTech? = null
 )
 
 data class OnDemandStatus(val loading: Boolean = false, val message: String? = null)
@@ -117,7 +156,11 @@ class OnDemandRepository @Inject constructor(
                 importKind(pl, VodKind.MOVIE)
                 importKind(pl, VodKind.SERIES)
             }.onFailure { Log.w(TAG, "On Demand import for ${pl.name} failed", it) }.isSuccess
-            if (ok) prefs.setOnDemandImportTime(pl.id, System.currentTimeMillis())
+            // Success: next import in a day. Failure: try again in an hour, not on every start.
+            prefs.setOnDemandImportTime(
+                pl.id,
+                if (ok) System.currentTimeMillis() else System.currentTimeMillis() - REFRESH_MS + 60 * 60 * 1000L
+            )
             _version.value++
         }
         _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
@@ -148,6 +191,9 @@ class OnDemandRepository @Inject constructor(
                     return
                 }
                 reader.beginArray()
+                val what = if (kind == VodKind.MOVIE) "movies" else "series"
+                var n = 0
+                _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}…")
                 val items = sequence {
                     while (reader.hasNext()) {
                         val f = readFlat(reader)
@@ -169,6 +215,7 @@ class OnDemandRepository @Inject constructor(
                                 addedSec = (f["added"] ?: f["last_modified"])?.toLongOrNull() ?: 0L
                             )
                         )
+                        if (++n % 500 == 0) _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}… ${"%,d".format(n)}")
                     }
                 }
                 db.replace(pl.id, kind, categories, items)
@@ -243,7 +290,8 @@ class OnDemandRepository @Inject constructor(
                         title = e.optString("title").ifBlank { "Episode $num" },
                         plot = einfo?.optString("plot")?.takeIf { it.isNotBlank() },
                         image = einfo?.optString("movie_image")?.takeIf { it.startsWith("http") },
-                        url = "${pl.xtreamBase()}/series/${enc(pl.xtreamUsername)}/${enc(pl.xtreamPassword)}/$id.$ext"
+                        url = "${pl.xtreamBase()}/series/${enc(pl.xtreamUsername)}/${enc(pl.xtreamPassword)}/$id.$ext",
+                        tech = einfo?.let { parseTech(it) }
                     )
                 }
             }
@@ -255,16 +303,38 @@ class OnDemandRepository @Inject constructor(
             genre = info.optString("genre").takeIf { it.isNotBlank() },
             releaseDate = (info.optString("releasedate").ifBlank { info.optString("releaseDate") }).takeIf { it.isNotBlank() },
             durationText = info.optString("duration").takeIf { it.isNotBlank() },
-            episodes = episodes.sortedWith(compareBy({ it.season }, { it.episode }))
+            episodes = episodes.sortedWith(compareBy({ it.season }, { it.episode })),
+            tech = parseTech(info)
         )
         infoCache[item.uid] = result
         result
     }
 
+    // ------------------------------------------------------------------ poster cache
+
+    suspend fun cachedPoster(item: VodItem): Pair<String, Long>? = withContext(Dispatchers.IO) {
+        runCatching { db.cachedPoster(item.uid) }.getOrNull()
+    }
+
+    suspend fun cachePoster(item: VodItem, poster: String?) = withContext(Dispatchers.IO) {
+        runCatching { db.cachePoster(item.uid, poster) }
+        Unit
+    }
+
     // ------------------------------------------------------------------ "Watch On Demand"
 
     /** A playable On Demand copy of something you opened in Nuvio. */
-    data class OnDemandSource(val label: String, val url: String, val headers: Map<String, String>)
+    data class OnDemandSource(
+        val label: String,
+        val url: String,
+        val headers: Map<String, String>,
+        val title: String = "",
+        val year: Int? = null,
+        val providerName: String = "",
+        val ext: String? = null,
+        val tech: VodTech? = null,
+        val episodeTag: String? = null
+    )
 
     /**
      * Finds [title] in your providers' catalogs: by TMDB id when both sides have one, otherwise
@@ -291,15 +361,33 @@ class OnDemandRepository @Inject constructor(
                 .filter { year == null || it.year == null || kotlin.math.abs(it.year - year) <= 1 }
                 .forEach { candidates.putIfAbsent(it.uid, it) }
         }
+        // Titles in categories you hid (or that are locked) never show up in Nuvio.
+        val user = prefs.userState.first()
+        val settings = prefs.settings.first()
+        val allowed = candidates.values.filter { item ->
+            val uid = "${item.kind.key}:${item.playlistId}:${item.categoryId}"
+            if (uid in user.vodHiddenCategories) return@filter false
+            val name = runCatching { db.categoryName(item.playlistId, item.kind, item.categoryId) }.getOrNull().orEmpty()
+            !com.nuvio.tv.livetv.parental.ParentalControls.isLocked("vod:$uid", name, settings, user.lockedGroups)
+        }
         val out = ArrayList<OnDemandSource>()
-        for (item in candidates.values.take(6)) {
+        for (item in allowed.take(6)) {
             val pl = playlist(item.playlistId) ?: continue
             val headers = if (pl.userAgent.isNotBlank()) mapOf("User-Agent" to pl.userAgent) else emptyMap()
             if (kind == VodKind.MOVIE) {
-                movieUrl(item)?.let { out += OnDemandSource("${pl.name} · ${(item.ext ?: "mp4").uppercase()}", it, headers) }
+                val url = movieUrl(item) ?: continue
+                val tech = runCatching { info(item)?.tech }.getOrNull()
+                out += OnDemandSource(
+                    "${pl.name} · ${(item.ext ?: "mp4").uppercase()}", url, headers,
+                    title = item.name, year = item.year, providerName = pl.name, ext = item.ext ?: "mp4", tech = tech
+                )
             } else if (season != null && episode != null) {
                 val ep = info(item)?.episodes?.firstOrNull { it.season == season && it.episode == episode } ?: continue
-                out += OnDemandSource("${pl.name} · S${season}E${episode} · ${ep.ext.uppercase()}", ep.url, headers)
+                out += OnDemandSource(
+                    "${pl.name} · S${season}E${episode} · ${ep.ext.uppercase()}", ep.url, headers,
+                    title = item.name, year = item.year, providerName = pl.name, ext = ep.ext, tech = ep.tech,
+                    episodeTag = "S%02dE%02d".format(season, episode)
+                )
             }
         }
         out
@@ -316,6 +404,46 @@ class OnDemandRepository @Inject constructor(
     }
 
     private fun enc(s: String) = URLEncoder.encode(s.trim(), "UTF-8")
+
+    /** Reads the provider's media scan ("video" / "audio" / "bitrate" / "duration_secs"). */
+    private fun parseTech(info: JSONObject): VodTech? {
+        val v = info.optJSONObject("video")
+        val a = info.optJSONObject("audio")
+        val bitrate = info.optString("bitrate").toIntOrNull()?.takeIf { it > 0 }
+        val duration = info.optString("duration_secs").toIntOrNull()?.takeIf { it > 0 }
+            ?: info.optString("duration").split(':').takeIf { it.size == 3 }?.let { p ->
+                (p[0].toIntOrNull() ?: 0) * 3600 + (p[1].toIntOrNull() ?: 0) * 60 + (p[2].toIntOrNull() ?: 0)
+            }?.takeIf { it > 0 }
+        if (v == null && a == null && bitrate == null && duration == null) return null
+        val fps = v?.optString("r_frame_rate")?.let { r ->
+            val parts = r.split('/')
+            val n = parts.getOrNull(0)?.toDoubleOrNull()
+            val d = parts.getOrNull(1)?.toDoubleOrNull() ?: 1.0
+            if (n != null && d > 0) n / d else null
+        }?.takeIf { it in 1.0..240.0 }
+        val transfer = v?.optString("color_transfer").orEmpty()
+        val hdr = when {
+            v?.optJSONArray("side_data_list")?.toString()?.contains("DOVI", ignoreCase = true) == true -> "Dolby Vision"
+            transfer.contains("smpte2084") -> "HDR10"
+            transfer.contains("arib-std-b67") -> "HLG"
+            else -> null
+        }
+        val lang = a?.optJSONObject("tags")?.optString("language")?.takeIf { it.isNotBlank() && it != "und" }?.let { code ->
+            runCatching { java.util.Locale(code).displayLanguage }.getOrNull()?.takeIf { it.isNotBlank() && it != code } ?: code.uppercase()
+        }
+        return VodTech(
+            width = v?.optInt("width")?.takeIf { it > 0 },
+            height = v?.optInt("height")?.takeIf { it > 0 },
+            videoCodec = v?.optString("codec_name")?.takeIf { it.isNotBlank() },
+            fps = fps,
+            hdr = hdr,
+            audioCodec = a?.optString("codec_name")?.takeIf { it.isNotBlank() },
+            channels = a?.optInt("channels")?.takeIf { it > 0 },
+            language = lang,
+            bitrateKbps = bitrate,
+            durationSecs = duration
+        )
+    }
 
     private fun yearOf(s: String?): Int? =
         s?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }

@@ -911,6 +911,8 @@ fun LiveTvGuideScreen(
         menuTarget?.let { target ->
             ChannelContextMenu(
                 target = target,
+                reminderSet = target.block?.program?.let { p -> user.reminders.any { it.channelKey == target.channel.key && it.startMs == p.startMs } } == true,
+                onRemind = { p -> viewModel.toggleReminder(target.channel, p); menuTarget = null },
                 isFavorite = target.channel.key in user.favorites,
                 inFavoritesGroup = ui.selectedGroupId == ChannelGroup.FAVORITES,
                 now = now,
@@ -1894,6 +1896,8 @@ private fun ChannelContextMenu(
     onProgramInfo: () -> Unit,
     streamProgram: EpgProgram?,
     onFindInNuvio: (EpgProgram) -> Unit,
+    reminderSet: Boolean = false,
+    onRemind: (EpgProgram) -> Unit = {},
     onSearch: () -> Unit,
     onRefresh: () -> Unit,
     onSettings: () -> Unit
@@ -1911,6 +1915,10 @@ private fun ChannelContextMenu(
             if (canCatchup) item { MenuItem("Play from archive: ${program!!.title}", onClick = { onCatchup(program!!) }) }
             if (streamProgram != null) {
                 item { MenuItem("Find & stream \"${streamProgram.title}\" in Nuvio", onClick = { onFindInNuvio(streamProgram) }) }
+            }
+            // Upcoming show: Remind me (or Cancel reminder), right in the long-press menu.
+            if (program != null && program.startMs > now) item {
+                MenuItem(if (reminderSet) "Cancel reminder" else "Remind me", onClick = { onRemind(program) })
             }
             if (program != null) item { MenuItem("Program info", onClick = onProgramInfo) }
             item { MenuItem(if (isFavorite) "Remove from favorites" else "Add to favorites", onClick = onToggleFavorite) }

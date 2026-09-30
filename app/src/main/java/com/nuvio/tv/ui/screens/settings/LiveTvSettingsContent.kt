@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.livetv.model.ChannelSort
+import com.nuvio.tv.livetv.model.effectiveStartPage
 import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.PlaylistSource
@@ -86,6 +89,7 @@ private sealed interface LiveDialog {
     data object PinNew : LiveDialog
     data object PinRemove : LiveDialog
     data object Reminders : LiveDialog
+    data object StartPage : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -106,6 +110,15 @@ private fun offsetLabel(min: Int): String {
 private fun hoursLabel(h: Int): String = when {
     h >= 24 && h % 24 == 0 -> if (h == 24) "1 day" else "${h / 24} days"
     else -> "$h hours"
+}
+
+private fun startPageLabel(page: String): String = when (page) {
+    "LIVE_TV" -> "Live TV"
+    "ON_DEMAND" -> "On Demand"
+    "DISCOVER" -> "Discover"
+    "SEARCH" -> "Search"
+    "LIBRARY" -> "Library"
+    else -> "Home"
 }
 
 private fun sourceStatus(enabled: Boolean, updated: Long, error: String?, count: String): String {
@@ -173,6 +186,7 @@ fun LiveTvSettingsContent(
             // ------------------------------------------------------------ playlists
             item(key = "playlists") {
                 SettingsGroupCard(title = "Playlists", subtitle = "Your channel lists. Select one to edit, update, turn off or delete it.") {
+                    if (status.loading) LoadingLine(status.message ?: "Updating…")
                     playlists.forEachIndexed { index, pl ->
                         SettingsActionRow(
                             title = pl.name + if (pl.isXtream) " (Xtream)" else "",
@@ -339,7 +353,7 @@ fun LiveTvSettingsContent(
                     )
                     SettingsActionRow(
                         title = "Channel order",
-                        subtitle = "How channels are sorted inside a group. Favorites and your own groups keep your order.",
+                        subtitle = "How channels are sorted in every group, Favorites included. Playlist order keeps your own order in Favorites and your groups.",
                         value = when (s.channelSort) {
                             ChannelSort.PLAYLIST -> "Playlist order"
                             ChannelSort.NUMBER -> "Channel number"
@@ -447,11 +461,11 @@ fun LiveTvSettingsContent(
             // ------------------------------------------------------------ Nuvio
             item(key = "nuvio") {
                 SettingsGroupCard(title = "In the rest of Nuvio") {
-                    SettingsToggleRow(
-                        "Open Live TV when Nuvio starts",
-                        "Starts on the Live TV guide instead of Nuvio's home screen. Back still takes you to the menu.",
-                        s.startOnLiveTv,
-                        { update { it.copy(startOnLiveTv = !it.startOnLiveTv) } }
+                    SettingsActionRow(
+                        title = "Start page",
+                        subtitle = "The page Nuvio opens on. Back still takes you to the menu.",
+                        value = startPageLabel(s.effectiveStartPage),
+                        onClick = { dialog = LiveDialog.StartPage }
                     )
                     SettingsToggleRow(
                         "Hide from side menu",
@@ -474,6 +488,7 @@ fun LiveTvSettingsContent(
                     title = "On Demand",
                     subtitle = "Movies and series from Xtream logins with \"Include movies & series\" on. Change it per login under Playlists → Edit."
                 ) {
+                    if (onDemandStatus.loading) LoadingLine(onDemandStatus.message ?: "Importing movies and series…")
                     SettingsActionRow(
                         "Update movies & series now",
                         onDemandStatus.message ?: if (onDemandHas) "Imported. Updates once a day by itself." else "Nothing imported yet",
@@ -720,6 +735,21 @@ fun LiveTvSettingsContent(
             onDismiss = close,
             onConfirm = { if (it.trim() == s.parentalPin) { update { st -> st.copy(parentalPin = "") }; close() } else pinWrong = true }
         )
+        LiveDialog.StartPage -> SettingsSingleChoiceDialog(
+            title = "Start page",
+            // On Demand is only offered once something has been imported.
+            options = buildList {
+                add(SettingsPickerOption("HOME", "Home"))
+                add(SettingsPickerOption("LIVE_TV", "Live TV"))
+                if (onDemandHas) add(SettingsPickerOption("ON_DEMAND", "On Demand"))
+                add(SettingsPickerOption("DISCOVER", "Discover"))
+                add(SettingsPickerOption("SEARCH", "Search"))
+                add(SettingsPickerOption("LIBRARY", "Library"))
+            },
+            selectedValue = s.effectiveStartPage,
+            onOptionSelected = { v -> update { it.copy(startPage = v, startOnLiveTv = v == "LIVE_TV") }; close() },
+            onDismiss = close
+        )
         LiveDialog.Reminders -> ActionListDialog(
             title = if (user.reminders.isEmpty()) "No reminders" else "Reminders (select to remove)",
             actions = user.reminders.map { r ->
@@ -851,6 +881,21 @@ fun LiveTvSettingsContent(
             onOptionSelected = { v -> viewModel.updateAndReloadEpg { it.copy(epgPastHours = v) }; close() },
             onDismiss = close
         )
+    }
+}
+
+// ==================================================================== loading line
+
+/** A spinner and what's happening, while playlists, guides or On Demand are downloading. */
+@Composable
+private fun LoadingLine(message: String) {
+    androidx.compose.foundation.layout.Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        com.nuvio.tv.livetv.ui.LoadingSpinner()
+        androidx.compose.foundation.layout.Spacer(Modifier.width(10.dp))
+        Text(text = message, style = MaterialTheme.typography.bodySmall, color = NuvioTheme.colors.TextSecondary)
     }
 }
 

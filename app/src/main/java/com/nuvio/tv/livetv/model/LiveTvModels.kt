@@ -179,8 +179,10 @@ data class LiveTvSettings(
     val sequentialNumbers: Boolean = false,
     /** Left while watching opens overlay mode; off: Left returns to the guide's group list. */
     val overlayMode: Boolean = true,
-    /** Open Live TV instead of Nuvio's home screen when the app starts. */
+    /** Open Live TV instead of Nuvio's home screen when the app starts (older setting). */
     val startOnLiveTv: Boolean = false,
+    /** The page Nuvio opens on: HOME, LIVE_TV, ON_DEMAND, SEARCH, LIBRARY or DISCOVER. */
+    val startPage: String = "",
     /** Xtream catch-up: ask for HLS (.m3u8) first, which gives replays a length for seeking. */
     val catchupPreferHls: Boolean = true,
     /** Parental controls: a 4-digit PIN; empty = parental controls off. */
@@ -277,3 +279,8 @@ data class ChannelGroup(
         const val CUSTOM_PREFIX = "custom:"
     }
 }
+
+
+/** The start page, including the older "Open Live TV when Nuvio starts" switch. */
+val LiveTvSettings.effectiveStartPage: String
+    get() = startPage.ifBlank { if (startOnLiveTv) "LIVE_TV" else "HOME" }
