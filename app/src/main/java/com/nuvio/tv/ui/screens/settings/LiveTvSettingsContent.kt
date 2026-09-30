@@ -39,6 +39,7 @@ import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.PlaylistSource
 import com.nuvio.tv.livetv.model.ZapMode
 import com.nuvio.tv.livetv.ui.LiveTvSettingsViewModel
+import com.nuvio.tv.livetv.ui.TextInputDialog
 import com.nuvio.tv.ui.components.NuvioDialog
 import com.nuvio.tv.ui.screens.collection.NuvioTextField
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -81,6 +82,10 @@ private sealed interface LiveDialog {
     data object HighlightChoice : LiveDialog
     data object CustomGroups : LiveDialog
     data object ConfirmRestore : LiveDialog
+    data object PinCheck : LiveDialog
+    data object PinNew : LiveDialog
+    data object PinRemove : LiveDialog
+    data object Reminders : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -128,6 +133,9 @@ fun LiveTvSettingsContent(
     val status by viewModel.status.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<LiveDialog?>(null) }
     val drive by viewModel.driveSync.state.collectAsStateWithLifecycle()
+    val onDemandHas by viewModel.onDemand.hasContent.collectAsStateWithLifecycle()
+    val onDemandStatus by viewModel.onDemand.status.collectAsStateWithLifecycle()
+    var pinWrong by remember { mutableStateOf(false) }
     var driveExpanded by remember { mutableStateOf(false) }
 
     fun update(t: (LiveTvSettings) -> LiveTvSettings) = viewModel.update(t)
@@ -271,6 +279,12 @@ fun LiveTvSettingsContent(
                         onClick = { dialog = LiveDialog.HighlightChoice }
                     )
                     SettingsToggleRow(
+                        "Quality badges",
+                        "Shows 4K, FHD, HD or SD next to channels you've watched",
+                        s.showQualityBadges,
+                        { update { it.copy(showQualityBadges = !it.showQualityBadges) } }
+                    )
+                    SettingsToggleRow(
                         "24-hour clock",
                         "Shows times like 20:30 instead of 8:30 PM",
                         s.use24HourClock,
@@ -383,6 +397,12 @@ fun LiveTvSettingsContent(
                         { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
                     )
                     SettingsToggleRow(
+                        "Match frame rate",
+                        "Switches the TV to the video's frame rate (for example 50 Hz for UK and European channels) for smoother motion. Only on TVs that support it.",
+                        s.matchFrameRate,
+                        { update { it.copy(matchFrameRate = !it.matchFrameRate) } }
+                    )
+                    SettingsToggleRow(
                         "Reconnect automatically",
                         "Tries the stream again by itself if it drops or freezes",
                         s.autoReconnect,
@@ -439,6 +459,70 @@ fun LiveTvSettingsContent(
                         "Stops channels and TV shows from appearing in Nuvio's search results",
                         !s.showInSearch,
                         { update { it.copy(showInSearch = !it.showInSearch) } }
+                    )
+                }
+            }
+
+            // ------------------------------------------------------------ On Demand
+            item(key = "on_demand") {
+                SettingsGroupCard(
+                    title = "On Demand",
+                    subtitle = "Movies and series from Xtream logins with \"Import movies & series\" on. Turn it off per login under Playlists → Edit."
+                ) {
+                    SettingsActionRow(
+                        "Update movies & series now",
+                        onDemandStatus.message ?: if (onDemandHas) "Imported. Updates once a day by itself." else "Nothing imported yet",
+                        onClick = { viewModel.onDemand.refreshNow() }
+                    )
+                    SettingsToggleRow(
+                        "Show On Demand in the side menu",
+                        "Only appears when a provider's movies or series are imported",
+                        s.onDemandInSidebar,
+                        { update { it.copy(onDemandInSidebar = !it.onDemandInSidebar) } }
+                    )
+                    SettingsActionRow(
+                        "Show hidden categories", "Brings back every On Demand category you hid",
+                        "${user.vodHiddenCategories.size}", onClick = { viewModel.clearVodHidden() }
+                    )
+                }
+            }
+
+            // ------------------------------------------------------------ parental controls
+            item(key = "parental") {
+                SettingsGroupCard(
+                    title = "Parental controls",
+                    subtitle = "Locked groups and categories need the PIN to open, and stay out of All channels and search until unlocked."
+                ) {
+                    val hasPin = s.parentalPin.length >= 4
+                    SettingsActionRow(
+                        if (hasPin) "Change PIN" else "Set a PIN",
+                        if (hasPin) "Parental controls are on" else "Turns parental controls on",
+                        onClick = { pinWrong = false; dialog = if (hasPin) LiveDialog.PinCheck else LiveDialog.PinNew }
+                    )
+                    if (hasPin) {
+                        SettingsToggleRow(
+                            "Lock adult content automatically",
+                            "Locks groups and categories with names like Adult, XXX or 18+",
+                            s.lockAdultContent,
+                            { update { it.copy(lockAdultContent = !it.lockAdultContent) } }
+                        )
+                        SettingsActionRow(
+                            "Turn off parental controls", "Removes the PIN. Your locked groups are remembered.",
+                            "${user.lockedGroups.size} locked",
+                            onClick = { pinWrong = false; dialog = LiveDialog.PinRemove }
+                        )
+                    }
+                }
+            }
+
+            // ------------------------------------------------------------ reminders
+            item(key = "reminders") {
+                SettingsGroupCard(title = "Reminders") {
+                    SettingsActionRow(
+                        "Upcoming reminders",
+                        "Set from a show's info in the guide. You get a message a minute before it starts.",
+                        "${user.reminders.size}",
+                        onClick = { dialog = LiveDialog.Reminders }
                     )
                 }
             }
@@ -506,7 +590,9 @@ fun LiveTvSettingsContent(
                 FormField("Password", "")
             ),
             onDismiss = close,
-            onSave = { v, _ -> if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3]); close() }
+            onSave = { v, _ -> if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3]); close() },
+            toggle2 = "Import movies & series (On Demand)" to true,
+            onSaveBoth = { v, _, vod -> if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3], vod); close() }
         )
         LiveDialog.AddEpg -> SourceFormDialog(
             title = "Add EPG source",
@@ -539,9 +625,14 @@ fun LiveTvSettingsContent(
                         FormField("User agent (optional)", "", src.userAgent)
                     ),
                     toggle = "Load built-in guide" to src.useEmbeddedEpg,
+                    toggle2 = "Import movies & series (On Demand)" to src.importVod,
                     onDismiss = close,
                     onSave = { v, t ->
                         viewModel.savePlaylist(src.copy(name = v[0], xtreamServer = v[1], xtreamUsername = v[2], xtreamPassword = v[3], userAgent = v[4], useEmbeddedEpg = t))
+                        close()
+                    },
+                    onSaveBoth = { v, t, vod ->
+                        viewModel.savePlaylist(src.copy(name = v[0], xtreamServer = v[1], xtreamUsername = v[2], xtreamPassword = v[3], userAgent = v[4], useEmbeddedEpg = t, importVod = vod))
                         close()
                     }
                 )
@@ -570,6 +661,35 @@ fun LiveTvSettingsContent(
                 (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setEpgEnabled(d.source.id, !d.source.enabled); close() },
                 "Delete EPG source" to { dialog = LiveDialog.ConfirmDeleteEpg(d.source) }
             ),
+            onDismiss = close
+        )
+        LiveDialog.PinCheck -> TextInputDialog(
+            title = if (pinWrong) "Wrong PIN, try again" else "Enter your current PIN",
+            initial = "", hint = "Current PIN", confirmLabel = "Next", numeric = true,
+            onDismiss = close,
+            onConfirm = { if (it.trim() == s.parentalPin) { pinWrong = false; dialog = LiveDialog.PinNew } else pinWrong = true }
+        )
+        LiveDialog.PinNew -> TextInputDialog(
+            title = if (pinWrong) "The PIN needs 4 to 8 digits" else "Choose a PIN (4 to 8 digits)",
+            initial = "", hint = "New PIN", confirmLabel = "Save", numeric = true,
+            onDismiss = close,
+            onConfirm = { pin ->
+                val p = pin.trim()
+                if (p.length in 4..8 && p.all { it.isDigit() }) { update { it.copy(parentalPin = p) }; close() } else pinWrong = true
+            }
+        )
+        LiveDialog.PinRemove -> TextInputDialog(
+            title = if (pinWrong) "Wrong PIN, try again" else "Enter your PIN to turn parental controls off",
+            initial = "", hint = "PIN", confirmLabel = "Turn off", numeric = true,
+            onDismiss = close,
+            onConfirm = { if (it.trim() == s.parentalPin) { update { st -> st.copy(parentalPin = "") }; close() } else pinWrong = true }
+        )
+        LiveDialog.Reminders -> ActionListDialog(
+            title = if (user.reminders.isEmpty()) "No reminders" else "Reminders (select to remove)",
+            actions = user.reminders.map { r ->
+                val whenText = java.text.SimpleDateFormat("EEE h:mm a", java.util.Locale.getDefault()).format(java.util.Date(r.startMs))
+                "$whenText · ${r.title} · ${r.channelName}" to { viewModel.removeReminder(r.channelKey, r.startMs) }
+            }.ifEmpty { listOf("Close" to close) },
             onDismiss = close
         )
         LiveDialog.ConfirmRestore -> ConfirmDeleteDialog(
@@ -832,10 +952,14 @@ private fun SourceFormDialog(
     fields: List<FormField>,
     onDismiss: () -> Unit,
     onSave: (List<String>, Boolean) -> Unit,
-    toggle: Pair<String, Boolean>? = null
+    toggle: Pair<String, Boolean>? = null,
+    /** A second switch (Xtream: import movies & series); its value goes to [onSaveBoth]. */
+    toggle2: Pair<String, Boolean>? = null,
+    onSaveBoth: ((List<String>, Boolean, Boolean) -> Unit)? = null
 ) {
     val values = remember { fields.map { mutableStateOf(it.initial) } }
     var toggleValue by remember { mutableStateOf(toggle?.second ?: true) }
+    var toggle2Value by remember { mutableStateOf(toggle2?.second ?: true) }
     val firstField = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(80)
@@ -875,12 +999,23 @@ private fun SourceFormDialog(
                 onToggle = { toggleValue = !toggleValue }
             )
         }
+        if (toggle2 != null) {
+            SettingsToggleRow(
+                title = toggle2.first,
+                subtitle = "Adds the provider's movies and series to On Demand and to \"Watch On Demand\" in Nuvio",
+                checked = toggle2Value,
+                onToggle = { toggle2Value = !toggle2Value }
+            )
+        }
         }
         SettingsDialogActionRow {
             SettingsDialogActionButton(text = "Cancel", onClick = onDismiss)
             SettingsDialogActionButton(
                 text = "Save",
-                onClick = { onSave(values.map { it.value.trim() }, toggleValue) },
+                onClick = {
+                    val v = values.map { it.value.trim() }
+                    if (onSaveBoth != null) onSaveBoth(v, toggleValue, toggle2Value) else onSave(v, toggleValue)
+                },
                 primary = true
             )
         }

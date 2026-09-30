@@ -45,6 +45,8 @@ class LiveTvSession @Inject constructor() {
     /** Overlay mode off: Left in full screen returns to the guide with the groups open. */
     var openGroupsOnReturn = false
     val collapsedPlaylists = MutableStateFlow<Set<String>>(emptySet())
+    /** Sleep timer: when playback stops (null = off). Kept while the app is open. */
+    val sleepAtMs = MutableStateFlow<Long?>(null)
 }
 
 data class LiveTvUiState(
@@ -139,7 +141,7 @@ class LiveTvViewModel @Inject constructor(
         combine(displayChannels, userState, settings) { a, b, c -> Triple(a, b, c) },
         session.currentGroupId,
         searchQuery,
-        hasSources
+        combine(hasSources, com.nuvio.tv.livetv.parental.ParentalControls.unlocked) { h, _ -> h }
     ) { (channels, user, s), groupIdRaw, query, hasSrc ->
         buildUi(channels, user, s, groupIdRaw, query, hasSrc)
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, LiveTvUiState())
@@ -173,7 +175,16 @@ class LiveTvViewModel @Inject constructor(
         query: String,
         hasSrc: Boolean
     ): LiveTvUiState {
-        val visible = channels.filter { it.key !in user.hiddenChannels && it.groupId !in user.hiddenGroups }
+        val shown = channels.filter { it.key !in user.hiddenChannels && it.groupId !in user.hiddenGroups }
+        // Parental controls: channels in locked groups stay out of every list until unlocked.
+        val lockedIds = HashSet<String>()
+        shown.distinctBy { it.groupId }.forEach { c ->
+            if (com.nuvio.tv.livetv.parental.ParentalControls.isLocked(c.groupId, c.group, s, user.lockedGroups)) lockedIds += c.groupId
+        }
+        user.customGroups.forEach { g ->
+            if (com.nuvio.tv.livetv.parental.ParentalControls.isLocked(g.id, g.name, s, user.lockedGroups)) lockedIds += g.id
+        }
+        val visible = shown.filter { it.groupId !in lockedIds }
         val byKey = visible.associateBy { it.key }
         val favorites = user.favorites.mapNotNull { byKey[it] }
         val recent = user.recent.mapNotNull { byKey[it] }
@@ -211,18 +222,18 @@ class LiveTvViewModel @Inject constructor(
         val regular = mutableListOf<ChannelGroup>()
         val custom = user.customGroups
             .filter { it.id !in user.hiddenGroups }
-            .map { g -> ChannelGroup(g.id, g.name, g.channelKeys.count { it in byKey }) }
+            .map { g -> ChannelGroup(g.id, g.name, g.channelKeys.count { it in byKey }, locked = g.id in lockedIds) }
         regular += custom
         val playlistGroups = LinkedHashMap<String, Pair<String, Int>>()
-        visible.forEach { c ->
+        shown.forEach { c ->
             val cur = playlistGroups[c.groupId]
             playlistGroups[c.groupId] = (cur?.first ?: c.group) to ((cur?.second ?: 0) + 1)
         }
         val groupSource = HashMap<String, String>()
-        visible.forEach { c -> groupSource.putIfAbsent(c.groupId, c.sourceId) }
+        shown.forEach { c -> groupSource.putIfAbsent(c.groupId, c.sourceId) }
         playlistGroups.forEach { (id, v) ->
             val copied = user.channelCopies[id].orEmpty().count { k -> byKey[k]?.let { it.groupId != id } == true }
-            regular += ChannelGroup(id, v.first, v.second + copied, sourceId = groupSource[id])
+            regular += ChannelGroup(id, v.first, v.second + copied, sourceId = groupSource[id], locked = id in lockedIds)
         }
         val orderIndex = user.groupOrder.withIndex().associate { (i, id) -> id to i }
         val orderedRegular = regular.withIndex()
@@ -247,6 +258,7 @@ class LiveTvViewModel @Inject constructor(
                     it.name.contains(q, ignoreCase = true) || it.number.toString() == q
                 })
             }
+            groupId in lockedIds -> emptyList()
             groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
                 user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty()
             else -> ordered(groupId, groupChannels(groupId))
@@ -273,6 +285,50 @@ class LiveTvViewModel @Inject constructor(
     fun selectGroup(id: String) {
         session.currentGroupId.value = id
     }
+
+    // ------------------------------------------------------------ sleep timer, quality
+
+    val sleepAtMs: StateFlow<Long?> = session.sleepAtMs
+
+    fun setSleepTimer(minutes: Int?) {
+        session.sleepAtMs.value = minutes?.let { System.currentTimeMillis() + it * 60_000L }
+    }
+
+    /** Remembers the picture quality a channel played at, for the guide's badges. */
+    fun recordQuality(channelKey: String, height: Int) {
+        val q = when {
+            height >= 1800 -> "4K"
+            height >= 1000 -> "FHD"
+            height >= 700 -> "HD"
+            height > 0 -> "SD"
+            else -> return
+        }
+        if (userState.value.channelQuality[channelKey] == q) return
+        viewModelScope.launch { prefs.setChannelQuality(channelKey, q) }
+    }
+
+    // ------------------------------------------------------------ reminders
+
+    /** Sets or cancels "Remind me" for an upcoming show. */
+    fun toggleReminder(channel: LiveChannel, program: EpgProgram) = viewModelScope.launch {
+        val exists = userState.value.reminders.any { it.channelKey == channel.key && it.startMs == program.startMs }
+        if (exists) prefs.removeReminder(channel.key, program.startMs)
+        else prefs.addReminder(com.nuvio.tv.livetv.model.Reminder(channel.key, channel.name, program.title, program.startMs))
+    }
+
+    // ------------------------------------------------------------ parental controls
+
+    fun parentalEnabled(): Boolean = com.nuvio.tv.livetv.parental.ParentalControls.enabled(settings.value)
+
+    /** Opens a locked group with the PIN; false if the PIN is wrong. */
+    fun unlockGroup(group: ChannelGroup, pin: String): Boolean =
+        com.nuvio.tv.livetv.parental.ParentalControls.unlock(group.id, pin, settings.value)
+
+    fun isGroupLockSet(groupId: String) = groupId in userState.value.lockedGroups
+
+    fun setGroupLocked(groupId: String, locked: Boolean) = viewModelScope.launch { prefs.setGroupLocked(groupId, locked) }
+
+    fun checkPin(pin: String) = com.nuvio.tv.livetv.parental.ParentalControls.checkPin(pin, settings.value)
 
     fun setSearchQuery(q: String) {
         searchQuery.value = q

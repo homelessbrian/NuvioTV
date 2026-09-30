@@ -653,12 +653,22 @@ class StreamScreenViewModel @Inject constructor(
             }
 
             val streamLoadInner = launch {
-                streamRepository.getStreamsFromAllAddons(
+                // Live TV fork: add "Watch On Demand" when an IPTV provider has this title.
+                com.nuvio.tv.livetv.ondemand.OnDemandStreams.withOnDemand(
+                    context = context,
+                    source = streamRepository.getStreamsFromAllAddons(
+                        type = contentType,
+                        videoId = videoId,
+                        season = season,
+                        episode = episode,
+                        forceRefresh = forceRefresh
+                    ),
                     type = contentType,
                     videoId = videoId,
                     season = season,
                     episode = episode,
-                    forceRefresh = forceRefresh
+                    title = contentName ?: title,
+                    year = year
                 ).collect { result ->
                     when (result) {
                         is NetworkResult.Success -> {

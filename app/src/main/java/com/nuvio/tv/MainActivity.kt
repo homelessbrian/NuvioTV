@@ -50,6 +50,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
@@ -263,6 +264,9 @@ open class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var liveTvPreferences: com.nuvio.tv.livetv.data.LiveTvPreferences
+
+    @Inject
+    lateinit var onDemandRepository: com.nuvio.tv.livetv.ondemand.OnDemandRepository
 
     @Inject
     lateinit var layoutPreferenceDataStore: LayoutPreferenceDataStore
@@ -1015,13 +1019,20 @@ open class MainActivity : ComponentActivity() {
                     }
 
                     val liveTvSettingsFlow = remember { liveTvPreferences.settings }
-                    val liveTvInSidebar = liveTvSettingsFlow
+                    val liveTvSettingsNow = liveTvSettingsFlow
                         .collectAsState(initial = com.nuvio.tv.livetv.model.LiveTvSettings())
-                        .value.showInSidebar
-                    val rootRoutes = remember(discoverLocation, liveTvInSidebar) {
+                        .value
+                    val liveTvInSidebar = liveTvSettingsNow.showInSidebar
+                    // Live TV fork: On Demand shows in the menu only when a provider's movies or
+                    // series are imported.
+                    val onDemandHasContent = remember { onDemandRepository.also { it.start() }.hasContent }
+                        .collectAsState().value
+                    val onDemandInSidebar = onDemandHasContent && liveTvSettingsNow.onDemandInSidebar
+                    val rootRoutes = remember(discoverLocation, liveTvInSidebar, onDemandInSidebar) {
                         buildSet {
                             add(Screen.Home.route)
                             if (liveTvInSidebar) add(Screen.LiveTv.route)
+                            if (onDemandInSidebar) add(Screen.OnDemand.route)
                             add(Screen.Search.route)
                             add(Screen.Library.route)
                             add(Screen.Settings.route)
@@ -1043,7 +1054,8 @@ open class MainActivity : ComponentActivity() {
                         strNavLibrary,
                         strNavSettings,
                         discoverLocation,
-                        liveTvInSidebar
+                        liveTvInSidebar,
+                        onDemandInSidebar
                     ) {
                         buildList {
                             add(
@@ -1068,6 +1080,15 @@ open class MainActivity : ComponentActivity() {
                                         route = Screen.LiveTv.route,
                                         label = "Live TV",
                                         icon = Icons.Default.LiveTv
+                                    )
+                                )
+                            }
+                            if (onDemandInSidebar) {
+                                add(
+                                    DrawerItem(
+                                        route = Screen.OnDemand.route,
+                                        label = "On Demand",
+                                        icon = Icons.Default.VideoLibrary
                                     )
                                 )
                             }

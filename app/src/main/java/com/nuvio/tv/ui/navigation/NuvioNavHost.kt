@@ -65,6 +65,8 @@ fun NuvioNavHost(
     PlaybackAvailabilityProvider {
         PlaybackNavHost(navController, startDestination, hideBuiltInHeaders)
     }
+    // Live TV fork: "Remind me" messages, shown on top of whatever screen you're on.
+    com.nuvio.tv.livetv.reminders.LiveTvReminderHost(navController)
 }
 
 @Composable
@@ -1216,6 +1218,26 @@ private fun PlaybackNavHost(
                 onFindInNuvio = {
                     // Back from search returns to the guide.
                     navController.navigate(Screen.Search.route) { launchSingleTop = true }
+                }
+            )
+        }
+
+        composable(Screen.OnDemand.route) {
+            com.nuvio.tv.livetv.ondemand.OnDemandScreen(
+                onOpenDetail = { itemId, itemType, addonBaseUrl ->
+                    navController.navigate(Screen.Detail.createRoute(itemId, itemType, addonBaseUrl))
+                },
+                onPlay = { url, title, type, poster ->
+                    navController.navigate(
+                        Screen.Player.createRoute(
+                            streamUrl = url,
+                            title = title,
+                            contentType = type,
+                            contentName = title,
+                            poster = poster,
+                            addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME
+                        )
+                    )
                 }
             )
         }

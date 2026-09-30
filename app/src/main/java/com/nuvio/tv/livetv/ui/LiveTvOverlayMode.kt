@@ -314,6 +314,13 @@ internal fun LiveTvOverlayMode(
                     futurePrompt = null
                     onFindInNuvio(com.nuvio.tv.livetv.data.LiveTvPosterResolver.searchTitleFor(p, ch))
                 }
+                MenuItem(
+                    if (user.reminders.any { it.channelKey == ch.key && it.startMs == p.startMs }) "Cancel reminder" else "Remind me"
+                ) {
+                    viewModel.toggleReminder(ch, p)
+                    futurePrompt = null
+                    activity++
+                }
                 MenuItem("Watch this channel now") {
                     futurePrompt = null
                     viewModel.preview(ch)

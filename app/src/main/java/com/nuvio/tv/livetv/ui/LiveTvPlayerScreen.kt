@@ -10,6 +10,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -62,7 +65,7 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES, SCREEN_SIZE }
+private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES, SCREEN_SIZE, STREAM_INFO, SLEEP }
 
 /** The picture size saved in settings, as one of Nuvio's own player modes. */
 private fun aspectModeOf(name: String): com.nuvio.tv.ui.screens.player.AspectMode =
@@ -111,6 +114,30 @@ fun LiveTvPlayerScreen(
     val current: LiveChannel? = viewModel.channelByKey(playback.channelKey)
 
     fun showBanner() { bannerVisible = true; bannerToken++ }
+
+    // Picture quality (for the guide's badges) and frame rate (for Match frame rate).
+    var videoFps by remember { mutableStateOf(-1f) }
+    LaunchedEffect(playback.channelKey, playback.catchupTitle) {
+        while (true) {
+            val f = viewModel.playback.player?.videoFormat
+            if (f != null) {
+                if (playback.catchupTitle == null) playback.channelKey?.let { viewModel.recordQuality(it, f.height) }
+                if (f.frameRate > 0f) videoFps = f.frameRate
+            }
+            delay(3_000)
+        }
+    }
+    MatchFrameRate(enabled = settings.matchFrameRate, fps = videoFps)
+
+    // Sleep timer: stops playback and goes back to the guide.
+    val sleepAt by viewModel.sleepAtMs.collectAsStateWithLifecycle()
+    LaunchedEffect(sleepAt) {
+        val at = sleepAt ?: return@LaunchedEffect
+        delay((at - System.currentTimeMillis()).coerceAtLeast(0))
+        viewModel.setSleepTimer(null)
+        viewModel.playback.stop()
+        onBack()
+    }
 
     // Catch-up seeking: Left/Right move a target time; the seek happens once you stop pressing.
     val catchupSession by viewModel.catchup.collectAsStateWithLifecycle()
@@ -387,6 +414,9 @@ fun LiveTvPlayerScreen(
                 },
                 onBackToLive = { dialog = PlayerDialog.NONE; viewModel.backToLive(ch) },
                 onRetry = { dialog = PlayerDialog.NONE; viewModel.playback.retry() },
+                onStreamInfo = { dialog = PlayerDialog.STREAM_INFO },
+                sleepLabel = sleepAt?.let { "${((it - System.currentTimeMillis()) / 60_000 + 1).coerceAtLeast(1)} min left" } ?: "Off",
+                onSleep = { dialog = PlayerDialog.SLEEP },
                 currentTitle = viewModel.currentProgram(ch.key)?.let { com.nuvio.tv.livetv.data.LiveTvPosterResolver.searchTitleFor(it, ch) },
                 onFind = { title ->
                     dialog = PlayerDialog.NONE
@@ -407,6 +437,20 @@ fun LiveTvPlayerScreen(
             options = viewModel.playback.subtitleTracks(),
             allowOff = true,
             onPick = { viewModel.playback.selectTrack(C.TRACK_TYPE_TEXT, it); dialog = PlayerDialog.NONE },
+            onDismiss = { dialog = PlayerDialog.NONE }
+        )
+        PlayerDialog.STREAM_INFO -> StreamInfoDialog(
+            player = viewModel.playback.player,
+            channel = ch,
+            onDismiss = { dialog = PlayerDialog.NONE; scope.launch { delay(60); runCatching { rootFocus.requestFocus() } } }
+        )
+        PlayerDialog.SLEEP -> SleepTimerDialog(
+            onPick = { minutes ->
+                viewModel.setSleepTimer(minutes)
+                toast = if (minutes == null) "Sleep timer off" else "Sleep timer: $minutes min"
+                dialog = PlayerDialog.NONE
+                scope.launch { delay(60); runCatching { rootFocus.requestFocus() } }
+            },
             onDismiss = { dialog = PlayerDialog.NONE }
         )
         PlayerDialog.SCREEN_SIZE -> ScreenSizeDialog(
@@ -533,13 +577,20 @@ private fun PlayerOptionsDialog(
     onBackToLive: () -> Unit,
     onRetry: () -> Unit,
     currentTitle: String?,
-    onFind: (String) -> Unit
+    onFind: (String) -> Unit,
+    onStreamInfo: () -> Unit,
+    sleepLabel: String,
+    onSleep: () -> Unit
 ) {
     val first = remember { FocusRequester() }
     LiveDialog(onDismiss = onDismiss, width = 440.dp) {
         LiveText("${channel.number}  ${channel.name}", size = 20.sp, weight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Scrolls when the list is taller than the screen.
+        Column(
+            modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             if (archive) MenuItem("Back to live", Modifier.focusRequester(first), onBackToLive)
             if (canRestart) MenuItem("Watch from the beginning", Modifier.focusRequester(first), onRestart)
             MenuItem("Audio track", if (archive || canRestart) Modifier else Modifier.focusRequester(first), onAudio)
@@ -548,6 +599,8 @@ private fun PlayerOptionsDialog(
             MenuItem("Screen size: $aspectLabel", onClick = onAspect)
             MenuItem(if (isFavorite) "Remove from favorites" else "Add to favorites", onClick = onFavorite)
             MenuItem("Previous channel", onClick = onPrevious)
+            MenuItem("Stream info", onClick = onStreamInfo)
+            MenuItem("Sleep timer: $sleepLabel", onClick = onSleep)
             MenuItem("Reload stream", onClick = onRetry)
             MenuItem("Hide channel", onClick = onHide)
         }
@@ -680,4 +733,112 @@ private fun formatDuration(ms: Long): String {
     val m = (total % 3600) / 60
     val sec = total % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
+/** Resolution, frame rate, codecs and bitrate of what's playing. */
+@Composable
+private fun StreamInfoDialog(player: androidx.media3.common.Player?, channel: LiveChannel, onDismiss: () -> Unit) {
+    val exo = player as? androidx.media3.exoplayer.ExoPlayer
+    val v = exo?.videoFormat
+    val a = exo?.audioFormat
+    val rows = buildList {
+        add("Channel" to "${channel.number}  ${channel.name}")
+        v?.let { f ->
+            if (f.width > 0) add("Resolution" to "${f.width} × ${f.height}" + qualityName(f.height)?.let { "  ($it)" }.orEmpty())
+            if (f.frameRate > 0f) add("Frame rate" to "%.2f fps".format(f.frameRate).replace(".00", ""))
+            add("Video" to listOfNotNull(f.sampleMimeType?.substringAfter('/'), f.codecs).joinToString(" · ").ifBlank { "Unknown" })
+            val br = if (f.bitrate > 0) f.bitrate else f.averageBitrate
+            if (br > 0) add("Video bitrate" to "%.1f Mbps".format(br / 1_000_000f))
+        } ?: add("Video" to "Not known yet")
+        a?.let { f ->
+            add(
+                "Audio" to listOfNotNull(
+                    f.sampleMimeType?.substringAfter('/'),
+                    f.channelCount.takeIf { it > 0 }?.let { c -> when (c) { 1 -> "mono"; 2 -> "stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "$c ch" } },
+                    f.sampleRate.takeIf { it > 0 }?.let { r -> "${r / 1000} kHz" },
+                    f.language
+                ).joinToString(" · ")
+            )
+        }
+        exo?.let { p -> add("Buffered" to "${p.totalBufferedDuration / 1000} s") }
+        add("Source" to (runCatching { android.net.Uri.parse(channel.url).host }.getOrNull() ?: "—"))
+    }
+    val first = remember { FocusRequester() }
+    LiveDialog(onDismiss = onDismiss, width = 520.dp) {
+        LiveText("Stream info", size = 20.sp, weight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        rows.forEach { (k, value) ->
+            Row(modifier = Modifier.padding(vertical = 3.dp)) {
+                LiveText(k, color = NuvioTheme.colors.TextSecondary, size = 14.sp, modifier = Modifier.width(130.dp))
+                LiveText(value, size = 14.sp, maxLines = 2, modifier = Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        MenuItem("Close", Modifier.focusRequester(first), onDismiss)
+    }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+private fun qualityName(height: Int): String? = when {
+    height >= 1800 -> "4K"
+    height >= 1000 -> "Full HD"
+    height >= 700 -> "HD"
+    height > 0 -> "SD"
+    else -> null
+}
+
+@Composable
+private fun SleepTimerDialog(onPick: (Int?) -> Unit, onDismiss: () -> Unit) {
+    val first = remember { FocusRequester() }
+    LiveDialog(onDismiss = onDismiss, width = 380.dp) {
+        LiveText("Sleep timer", size = 20.sp, weight = FontWeight.Bold)
+        LiveText("Stops playback after", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            MenuItem("Off", Modifier.focusRequester(first)) { onPick(null) }
+            listOf(15, 30, 45, 60, 90, 120).forEach { m ->
+                MenuItem(if (m < 60) "$m minutes" else if (m == 60) "1 hour" else "${m / 60.0} hours".replace(".0 ", " ")) { onPick(m) }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+}
+
+/**
+ * Match frame rate: while the player is on screen, asks the TV for a display mode whose refresh
+ * rate fits the video (24 → 24 Hz, 25 → 50 Hz, 30 → 60 Hz…). Puts the original mode back after.
+ */
+@Composable
+private fun MatchFrameRate(enabled: Boolean, fps: Float) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = remember(context) {
+        var c: android.content.Context? = context
+        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        c as? android.app.Activity
+    } ?: return
+    val originalMode = remember { activity.window.attributes.preferredDisplayModeId }
+    DisposableEffect(Unit) {
+        onDispose {
+            val attrs = activity.window.attributes
+            if (attrs.preferredDisplayModeId != originalMode) {
+                attrs.preferredDisplayModeId = originalMode
+                activity.window.attributes = attrs
+            }
+        }
+    }
+    LaunchedEffect(enabled, fps) {
+        if (!enabled || fps <= 0f) return@LaunchedEffect
+        @Suppress("DEPRECATION")
+        val display = activity.windowManager.defaultDisplay ?: return@LaunchedEffect
+        val current = display.mode
+        val candidates = display.supportedModes.filter {
+            it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight
+        }
+        fun fit(refresh: Float): Float = (1..4).minOf { k -> kotlin.math.abs(refresh - fps * k) }
+        val best = candidates.minByOrNull { fit(it.refreshRate) } ?: return@LaunchedEffect
+        if (fit(best.refreshRate) > 0.6f || best.modeId == current.modeId) return@LaunchedEffect
+        val attrs = activity.window.attributes
+        attrs.preferredDisplayModeId = best.modeId
+        activity.window.attributes = attrs
+    }
 }

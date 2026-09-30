@@ -20,7 +20,8 @@ import javax.inject.Inject
 class LiveTvSettingsViewModel @Inject constructor(
     private val repository: LiveTvRepository,
     private val prefs: LiveTvPreferences,
-    val driveSync: com.nuvio.tv.livetv.sync.LiveTvDriveSync
+    val driveSync: com.nuvio.tv.livetv.sync.LiveTvDriveSync,
+    val onDemand: com.nuvio.tv.livetv.ondemand.OnDemandRepository
 ) : ViewModel() {
 
     val playlists: StateFlow<List<PlaylistSource>> =
@@ -53,10 +54,16 @@ class LiveTvSettingsViewModel @Inject constructor(
     fun addPlaylist(name: String, url: String, userAgent: String) =
         viewModelScope.launch { repository.addPlaylist(name, url, userAgent) }
 
-    fun addXtream(name: String, server: String, user: String, pass: String) =
-        viewModelScope.launch { repository.addXtream(name, server, user, pass) }
+    fun addXtream(name: String, server: String, user: String, pass: String, importVod: Boolean = true) =
+        viewModelScope.launch {
+            repository.addXtream(name, server, user, pass, importVod)
+            onDemand.refreshSoon()
+        }
 
-    fun savePlaylist(source: PlaylistSource) = viewModelScope.launch { repository.updatePlaylist(source) }
+    fun savePlaylist(source: PlaylistSource) = viewModelScope.launch {
+        repository.updatePlaylist(source)
+        onDemand.refreshSoon()
+    }
     fun removePlaylist(id: String) = viewModelScope.launch { repository.removePlaylist(id) }
     fun setPlaylistEnabled(id: String, enabled: Boolean) =
         viewModelScope.launch { repository.setPlaylistEnabled(id, enabled) }
@@ -78,6 +85,8 @@ class LiveTvSettingsViewModel @Inject constructor(
     fun resetChannelEdits() = viewModelScope.launch { prefs.resetChannelEdits() }
     fun resetGroupEdits() = viewModelScope.launch { prefs.resetGroupEdits() }
     fun resetChannelOrder() = viewModelScope.launch { prefs.resetChannelOrder() }
+    fun clearVodHidden() = viewModelScope.launch { prefs.clearVodHiddenCategories() }
+    fun removeReminder(channelKey: String, startMs: Long) = viewModelScope.launch { prefs.removeReminder(channelKey, startMs) }
     fun clearChannelCopies() = viewModelScope.launch { prefs.clearChannelCopies() }
     fun resetEpgAssignments() = viewModelScope.launch {
         prefs.clearEpgOverrides()

@@ -49,6 +49,29 @@ class LiveTvPosterResolver @Inject constructor(
         val description: String? = null
     )
 
+    private val matchCache = ConcurrentHashMap<String, Hit>()
+    private val noMatch = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * On Demand: finds a provider title in your own addon catalogs, so it opens on Nuvio's
+     * details page with your metadata and posters. Null if none of your catalogs has it.
+     */
+    suspend fun matchFor(title: String, series: Boolean, year: Int?): Hit? {
+        val query = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
+        if (query.length < 2) return null
+        val key = normalize(query) + "|" + series + "|" + (year ?: "")
+        matchCache[key]?.let { return it }
+        if (key in noMatch) return null
+        return permits.withPermit {
+            val attempt = Attempt()
+            val hit = runCatching {
+                lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(year = year), attempt)
+            }.getOrNull()
+            if (hit != null) matchCache[key] = hit else if (attempt.reached) noMatch += key
+            hit
+        }
+    }
+
     /** Tracks whether a lookup actually reached any catalog (so failures aren't remembered). */
     private class Attempt { @Volatile var reached = false }
 
@@ -91,8 +114,8 @@ class LiveTvPosterResolver @Inject constructor(
         for ((q, isShowName) in attempts) {
             poster = try {
                 // For a show name, the guide's year belongs to the episode, so leave it out.
-                if (isShowName) lookup(q, hint?.copy(strong = false), clues.copy(year = null), attempt)
-                else lookup(q, hint, clues, attempt)
+                if (isShowName) lookup(q, hint?.copy(strong = false), clues.copy(year = null), attempt)?.meta?.poster
+                else lookup(q, hint, clues, attempt)?.meta?.poster
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -106,7 +129,7 @@ class LiveTvPosterResolver @Inject constructor(
         return poster
     }
 
-    private suspend fun lookup(query: String, hint: TypeHint?, clues: Clues, attempt: Attempt): String? {
+    private suspend fun lookup(query: String, hint: TypeHint?, clues: Clues, attempt: Attempt): Hit? {
         // Wait for the installed addons to load (the first value can be an empty placeholder).
         val addons = withTimeoutOrNull(8_000) {
             addonRepository.getInstalledAddons().first { it.enabledAddons().isNotEmpty() }
@@ -134,10 +157,10 @@ class LiveTvPosterResolver @Inject constructor(
         targets: List<Pair<Addon, CatalogDescriptor>>,
         clues: Clues,
         attempt: Attempt
-    ): String? {
+    ): Hit? {
         val wanted = normalize(query)
-        val exact = LinkedHashMap<String, MetaPreview>()
-        var closeMatch: MetaPreview? = null
+        val exact = LinkedHashMap<String, Hit>()
+        var closeMatch: Hit? = null
 
         // Ask every catalog at once (not one after another), so a slow addon costs a few seconds
         // instead of holding up the poster while each catalog is tried in turn.
@@ -160,36 +183,40 @@ class LiveTvPosterResolver @Inject constructor(
             }.map { it.await() }
         }
 
-        for (result in results) {
+        for ((i, result) in results.withIndex()) {
             if (result is NetworkResult.Success) attempt.reached = true
+            val (addon, catalog) = targets[i]
             val items = (result as? NetworkResult.Success)?.data?.items.orEmpty()
             items.filter { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
-                .forEach { exact.putIfAbsent(it.imdbId ?: it.id, it) }
+                .forEach { exact.putIfAbsent(it.imdbId ?: it.id, Hit(it, addon.baseUrl, catalog.apiType)) }
             if (closeMatch == null) {
                 closeMatch = items.take(5).firstOrNull { item ->
                     val n = normalize(item.name)
                     !item.poster.isNullOrBlank() && n.isNotEmpty() &&
                         (n.startsWith(wanted) || wanted.startsWith(n)) &&
                         minOf(n.length, wanted.length) * 10 >= maxOf(n.length, wanted.length) * 7
-                }
+                }?.let { Hit(it, addon.baseUrl, catalog.apiType) }
             }
         }
 
         if (exact.isNotEmpty()) {
-            val best = exact.values.maxByOrNull { score(it, clues) }!!
+            val best = exact.values.maxByOrNull { score(it.meta, clues) }!!
             if (clues.year != null) {
-                val y = yearOf(best)
+                val y = yearOf(best.meta)
                 if (y != null && kotlin.math.abs(y - clues.year) > 1) return null
             }
-            return best.poster
+            return best
         }
         val close = closeMatch ?: return null
         if (clues.year != null) {
-            val y = yearOf(close)
+            val y = yearOf(close.meta)
             if (y != null && kotlin.math.abs(y - clues.year) > 1) return null
         }
-        return close.poster
+        return close
     }
+
+    /** A match in one of your addon catalogs: its details page and its poster. */
+    data class Hit(val meta: MetaPreview, val addonBaseUrl: String, val type: String)
 
     private fun score(item: MetaPreview, clues: Clues): Double {
         var score = 0.0

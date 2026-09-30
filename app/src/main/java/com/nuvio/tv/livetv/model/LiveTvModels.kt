@@ -17,7 +17,9 @@ data class PlaylistSource(
     val xtreamPassword: String = "",
     val lastUpdatedMs: Long = 0L,
     val lastError: String? = null,
-    val channelCount: Int = 0
+    val channelCount: Int = 0,
+    /** Xtream: also import the provider's movies and series (On Demand). */
+    val importVod: Boolean = true
 ) {
     val isXtream: Boolean get() = xtreamServer.isNotBlank()
 
@@ -175,7 +177,17 @@ data class LiveTvSettings(
     /** Open Live TV instead of Nuvio's home screen when the app starts. */
     val startOnLiveTv: Boolean = false,
     /** Xtream catch-up: ask for HLS (.m3u8) first, which gives replays a length for seeking. */
-    val catchupPreferHls: Boolean = true
+    val catchupPreferHls: Boolean = true,
+    /** Parental controls: a 4-digit PIN; empty = parental controls off. */
+    val parentalPin: String = "",
+    /** With a PIN set, lock adult groups and categories automatically. */
+    val lockAdultContent: Boolean = true,
+    /** Small 4K / FHD / HD / SD badges next to channels you've watched. */
+    val showQualityBadges: Boolean = true,
+    /** Switch the TV's refresh rate to match the video (auto frame rate). */
+    val matchFrameRate: Boolean = false,
+    /** Show On Demand in Nuvio's side menu (when there's something to show). */
+    val onDemandInSidebar: Boolean = true
 )
 
 data class LiveUserState(
@@ -196,7 +208,23 @@ data class LiveUserState(
     /** Group id -> channel keys in the order you set with "Reorder channels". */
     val channelOrder: Map<String, List<String>> = emptyMap(),
     /** Group id -> channels copied into it from other groups ("Copy channel"). */
-    val channelCopies: Map<String, List<String>> = emptyMap()
+    val channelCopies: Map<String, List<String>> = emptyMap(),
+    /** Groups (and On Demand categories, prefixed "vod:") that need the parental PIN. */
+    val lockedGroups: Set<String> = emptySet(),
+    /** Shows you asked to be reminded about. */
+    val reminders: List<Reminder> = emptyList(),
+    /** Channel key -> picture quality seen when it last played ("4K", "FHD", "HD", "SD"). */
+    val channelQuality: Map<String, String> = emptyMap(),
+    /** On Demand categories you hid ("movie:<playlist>:<category>" / "series:…"). */
+    val vodHiddenCategories: Set<String> = emptySet()
+)
+
+/** "Remind me" on an upcoming show. */
+data class Reminder(
+    val channelKey: String,
+    val channelName: String,
+    val title: String,
+    val startMs: Long
 )
 
 /** A channel's guide, picked by hand: which EPG source, and which channel inside it. */
@@ -228,7 +256,9 @@ data class ChannelGroup(
     val count: Int,
     val special: Boolean = false,
     /** The playlist a playlist group comes from (null for special and your own groups). */
-    val sourceId: String? = null
+    val sourceId: String? = null,
+    /** Needs the parental PIN (and its channels are kept out of other lists). */
+    val locked: Boolean = false
 ) {
     companion object {
         const val ALL = "__all__"

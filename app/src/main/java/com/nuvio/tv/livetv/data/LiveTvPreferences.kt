@@ -17,6 +17,7 @@ import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.LiveUserState
 import com.nuvio.tv.livetv.model.PlaylistSource
+import com.nuvio.tv.livetv.model.Reminder
 import com.nuvio.tv.livetv.model.ZapMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -78,6 +79,16 @@ class LiveTvPreferences @Inject constructor(
         val overlayMode = booleanPreferencesKey("overlay_mode")
         val startOnLiveTv = booleanPreferencesKey("start_on_live_tv")
         val catchupPreferHls = booleanPreferencesKey("catchup_prefer_hls")
+        val parentalPin = stringPreferencesKey("parental_pin")
+        val lockAdultContent = booleanPreferencesKey("lock_adult_content")
+        val showQualityBadges = booleanPreferencesKey("show_quality_badges")
+        val matchFrameRate = booleanPreferencesKey("match_frame_rate")
+        val onDemandInSidebar = booleanPreferencesKey("on_demand_in_sidebar")
+        val lockedGroups = stringSetPreferencesKey("locked_groups")
+        val reminders = stringPreferencesKey("reminders")
+        val channelQuality = stringPreferencesKey("channel_quality")
+        val vodHiddenCategories = stringSetPreferencesKey("vod_hidden_categories")
+        val onDemandImports = stringPreferencesKey("on_demand_imports")
         val channelOrder = stringPreferencesKey("channel_order")
         val channelCopies = stringPreferencesKey("channel_copies")
 
@@ -140,7 +151,12 @@ class LiveTvPreferences @Inject constructor(
             sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers,
             overlayMode = p[Keys.overlayMode] ?: d.overlayMode,
             startOnLiveTv = p[Keys.startOnLiveTv] ?: d.startOnLiveTv,
-            catchupPreferHls = p[Keys.catchupPreferHls] ?: d.catchupPreferHls
+            catchupPreferHls = p[Keys.catchupPreferHls] ?: d.catchupPreferHls,
+            parentalPin = p[Keys.parentalPin] ?: d.parentalPin,
+            lockAdultContent = p[Keys.lockAdultContent] ?: d.lockAdultContent,
+            showQualityBadges = p[Keys.showQualityBadges] ?: d.showQualityBadges,
+            matchFrameRate = p[Keys.matchFrameRate] ?: d.matchFrameRate,
+            onDemandInSidebar = p[Keys.onDemandInSidebar] ?: d.onDemandInSidebar
         )
     }.distinctUntilChanged()
 
@@ -163,7 +179,11 @@ class LiveTvPreferences @Inject constructor(
                 if (parts.size == 2) k to com.nuvio.tv.livetv.model.EpgAssignment(parts[0], parts[1]) else null
             }.toMap(),
             channelOrder = decodeListMap(p[Keys.channelOrder]),
-            channelCopies = decodeListMap(p[Keys.channelCopies])
+            channelCopies = decodeListMap(p[Keys.channelCopies]),
+            lockedGroups = p[Keys.lockedGroups] ?: emptySet(),
+            reminders = decodeReminders(p[Keys.reminders]),
+            channelQuality = decodeStringMap(p[Keys.channelQuality]),
+            vodHiddenCategories = p[Keys.vodHiddenCategories] ?: emptySet()
         )
     }.distinctUntilChanged()
 
@@ -223,6 +243,11 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.overlayMode] = s.overlayMode
         p[Keys.startOnLiveTv] = s.startOnLiveTv
         p[Keys.catchupPreferHls] = s.catchupPreferHls
+        p[Keys.parentalPin] = s.parentalPin
+        p[Keys.lockAdultContent] = s.lockAdultContent
+        p[Keys.showQualityBadges] = s.showQualityBadges
+        p[Keys.matchFrameRate] = s.matchFrameRate
+        p[Keys.onDemandInSidebar] = s.onDemandInSidebar
     }
 
     // ---------- channel management ----------
@@ -303,6 +328,88 @@ class LiveTvPreferences @Inject constructor(
 
     suspend fun clearEpgOverrides() {
         store.edit { it[Keys.epgOverrides] = encodeStringMap(emptyMap()) }
+    }
+
+    // ---------- parental controls, reminders, quality, On Demand ----------
+
+    suspend fun setGroupLocked(groupId: String, locked: Boolean) {
+        store.edit { p ->
+            val cur = p[Keys.lockedGroups] ?: emptySet()
+            p[Keys.lockedGroups] = if (locked) cur + groupId else cur - groupId
+        }
+    }
+
+    suspend fun addReminder(r: Reminder) {
+        store.edit { p ->
+            val cur = decodeReminders(p[Keys.reminders]).filterNot { it.channelKey == r.channelKey && it.startMs == r.startMs }
+            p[Keys.reminders] = encodeReminders((cur + r).sortedBy { it.startMs })
+        }
+    }
+
+    suspend fun removeReminder(channelKey: String, startMs: Long) {
+        store.edit { p ->
+            p[Keys.reminders] = encodeReminders(
+                decodeReminders(p[Keys.reminders]).filterNot { it.channelKey == channelKey && it.startMs == startMs }
+            )
+        }
+    }
+
+    /** Drops reminders for shows that started more than [graceMs] ago. */
+    suspend fun pruneReminders(now: Long, graceMs: Long = 30 * 60_000L) {
+        store.edit { p ->
+            val cur = decodeReminders(p[Keys.reminders])
+            val kept = cur.filter { it.startMs + graceMs > now }
+            if (kept.size != cur.size) p[Keys.reminders] = encodeReminders(kept)
+        }
+    }
+
+    suspend fun setChannelQuality(key: String, quality: String) {
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.channelQuality]).toMutableMap()
+            if (m[key] == quality) return@edit
+            m[key] = quality
+            p[Keys.channelQuality] = encodeStringMap(m)
+        }
+    }
+
+    suspend fun updateVodHiddenCategories(show: Set<String>, hide: Set<String>) {
+        store.edit { p ->
+            val cur = p[Keys.vodHiddenCategories] ?: emptySet()
+            p[Keys.vodHiddenCategories] = (cur - show) + hide
+        }
+    }
+
+    /** When each provider's On Demand catalog was last imported (per TV, not synced). */
+    suspend fun onDemandImportTimes(): Map<String, Long> =
+        decodeStringMap(store.data.first()[Keys.onDemandImports]).mapValues { it.value.toLongOrNull() ?: 0L }
+
+    suspend fun setOnDemandImportTime(playlistId: String, time: Long) {
+        store.edit { p ->
+            val m = decodeStringMap(p[Keys.onDemandImports]).toMutableMap()
+            m[playlistId] = time.toString()
+            p[Keys.onDemandImports] = encodeStringMap(m)
+        }
+    }
+
+    suspend fun clearVodHiddenCategories() {
+        store.edit { it[Keys.vodHiddenCategories] = emptySet() }
+    }
+
+    private fun decodeReminders(raw: String?): List<Reminder> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                Reminder(o.optString("k"), o.optString("c"), o.optString("t"), o.optLong("s"))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeReminders(list: List<Reminder>): String {
+        val arr = JSONArray()
+        list.forEach { arr.put(JSONObject().put("k", it.channelKey).put("c", it.channelName).put("t", it.title).put("s", it.startMs)) }
+        return arr.toString()
     }
 
     /** Saves the order of a playlist group or All channels (Reorder channels). */
@@ -559,7 +666,8 @@ class LiveTvPreferences @Inject constructor(
                     xtreamPassword = o.optString("xtreamPassword"),
                     lastUpdatedMs = o.optLong("lastUpdatedMs"),
                     lastError = o.optString("lastError").ifBlank { null },
-                    channelCount = o.optInt("channelCount")
+                    channelCount = o.optInt("channelCount"),
+                    importVod = o.optBoolean("importVod", true)
                 )
             }
         }.getOrDefault(emptyList())
@@ -577,6 +685,7 @@ class LiveTvPreferences @Inject constructor(
                     .put("xtreamPassword", s.xtreamPassword)
                     .put("lastUpdatedMs", s.lastUpdatedMs).put("lastError", s.lastError ?: "")
                     .put("channelCount", s.channelCount)
+                    .put("importVod", s.importVod)
             )
         }
         return arr.toString()
@@ -627,7 +736,7 @@ class LiveTvPreferences @Inject constructor(
     private companion object {
         const val EPG_SEP = "\u0001"
         /** Per-TV keys that Google Drive sync never copies. */
-        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent")
+        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent", "on_demand_imports", "channel_quality")
     }
 
     private fun decodeListMap(raw: String?): Map<String, List<String>> {

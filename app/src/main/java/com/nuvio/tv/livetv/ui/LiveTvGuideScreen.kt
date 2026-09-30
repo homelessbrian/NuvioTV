@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Visibility
@@ -164,6 +165,10 @@ fun LiveTvGuideScreen(
     // Manage visibility for groups: every group (hidden ones too) and which ones are hidden.
     var groupVisibilityList by remember { mutableStateOf<List<ChannelGroup>?>(null) }
     var groupHiddenPending by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Parental controls: the group waiting for its PIN (and whether that removes the lock).
+    var pinGroup by remember { mutableStateOf<ChannelGroup?>(null) }
+    var pinWrong by remember { mutableStateOf(false) }
+    var pinRemovesLock by remember { mutableStateOf(false) }
     val playlistNames by viewModel.playlistNames.collectAsStateWithLifecycle()
     val collapsedPlaylists by viewModel.collapsedPlaylists.collectAsStateWithLifecycle()
     var savedMovedKey by remember { mutableStateOf<String?>(null) }
@@ -553,7 +558,11 @@ fun LiveTvGuideScreen(
                     focusRequester = groupsFocus,
                     onFocusGroup = { g -> pendingGroupId = g.id },
                     onSelect = { g ->
-                        if (g.id == ChannelGroup.SEARCH) {
+                        if (g.locked) {
+                            // Parental controls: ask for the PIN first.
+                            pinGroup = g
+                            pinWrong = false
+                        } else if (g.id == ChannelGroup.SEARCH) {
                             onOpenNuvioSearch()
                         } else {
                             if (g.id != ui.selectedGroupId) {
@@ -761,7 +770,8 @@ fun LiveTvGuideScreen(
                                             focusColumn = if (index == row && (gridFocused || epgPickerFor != null)) column else null,
                                             focusedBlock = if (index == row) focusedBlock else null,
                                             visible = if (visibilityMode) ch.key !in pendingHidden else null,
-                                            moving = reorderKey == ch.key
+                                            moving = reorderKey == ch.key,
+                                            quality = if (settings.showQualityBadges) user.channelQuality[ch.key] else null
                                         )
                                     }
                                 }
@@ -991,7 +1001,9 @@ fun LiveTvGuideScreen(
                 onCatchup = { p ->
                     infoTarget = null
                     if (viewModel.playCatchup(target.channel, p)) goFullscreen()
-                }
+                },
+                reminderSet = target.block?.program?.let { p -> user.reminders.any { it.channelKey == target.channel.key && it.startMs == p.startMs } } == true,
+                onRemind = { p -> viewModel.toggleReminder(target.channel, p); infoTarget = null }
             )
         }
         textPrompt?.let { prompt ->
@@ -1003,6 +1015,26 @@ fun LiveTvGuideScreen(
                 numeric = prompt.numeric,
                 onDismiss = { textPrompt = null },
                 onConfirm = { value -> prompt.onConfirm(value); textPrompt = null }
+            )
+        }
+        pinGroup?.let { g ->
+            TextInputDialog(
+                title = if (pinWrong) "Wrong PIN, try again" else if (pinRemovesLock) "Enter your PIN to remove the lock" else "\"${g.title}\" is locked. Enter your PIN",
+                initial = "",
+                hint = "PIN",
+                confirmLabel = if (pinRemovesLock) "Remove lock" else "Unlock",
+                numeric = true,
+                onDismiss = { pinGroup = null; pinRemovesLock = false },
+                onConfirm = { pin ->
+                    if (pinRemovesLock) {
+                        if (viewModel.checkPin(pin)) { viewModel.setGroupLocked(g.id, false); pinGroup = null; pinRemovesLock = false } else pinWrong = true
+                    } else if (viewModel.unlockGroup(g, pin)) {
+                        pinGroup = null
+                        viewModel.selectGroup(g.id)
+                        groupsOpen = false
+                        scope.launch { delay(80); runCatching { gridFocus.requestFocus() } }
+                    } else pinWrong = true
+                }
             )
         }
         copyPickerFor?.let { ch ->
@@ -1054,6 +1086,18 @@ fun LiveTvGuideScreen(
                             onConfirm = { viewModel.renameGroup(g.id, it) }
                         )
                     })
+                    if (viewModel.parentalEnabled()) {
+                        if (viewModel.isGroupLockSet(g.id)) add("Remove parental lock" to {
+                            groupMenu = null
+                            pinRemovesLock = true
+                            pinWrong = false
+                            pinGroup = g
+                        }) else add("Lock with PIN" to {
+                            groupMenu = null
+                            viewModel.setGroupLocked(g.id, true)
+                            if (ui.selectedGroupId == g.id) viewModel.selectGroup(ui.defaultGroupId)
+                        })
+                    }
                     add("Manage visibility" to {
                         groupMenu = null
                         val all = viewModel.groupsWithHidden()
@@ -1302,7 +1346,9 @@ private fun GuideRow(
     /** In Manage visibility: true = shown, false = hidden. Null otherwise. */
     visible: Boolean? = null,
     /** Being moved with "Reorder channels". */
-    moving: Boolean = false
+    moving: Boolean = false,
+    /** Picture quality seen when this channel last played ("4K", "FHD", "HD", "SD"). */
+    quality: String? = null
 ) {
     val windowEnd = windowStart + WINDOW_MS
     val cellShape = RoundedCornerShape(6.dp)
@@ -1353,6 +1399,19 @@ private fun GuideRow(
                 )
             } else {
                 Spacer(Modifier.weight(1f))
+            }
+            // Quality badge, from the last time this channel played.
+            if (quality != null && !moving) {
+                LiveText(
+                    quality,
+                    modifier = Modifier
+                        .border(1.dp, if (channelFocused) cell.text else NuvioTheme.colors.TextTertiary, RoundedCornerShape(3.dp))
+                        .padding(horizontal = 3.dp),
+                    color = if (channelFocused) cell.text else NuvioTheme.colors.TextSecondary,
+                    size = 9.sp,
+                    weight = FontWeight.Bold
+                )
+                Spacer(Modifier.width(4.dp))
             }
             // Catch-up available on this channel.
             if (channel.catchup != null && !moving) {
@@ -1794,6 +1853,8 @@ private fun GroupItem(
                 tint = if (visible) NuvioTheme.colors.Secondary else NuvioTheme.colors.TextTertiary,
                 modifier = Modifier.size(16.dp)
             )
+        } else if (group.locked) {
+            Icon(Icons.Default.Lock, contentDescription = "Locked", tint = focusedSecondaryTextColor(focused), modifier = Modifier.size(14.dp))
         } else if (moving) {
             LiveText("⇅", color = colors.text, size = 16.sp, weight = FontWeight.Bold)
         } else if (showCount && group.id != ChannelGroup.SEARCH) {
@@ -2349,7 +2410,9 @@ private fun ProgramInfoDialog(
     onDismiss: () -> Unit,
     onFind: (EpgProgram) -> Unit,
     onWatch: () -> Unit,
-    onCatchup: (EpgProgram) -> Unit
+    onCatchup: (EpgProgram) -> Unit,
+    reminderSet: Boolean = false,
+    onRemind: (EpgProgram) -> Unit = {}
 ) {
     val first = remember { FocusRequester() }
     val block = target.block
@@ -2386,6 +2449,12 @@ private fun ProgramInfoDialog(
             }
             if (p != null && !upcoming) {
                 LiveFocusRow(onClick = { onFind(p) }) { f -> LiveText("Find & stream in Nuvio", color = focusedTextColor(f)) }
+            }
+            // Reminders: a message a minute before it starts, wherever you are in Nuvio.
+            if (p != null && upcoming) {
+                LiveFocusRow(onClick = { onRemind(p) }) { f ->
+                    LiveText(if (reminderSet) "Cancel reminder" else "Remind me", color = focusedTextColor(f))
+                }
             }
             LiveFocusRow(onClick = onDismiss) { f -> LiveText("Close", color = focusedTextColor(f)) }
         }

@@ -122,7 +122,7 @@ class LiveTvRepository @Inject constructor(
         return id
     }
 
-    suspend fun addXtream(name: String, server: String, username: String, password: String): String {
+    suspend fun addXtream(name: String, server: String, username: String, password: String, importVod: Boolean = true): String {
         val id = UUID.randomUUID().toString()
         // Accept a pasted full link: keep just the server, and take the login from it if needed.
         val fromLink = PlaylistSource.credentialsFromLink(server)
@@ -132,7 +132,8 @@ class LiveTvRepository @Inject constructor(
             it + PlaylistSource(
                 id = id, name = name.ifBlank { "Xtream" }, url = "",
                 xtreamServer = PlaylistSource.cleanXtreamServer(server),
-                xtreamUsername = user, xtreamPassword = pass
+                xtreamUsername = user, xtreamPassword = pass,
+                importVod = importVod
             )
         }
         scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(id)) }
