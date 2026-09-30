@@ -176,7 +176,12 @@ fun LiveTvSettingsContent(
                     playlists.forEachIndexed { index, pl ->
                         SettingsActionRow(
                             title = pl.name + if (pl.isXtream) " (Xtream)" else "",
-                            subtitle = sourceStatus(pl.enabled, pl.lastUpdatedMs, pl.lastError, "${pl.channelCount} channels"),
+                            subtitle = when {
+                                pl.isXtream && pl.enabled && !pl.importLive && pl.importVod -> "Movies & series only (TV channels off)"
+                                pl.isXtream && pl.enabled && !pl.importLive && !pl.importVod -> "Nothing included: turn on TV channels or movies & series under Edit"
+                                else -> sourceStatus(pl.enabled, pl.lastUpdatedMs, pl.lastError, "${pl.channelCount} channels") +
+                                    if (pl.isXtream && pl.importVod && pl.enabled) " · + movies & series" else ""
+                            },
                             value = if (pl.enabled) "On" else "Off",
                             leadingIcon = Icons.Default.LiveTv,
                             onClick = { dialog = LiveDialog.PlaylistActions(pl) }
@@ -467,12 +472,33 @@ fun LiveTvSettingsContent(
             item(key = "on_demand") {
                 SettingsGroupCard(
                     title = "On Demand",
-                    subtitle = "Movies and series from Xtream logins with \"Import movies & series\" on. Turn it off per login under Playlists → Edit."
+                    subtitle = "Movies and series from Xtream logins with \"Include movies & series\" on. Change it per login under Playlists → Edit."
                 ) {
                     SettingsActionRow(
                         "Update movies & series now",
                         onDemandStatus.message ?: if (onDemandHas) "Imported. Updates once a day by itself." else "Nothing imported yet",
                         onClick = { viewModel.onDemand.refreshNow() }
+                    )
+                    // One switch per Xtream login (logins added before On Demand start switched off).
+                    playlists.filter { it.isXtream }.forEach { pl ->
+                        SettingsToggleRow(
+                            "Movies & series from ${pl.name}",
+                            if (pl.importVod) "Included" else "Not included. Switch on to import this provider's movies and series.",
+                            pl.importVod,
+                            { viewModel.savePlaylist(pl.copy(importVod = !pl.importVod)) }
+                        )
+                    }
+                    SettingsToggleRow(
+                        "\"Watch On Demand\" in Nuvio",
+                        "Adds your provider's copy to the end of Nuvio's stream list for movies and episodes. Auto-play never picks it.",
+                        s.onDemandInStreams,
+                        { update { it.copy(onDemandInStreams = !it.onDemandInStreams) } }
+                    )
+                    SettingsToggleRow(
+                        "Use posters from my addons",
+                        "Shows your addons' posters in On Demand where they have the title. Off: the provider's images only.",
+                        s.onDemandAddonPosters,
+                        { update { it.copy(onDemandAddonPosters = !it.onDemandAddonPosters) } }
                     )
                     SettingsToggleRow(
                         "Show On Demand in the side menu",
@@ -591,8 +617,12 @@ fun LiveTvSettingsContent(
             ),
             onDismiss = close,
             onSave = { v, _ -> if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3]); close() },
-            toggle2 = "Import movies & series (On Demand)" to true,
-            onSaveBoth = { v, _, vod -> if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3], vod); close() }
+            toggleLive = "Include TV channels" to true,
+            toggle2 = "Include movies & series (On Demand)" to true,
+            onSaveAll = { v, _, vod, live ->
+                if (v[1].isNotBlank()) viewModel.addXtream(v[0], v[1], v[2], v[3], importVod = vod, importLive = live)
+                close()
+            }
         )
         LiveDialog.AddEpg -> SourceFormDialog(
             title = "Add EPG source",
@@ -625,14 +655,20 @@ fun LiveTvSettingsContent(
                         FormField("User agent (optional)", "", src.userAgent)
                     ),
                     toggle = "Load built-in guide" to src.useEmbeddedEpg,
-                    toggle2 = "Import movies & series (On Demand)" to src.importVod,
+                    toggleLive = "Include TV channels" to src.importLive,
+                    toggle2 = "Include movies & series (On Demand)" to src.importVod,
                     onDismiss = close,
                     onSave = { v, t ->
                         viewModel.savePlaylist(src.copy(name = v[0], xtreamServer = v[1], xtreamUsername = v[2], xtreamPassword = v[3], userAgent = v[4], useEmbeddedEpg = t))
                         close()
                     },
-                    onSaveBoth = { v, t, vod ->
-                        viewModel.savePlaylist(src.copy(name = v[0], xtreamServer = v[1], xtreamUsername = v[2], xtreamPassword = v[3], userAgent = v[4], useEmbeddedEpg = t, importVod = vod))
+                    onSaveAll = { v, t, vod, live ->
+                        viewModel.savePlaylist(
+                            src.copy(
+                                name = v[0], xtreamServer = v[1], xtreamUsername = v[2], xtreamPassword = v[3],
+                                userAgent = v[4], useEmbeddedEpg = t, importVod = vod, importLive = live
+                            )
+                        )
                         close()
                     }
                 )
@@ -955,11 +991,15 @@ private fun SourceFormDialog(
     toggle: Pair<String, Boolean>? = null,
     /** A second switch (Xtream: import movies & series); its value goes to [onSaveBoth]. */
     toggle2: Pair<String, Boolean>? = null,
-    onSaveBoth: ((List<String>, Boolean, Boolean) -> Unit)? = null
+    onSaveBoth: ((List<String>, Boolean, Boolean) -> Unit)? = null,
+    /** Xtream: "Include TV channels", shown first. Its value goes to [onSaveAll]. */
+    toggleLive: Pair<String, Boolean>? = null,
+    onSaveAll: ((values: List<String>, guide: Boolean, vod: Boolean, live: Boolean) -> Unit)? = null
 ) {
     val values = remember { fields.map { mutableStateOf(it.initial) } }
     var toggleValue by remember { mutableStateOf(toggle?.second ?: true) }
     var toggle2Value by remember { mutableStateOf(toggle2?.second ?: true) }
+    var toggleLiveValue by remember { mutableStateOf(toggleLive?.second ?: true) }
     val firstField = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(80)
@@ -991,7 +1031,16 @@ private fun SourceFormDialog(
                 )
             }
         }
-        if (toggle != null) {
+        if (toggleLive != null) {
+            SettingsToggleRow(
+                title = toggleLive.first,
+                subtitle = "Adds the provider's live channels to the TV guide",
+                checked = toggleLiveValue,
+                onToggle = { toggleLiveValue = !toggleLiveValue }
+            )
+        }
+        // The guide switch only matters when TV channels are included.
+        if (toggle != null && (toggleLive == null || toggleLiveValue)) {
             SettingsToggleRow(
                 title = toggle.first,
                 subtitle = null,
@@ -1014,7 +1063,11 @@ private fun SourceFormDialog(
                 text = "Save",
                 onClick = {
                     val v = values.map { it.value.trim() }
-                    if (onSaveBoth != null) onSaveBoth(v, toggleValue, toggle2Value) else onSave(v, toggleValue)
+                    when {
+                        onSaveAll != null -> onSaveAll(v, toggleValue, toggle2Value, toggleLiveValue)
+                        onSaveBoth != null -> onSaveBoth(v, toggleValue, toggle2Value)
+                        else -> onSave(v, toggleValue)
+                    }
                 },
                 primary = true
             )

@@ -397,8 +397,10 @@ private fun CategoryRow(
 @Composable
 private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // The provider's image straight away; your addon's poster once the card has been on
+    // screen for a moment (scrolling past doesn't trigger lookups).
     val poster by produceState<String?>(initialValue = item.icon, item.uid) {
-        delay(120) // don't look up every poster while scrolling past quickly
+        delay(450)
         viewModel.posterFor(item)?.let { value = it }
     }
     val shape = RoundedCornerShape(8.dp)

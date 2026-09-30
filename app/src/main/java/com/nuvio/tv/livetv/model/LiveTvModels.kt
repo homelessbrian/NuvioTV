@@ -19,9 +19,14 @@ data class PlaylistSource(
     val lastError: String? = null,
     val channelCount: Int = 0,
     /** Xtream: also import the provider's movies and series (On Demand). */
-    val importVod: Boolean = true
+    val importVod: Boolean = true,
+    /** Xtream: import the live TV channels (off = On Demand only). */
+    val importLive: Boolean = true
 ) {
     val isXtream: Boolean get() = xtreamServer.isNotBlank()
+
+    /** Whether this source's live channels (and their guide) are loaded. */
+    val liveEnabled: Boolean get() = enabled && (!isXtream || importLive)
 
     fun resolvedUrl(): String {
         if (!isXtream) return url.trim()
@@ -187,7 +192,11 @@ data class LiveTvSettings(
     /** Switch the TV's refresh rate to match the video (auto frame rate). */
     val matchFrameRate: Boolean = false,
     /** Show On Demand in Nuvio's side menu (when there's something to show). */
-    val onDemandInSidebar: Boolean = true
+    val onDemandInSidebar: Boolean = true,
+    /** Offer "Watch On Demand" in Nuvio's stream list for movies and episodes. */
+    val onDemandInStreams: Boolean = true,
+    /** On Demand posters from your own addons (off = the provider's images only). */
+    val onDemandAddonPosters: Boolean = true
 )
 
 data class LiveUserState(

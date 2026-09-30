@@ -138,6 +138,8 @@ class OnDemandViewModel @Inject constructor(
     /** Your own addon's poster when it has the title; otherwise the provider's. */
     suspend fun posterFor(item: VodItem): String? {
         posters[item.uid]?.let { return it }
+        // "Use posters from my addons" off: the provider's image, no lookups at all.
+        if (!settings.value.onDemandAddonPosters) return item.icon
         val hit = resolver.matchFor(item.name, item.kind == VodKind.SERIES, item.year)
         val poster = hit?.meta?.poster ?: item.icon
         if (poster != null) posters[item.uid] = poster

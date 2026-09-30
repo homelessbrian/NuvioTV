@@ -288,11 +288,10 @@ class LiveTvViewModel @Inject constructor(
 
     // ------------------------------------------------------------ sleep timer, quality
 
-    val sleepAtMs: StateFlow<Long?> = session.sleepAtMs
+    /** Sleep timer: lives in the playback controller, so it works on every screen. */
+    val sleepAtMs: StateFlow<Long?> = playback.sleepAtMs
 
-    fun setSleepTimer(minutes: Int?) {
-        session.sleepAtMs.value = minutes?.let { System.currentTimeMillis() + it * 60_000L }
-    }
+    fun setSleepTimer(minutes: Int?) = playback.setSleepTimer(minutes)
 
     /** Remembers the picture quality a channel played at, for the guide's badges. */
     fun recordQuality(channelKey: String, height: Int) {

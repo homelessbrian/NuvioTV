@@ -50,6 +50,8 @@ class LiveTvPosterResolver @Inject constructor(
     )
 
     private val matchCache = ConcurrentHashMap<String, Hit>()
+    @Volatile private var pausedUntil = 0L
+    @Volatile private var failuresInARow = 0
     private val noMatch = ConcurrentHashMap.newKeySet<String>()
 
     /**
@@ -57,6 +59,8 @@ class LiveTvPosterResolver @Inject constructor(
      * details page with your metadata and posters. Null if none of your catalogs has it.
      */
     suspend fun matchFor(title: String, series: Boolean, year: Int?): Hit? {
+        // If addons keep failing (rate limits, offline), pause lookups for a minute.
+        if (System.currentTimeMillis() < pausedUntil) return null
         val query = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
         if (query.length < 2) return null
         val key = normalize(query) + "|" + series + "|" + (year ?: "")
@@ -68,6 +72,9 @@ class LiveTvPosterResolver @Inject constructor(
                 lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(year = year), attempt)
             }.getOrNull()
             if (hit != null) matchCache[key] = hit else if (attempt.reached) noMatch += key
+            if (hit == null && !attempt.reached) {
+                if (++failuresInARow >= 5) { pausedUntil = System.currentTimeMillis() + 60_000; failuresInARow = 0 }
+            } else failuresInARow = 0
             hit
         }
     }

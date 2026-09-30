@@ -13,6 +13,7 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 
 @EntryPoint
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.flow
 interface OnDemandEntryPoint {
     fun onDemandRepository(): OnDemandRepository
     fun tmdbService(): TmdbService
+    fun liveTvPreferences(): com.nuvio.tv.livetv.data.LiveTvPreferences
 }
 
 fun onDemandRepository(context: Context): OnDemandRepository =
@@ -50,9 +52,10 @@ object OnDemandStreams {
             val found = runCatching { lookup(entry, type, videoId, season, episode, title, year) }.getOrDefault(emptyList())
             if (found.isNotEmpty()) emit(found)
         }
+        // Added at the end, after your addon and debrid streams; auto-play never picks it.
         return combine(source, onDemand) { result, extra ->
             if (extra.isEmpty() || result !is NetworkResult.Success) result
-            else NetworkResult.Success(listOf(AddonStreams(GROUP_NAME, null, extra)) + result.data)
+            else NetworkResult.Success(result.data + AddonStreams(GROUP_NAME, null, extra))
         }
     }
 
@@ -65,6 +68,8 @@ object OnDemandStreams {
         title: String,
         year: String?
     ): List<Stream> {
+        val show = runCatching { entry.liveTvPreferences().settings.first().onDemandInStreams }.getOrDefault(true)
+        if (!show) return emptyList()
         val repo = entry.onDemandRepository()
         repo.start()
         if (!repo.hasContent.value) return emptyList()

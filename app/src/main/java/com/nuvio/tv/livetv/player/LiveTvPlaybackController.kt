@@ -114,6 +114,29 @@ class LiveTvPlaybackController @Inject constructor(
         p.playWhenReady = true
     }
 
+    // ---------------------------------------------------------------- sleep timer
+
+    private val _sleepAtMs = MutableStateFlow<Long?>(null)
+    /** When the sleep timer stops Live TV (null = off). Runs wherever you are in the app. */
+    val sleepAtMs: StateFlow<Long?> = _sleepAtMs.asStateFlow()
+    private val _sleepFired = MutableStateFlow(0)
+    /** Goes up each time the sleep timer stops playback (full screen closes itself). */
+    val sleepFired: StateFlow<Int> = _sleepFired.asStateFlow()
+    private var sleepJob: Job? = null
+
+    fun setSleepTimer(minutes: Int?) {
+        sleepJob?.cancel()
+        if (minutes == null) { _sleepAtMs.value = null; return }
+        val at = System.currentTimeMillis() + minutes * 60_000L
+        _sleepAtMs.value = at
+        sleepJob = scope.launch {
+            delay(at - System.currentTimeMillis())
+            _sleepAtMs.value = null
+            stop()
+            _sleepFired.value++
+        }
+    }
+
     fun stop() {
         reconnectJob?.cancel()
         _player?.stop()

@@ -122,7 +122,14 @@ class LiveTvRepository @Inject constructor(
         return id
     }
 
-    suspend fun addXtream(name: String, server: String, username: String, password: String, importVod: Boolean = true): String {
+    suspend fun addXtream(
+        name: String,
+        server: String,
+        username: String,
+        password: String,
+        importVod: Boolean = true,
+        importLive: Boolean = true
+    ): String {
         val id = UUID.randomUUID().toString()
         // Accept a pasted full link: keep just the server, and take the login from it if needed.
         val fromLink = PlaylistSource.credentialsFromLink(server)
@@ -133,7 +140,8 @@ class LiveTvRepository @Inject constructor(
                 id = id, name = name.ifBlank { "Xtream" }, url = "",
                 xtreamServer = PlaylistSource.cleanXtreamServer(server),
                 xtreamUsername = user, xtreamPassword = pass,
-                importVod = importVod
+                importVod = importVod,
+                importLive = importLive
             )
         }
         scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(id)) }
@@ -150,7 +158,12 @@ class LiveTvRepository @Inject constructor(
             )
         } else input
         prefs.updatePlaylists { list -> list.map { if (it.id == source.id) source else it } }
-        scope.launch { refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(source.id)) }
+        // TV channels switched off: take them out of the guide straight away.
+        if (!source.liveEnabled) dropPlaylistNow(source.id)
+        scope.launch {
+            rebuild()
+            refreshInternal(forcePlaylists = false, forceEpg = false, forceIds = setOf(source.id))
+        }
     }
 
     suspend fun removePlaylist(id: String) {
@@ -239,7 +252,7 @@ class LiveTvRepository @Inject constructor(
     ) = mutex.withLock {
         val settings = prefs.currentSettings()
         val now = System.currentTimeMillis()
-        val playlists = prefs.currentPlaylists().filter { it.enabled }
+        val playlists = prefs.currentPlaylists().filter { it.liveEnabled }
         var changed = false
 
         for (pl in playlists) {
@@ -320,7 +333,7 @@ class LiveTvRepository @Inject constructor(
         prefs.currentEpgSources().filter { it.enabled && it.url.isNotBlank() }.forEach {
             targets += EpgTarget(it.id, it.id, it.name, it.url, "")
         }
-        val playlists = prefs.currentPlaylists().filter { it.enabled && it.useEmbeddedEpg }
+        val playlists = prefs.currentPlaylists().filter { it.liveEnabled && it.useEmbeddedEpg }
         for (pl in playlists) {
             val urls = mutableListOf<String>()
             pl.xtreamEpgUrl()?.let { urls += it }
@@ -337,7 +350,7 @@ class LiveTvRepository @Inject constructor(
     private val embeddedEpgUrls = HashMap<String, List<String>>()
 
     private suspend fun buildChannels() = withContext(Dispatchers.IO) {
-        val playlists = prefs.currentPlaylists().filter { it.enabled }
+        val playlists = prefs.currentPlaylists().filter { it.liveEnabled }
         val multi = playlists.size > 1
         val out = ArrayList<LiveChannel>()
         val usedKeys = HashSet<String>()

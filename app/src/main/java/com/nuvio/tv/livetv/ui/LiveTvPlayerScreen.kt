@@ -129,14 +129,12 @@ fun LiveTvPlayerScreen(
     }
     MatchFrameRate(enabled = settings.matchFrameRate, fps = videoFps)
 
-    // Sleep timer: stops playback and goes back to the guide.
+    // Sleep timer: the controller stops playback (on any screen); full screen then closes.
     val sleepAt by viewModel.sleepAtMs.collectAsStateWithLifecycle()
-    LaunchedEffect(sleepAt) {
-        val at = sleepAt ?: return@LaunchedEffect
-        delay((at - System.currentTimeMillis()).coerceAtLeast(0))
-        viewModel.setSleepTimer(null)
-        viewModel.playback.stop()
-        onBack()
+    val sleepFired by viewModel.playback.sleepFired.collectAsStateWithLifecycle()
+    val sleepFiredAtStart = remember { viewModel.playback.sleepFired.value }
+    LaunchedEffect(sleepFired) {
+        if (sleepFired != sleepFiredAtStart) onBack()
     }
 
     // Catch-up seeking: Left/Right move a target time; the seek happens once you stop pressing.
