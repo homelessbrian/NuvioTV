@@ -439,11 +439,13 @@ fun LiveTvPlayerScreen(
             onPick = { viewModel.playback.selectTrack(C.TRACK_TYPE_TEXT, it); dialog = PlayerDialog.NONE },
             onDismiss = { dialog = PlayerDialog.NONE }
         )
-        PlayerDialog.STREAM_INFO -> StreamInfoDialog(
-            player = viewModel.playback.player,
-            channel = ch,
-            onDismiss = { dialog = PlayerDialog.NONE; scope.launch { delay(60); runCatching { rootFocus.requestFocus() } } }
-        )
+        PlayerDialog.STREAM_INFO -> viewModel.channelByKey(playback.channelKey)?.let { current ->
+            StreamInfoDialog(
+                player = viewModel.playback.player,
+                channel = current,
+                onDismiss = { dialog = PlayerDialog.NONE; scope.launch { delay(60); runCatching { rootFocus.requestFocus() } } }
+            )
+        }
         PlayerDialog.SLEEP -> SleepTimerDialog(
             onPick = { minutes ->
                 viewModel.setSleepTimer(minutes)
