@@ -371,14 +371,6 @@ afterEvaluate {
     }
 }
 
-afterEvaluate {
-    tasks.withType<L8DexDesugarLibTask>().configureEach {
-        if (name.endsWith("AndroidTest")) {
-            keepRulesConfigurations.add("-keep class j\$.** { *; }")
-        }
-    }
-}
-
 composeCompiler {
     // Enable Compose compiler metrics for performance analysis
     metricsDestination = layout.buildDirectory.dir("compose_metrics")
