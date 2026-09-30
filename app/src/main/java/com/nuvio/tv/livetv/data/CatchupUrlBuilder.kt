@@ -24,7 +24,9 @@ object CatchupUrlBuilder {
         catchup: CatchupInfo,
         startMs: Long,
         stopMs: Long,
-        nowMs: Long = System.currentTimeMillis()
+        nowMs: Long = System.currentTimeMillis(),
+        /** Xtream: ask for HLS (.m3u8) instead of TS. */
+        preferHls: Boolean = false
     ): String? {
         val start = startMs / 1000
         val end = stopMs / 1000
@@ -42,7 +44,7 @@ object CatchupUrlBuilder {
             }
             "shift", "timeshift" -> shift(liveUrl, start, now)
             "flussonic", "flussonic-hls", "flussonic-ts", "fs" -> flussonic(liveUrl, start, duration)
-            "xc", "xtream" -> xtream(liveUrl, startMs, duration)
+            "xc", "xtream" -> xtream(liveUrl, startMs, duration, preferHls)
             else -> catchup.source?.let { fill(it, start, end, now, duration) }
         }
     }
@@ -66,15 +68,23 @@ object CatchupUrlBuilder {
         }
     }
 
-    private fun xtream(url: String, startMs: Long, duration: Long): String? {
+    private fun xtream(url: String, startMs: Long, duration: Long, preferHls: Boolean): String? {
         // http://host:port/(live/)?user/pass/id(.ext)
         val m = Regex("""^(https?://[^/]+)/(?:live/)?([^/]+)/([^/]+)/(\d+)(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
             .find(url) ?: return null
         val (host, user, pass, id) = m.destructured
-        val ext = m.groupValues[5].ifEmpty { ".ts" }
+        // HLS (.m3u8) replays come with a length, so the seek bar and skipping work properly.
+        val ext = if (preferHls) ".m3u8" else m.groupValues[5].ifEmpty { ".ts" }
         val fmt = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US)
         val minutes = (duration / 60).coerceAtLeast(1)
         return "$host/timeshift/$user/$pass/$minutes/${fmt.format(Date(startMs))}/$id$ext"
+    }
+
+    /** The TS version of an Xtream HLS catch-up link, for panels that don't offer HLS. */
+    fun tsFallback(url: String): String? {
+        val path = url.substringBefore('?')
+        if (!path.contains("/timeshift/") || !path.endsWith(".m3u8", ignoreCase = true)) return null
+        return path.dropLast(".m3u8".length) + ".ts" + url.substring(path.length)
     }
 
     internal fun fill(template: String, start: Long, end: Long, now: Long, duration: Long): String {

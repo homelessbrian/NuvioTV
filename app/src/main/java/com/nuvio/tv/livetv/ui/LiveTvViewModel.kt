@@ -354,9 +354,11 @@ class LiveTvViewModel @Inject constructor(
         if (!CatchupUrlBuilder.isAvailable(catchup, program.startMs, now)) return false
         val shift = settings.value.epgOffsetMinutes * 60_000L
         val start = program.startMs + offsetMs.coerceAtLeast(0)
-        val url = CatchupUrlBuilder.build(channel.url, catchup, start - shift, program.stopMs - shift, now)
-            ?: return false
-        playback.play(channel, overrideUrl = url, catchupTitle = program.title)
+        val url = CatchupUrlBuilder.build(
+            channel.url, catchup, start - shift, program.stopMs - shift, now,
+            preferHls = settings.value.catchupPreferHls
+        ) ?: return false
+        playback.play(channel, overrideUrl = url, catchupTitle = program.title, fallback = CatchupUrlBuilder.tsFallback(url))
         _catchup.value = CatchupSession(channel, program, offsetMs.coerceAtLeast(0))
         return true
     }

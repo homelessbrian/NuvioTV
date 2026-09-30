@@ -173,7 +173,9 @@ data class LiveTvSettings(
     /** Left while watching opens overlay mode; off: Left returns to the guide's group list. */
     val overlayMode: Boolean = true,
     /** Open Live TV instead of Nuvio's home screen when the app starts. */
-    val startOnLiveTv: Boolean = false
+    val startOnLiveTv: Boolean = false,
+    /** Xtream catch-up: ask for HLS (.m3u8) first, which gives replays a length for seeking. */
+    val catchupPreferHls: Boolean = true
 )
 
 data class LiveUserState(

@@ -377,6 +377,12 @@ fun LiveTvSettingsContent(
                         onClick = { dialog = LiveDialog.BannerTime }
                     )
                     SettingsToggleRow(
+                        "Prefer m3u8 for catch-up (enables scrubbing)",
+                        "Asks Xtream providers for HLS catch-up first, so replays have a working seek bar. Falls back to TS if the provider doesn't offer it.",
+                        s.catchupPreferHls,
+                        { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
+                    )
+                    SettingsToggleRow(
                         "Reconnect automatically",
                         "Tries the stream again by itself if it drops or freezes",
                         s.autoReconnect,

@@ -92,8 +92,12 @@ class LiveTvPlaybackController @Inject constructor(
         }
     }
 
-    fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null) {
+    /** A second link to try once if the first can't be played (HLS catch-up → TS). */
+    private var fallbackUrl: String? = null
+
+    fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
         val url = overrideUrl ?: channel.url
+        fallbackUrl = fallback
         val p = _player ?: attach().also { attachCount-- }
         if (currentChannel?.key == channel.key && currentUrl == url && _state.value.error == null &&
             p.playbackState != Player.STATE_IDLE
@@ -231,6 +235,17 @@ class LiveTvPlaybackController @Inject constructor(
 
         override fun onPlayerError(error: PlaybackException) {
             val p = _player
+            // The provider doesn't offer this as HLS: switch to the TS link once.
+            val fb = fallbackUrl
+            val ch = currentChannel
+            if (fb != null && ch != null && p != null) {
+                fallbackUrl = null
+                currentUrl = fb
+                p.setMediaSource(buildMediaSource(fb, ch.headers, isLive = _state.value.catchupTitle == null))
+                p.prepare()
+                p.playWhenReady = true
+                return
+            }
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && p != null) {
                 p.seekToDefaultPosition()
                 p.prepare()

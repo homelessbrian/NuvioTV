@@ -77,6 +77,7 @@ class LiveTvPreferences @Inject constructor(
         val sequentialNumbers = booleanPreferencesKey("sequential_numbers")
         val overlayMode = booleanPreferencesKey("overlay_mode")
         val startOnLiveTv = booleanPreferencesKey("start_on_live_tv")
+        val catchupPreferHls = booleanPreferencesKey("catchup_prefer_hls")
         val channelOrder = stringPreferencesKey("channel_order")
         val channelCopies = stringPreferencesKey("channel_copies")
 
@@ -138,7 +139,8 @@ class LiveTvPreferences @Inject constructor(
             aspectMode = p[Keys.aspectMode] ?: d.aspectMode,
             sequentialNumbers = p[Keys.sequentialNumbers] ?: d.sequentialNumbers,
             overlayMode = p[Keys.overlayMode] ?: d.overlayMode,
-            startOnLiveTv = p[Keys.startOnLiveTv] ?: d.startOnLiveTv
+            startOnLiveTv = p[Keys.startOnLiveTv] ?: d.startOnLiveTv,
+            catchupPreferHls = p[Keys.catchupPreferHls] ?: d.catchupPreferHls
         )
     }.distinctUntilChanged()
 
@@ -220,6 +222,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.sequentialNumbers] = s.sequentialNumbers
         p[Keys.overlayMode] = s.overlayMode
         p[Keys.startOnLiveTv] = s.startOnLiveTv
+        p[Keys.catchupPreferHls] = s.catchupPreferHls
     }
 
     // ---------- channel management ----------
