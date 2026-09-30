@@ -21,7 +21,8 @@ class LiveTvSettingsViewModel @Inject constructor(
     private val repository: LiveTvRepository,
     private val prefs: LiveTvPreferences,
     val driveSync: com.nuvio.tv.livetv.sync.LiveTvDriveSync,
-    val onDemand: com.nuvio.tv.livetv.ondemand.OnDemandRepository
+    val onDemand: com.nuvio.tv.livetv.ondemand.OnDemandRepository,
+    private val posterResolver: com.nuvio.tv.livetv.data.LiveTvPosterResolver
 ) : ViewModel() {
 
     val playlists: StateFlow<List<PlaylistSource>> =
@@ -86,6 +87,14 @@ class LiveTvSettingsViewModel @Inject constructor(
     fun resetGroupEdits() = viewModelScope.launch { prefs.resetGroupEdits() }
     fun resetChannelOrder() = viewModelScope.launch { prefs.resetChannelOrder() }
     fun clearVodHidden() = viewModelScope.launch { prefs.clearVodHiddenCategories() }
+
+    val posterTest = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Settings → "Test poster lookup". */
+    fun testPoster(title: String) = viewModelScope.launch {
+        posterTest.value = "Searching…"
+        posterTest.value = runCatching { posterResolver.diagnose(title) }.getOrElse { "Test failed: ${it.message}" }
+    }
     fun removeReminder(channelKey: String, startMs: Long) = viewModelScope.launch { prefs.removeReminder(channelKey, startMs) }
     fun clearChannelCopies() = viewModelScope.launch { prefs.clearChannelCopies() }
     fun resetEpgAssignments() = viewModelScope.launch {

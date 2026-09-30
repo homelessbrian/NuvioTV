@@ -119,7 +119,7 @@ fun rememberLiveTvSearchResults(
             viewModel.markFullscreenOpened()
             onOpened()
         },
-        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) } },
+        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) ?: it.icon } },
         viewModel = viewModel,
         playlistNames = playlistNames
     )

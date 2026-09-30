@@ -361,8 +361,11 @@ fun LiveTvGuideScreen(
         value = null
         val p = headerBlock?.program ?: return@produceState
         if (!settings.showProgramDetails) return@produceState
+        // The guide's own image for the show (if it has one) straight away; your addon's
+        // poster replaces it when found.
+        value = p.icon
         delay(250) // don't look up every show while scrolling quickly
-        value = viewModel.posterFor(p.title, p, headerChannel)
+        viewModel.posterFor(p.title, p, headerChannel)?.let { value = it }
     }
 
     fun ensureRowVisible(target: Int) {
@@ -469,25 +472,21 @@ fun LiveTvGuideScreen(
     }
 
     CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
-    var backHeld by remember { mutableStateOf(false) }
+    val hostActivity = androidx.compose.ui.platform.LocalContext.current as? com.nuvio.tv.MainActivity
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
             .onPreviewKeyEvent { e ->
                 // Hold Back: straight back to full screen on what's playing.
-                if (e.key != Key.Back) return@onPreviewKeyEvent false
-                when {
-                    e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount >= 1 -> {
-                        if (!backHeld && playback.channelKey != null) {
-                            backHeld = true
-                            goFullscreen()
-                        }
-                        backHeld
-                    }
-                    e.type == KeyEventType.KeyUp && backHeld -> { backHeld = false; true }
-                    else -> false
-                }
+                if (e.key != Key.Back || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val held = e.nativeKeyEvent.isLongPress || e.nativeKeyEvent.repeatCount >= 1
+                if (!held || playback.channelKey == null) return@onPreviewKeyEvent false
+                // Nuvio then swallows the rest of this Back press (so letting go doesn't
+                // also count as a normal Back and leave full screen again).
+                hostActivity?.longPressBackHeld?.value = true
+                goFullscreen()
+                true
             }
     ) {
         Column(

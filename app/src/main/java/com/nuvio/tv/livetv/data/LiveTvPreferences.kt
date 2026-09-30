@@ -89,6 +89,7 @@ class LiveTvPreferences @Inject constructor(
         val onDemandAddonPosters = booleanPreferencesKey("on_demand_addon_posters")
         val groupPlaylistHeadings = booleanPreferencesKey("group_playlist_headings")
         val nameRemovals = stringPreferencesKey("name_removals")
+        val developerTools = booleanPreferencesKey("developer_tools")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -166,7 +167,8 @@ class LiveTvPreferences @Inject constructor(
             onDemandInStreams = p[Keys.onDemandInStreams] ?: d.onDemandInStreams,
             onDemandAddonPosters = p[Keys.onDemandAddonPosters] ?: d.onDemandAddonPosters,
             groupPlaylistHeadings = p[Keys.groupPlaylistHeadings] ?: d.groupPlaylistHeadings,
-            nameRemovals = p[Keys.nameRemovals] ?: d.nameRemovals
+            nameRemovals = p[Keys.nameRemovals] ?: d.nameRemovals,
+            developerTools = p[Keys.developerTools] ?: d.developerTools
         )
     }.distinctUntilChanged()
 
@@ -263,6 +265,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.onDemandAddonPosters] = s.onDemandAddonPosters
         p[Keys.groupPlaylistHeadings] = s.groupPlaylistHeadings
         p[Keys.nameRemovals] = s.nameRemovals
+        p[Keys.developerTools] = s.developerTools
     }
 
     // ---------- channel management ----------
@@ -754,7 +757,7 @@ class LiveTvPreferences @Inject constructor(
     private companion object {
         const val EPG_SEP = "\u0001"
         /** Per-TV keys that Google Drive sync never copies. */
-        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent", "on_demand_imports", "channel_quality")
+        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent", "on_demand_imports", "channel_quality", "developer_tools")
     }
 
     private fun decodeListMap(raw: String?): Map<String, List<String>> {

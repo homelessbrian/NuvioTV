@@ -202,7 +202,9 @@ data class LiveTvSettings(
     /** Several playlists: list each playlist's groups under a foldable heading. */
     val groupPlaylistHeadings: Boolean = false,
     /** Channel name editor (TiviMate style): prefixes/suffixes to remove, comma-separated. */
-    val nameRemovals: String = ""
+    val nameRemovals: String = "",
+    /** Hidden developer tools (Test poster lookup). Turned on with a secret word. */
+    val developerTools: Boolean = false
 )
 
 data class LiveUserState(

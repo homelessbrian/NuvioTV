@@ -91,6 +91,7 @@ private sealed interface LiveDialog {
     data object Reminders : LiveDialog
     data object StartPage : LiveDialog
     data object NameEditor : LiveDialog
+    data object PosterTest : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -112,6 +113,9 @@ private fun hoursLabel(h: Int): String = when {
     h >= 24 && h % 24 == 0 -> if (h == 24) "1 day" else "${h / 24} days"
     else -> "$h hours"
 }
+
+/** Typed into the channel name editor, this turns the hidden developer tools on or off. */
+private const val DEVELOPER_WORD = "#nuviodev"
 
 private fun startPageLabel(page: String): String = when (page) {
     "LIVE_TV" -> "Live TV"
@@ -305,6 +309,15 @@ fun LiveTvSettingsContent(
                         !s.showChannelNames,
                         { update { it.copy(showChannelNames = !it.showChannelNames) } }
                     )
+                    // Hidden developer tool: only shown after typing the secret word into the
+                    // channel name editor (see NameEditor below).
+                    if (s.developerTools) {
+                        SettingsActionRow(
+                            "Test poster lookup",
+                            "Developer tool: what your addons return for a title",
+                            onClick = { dialog = LiveDialog.PosterTest }
+                        )
+                    }
                     SettingsActionRow(
                         title = "Highlight style",
                         subtitle = "How the selected show is marked: an outline, or filled with your theme color",
@@ -755,13 +768,46 @@ fun LiveTvSettingsContent(
             onDismiss = close,
             onConfirm = { if (it.trim() == s.parentalPin) { update { st -> st.copy(parentalPin = "") }; close() } else pinWrong = true }
         )
+        LiveDialog.PosterTest -> {
+            val result by viewModel.posterTest.collectAsStateWithLifecycle()
+            if (result == null) {
+                TextInputDialog(
+                    title = "Test poster lookup",
+                    initial = "",
+                    hint = "e.g. Family Guy",
+                    confirmLabel = "Test",
+                    onDismiss = close,
+                    onConfirm = { viewModel.testPoster(it) }
+                )
+            } else {
+                NuvioDialog(onDismiss = { viewModel.posterTest.value = null; close() }, title = "Poster lookup", width = 720.dp) {
+                    Text(
+                        text = result.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NuvioTheme.colors.TextSecondary,
+                        modifier = Modifier.heightIn(max = 320.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    )
+                    SettingsDialogActionRow {
+                        SettingsDialogActionButton(text = "Close", onClick = { viewModel.posterTest.value = null; close() }, primary = true)
+                    }
+                }
+            }
+        }
         LiveDialog.NameEditor -> TextInputDialog(
             title = "Prefixes and suffixes to remove",
             initial = s.nameRemovals,
             hint = "e.g. USA, US, UK, 24/7, FHD, HD",
             confirmLabel = "Save",
             onDismiss = close,
-            onConfirm = { text -> update { it.copy(nameRemovals = text.trim()) }; close() }
+            onConfirm = { text ->
+                // Secret word: turns the hidden developer tools on or off instead of saving.
+                if (text.trim().equals(DEVELOPER_WORD, ignoreCase = true)) {
+                    update { it.copy(developerTools = !it.developerTools) }
+                } else {
+                    update { it.copy(nameRemovals = text.trim()) }
+                }
+                close()
+            }
         )
         LiveDialog.StartPage -> SettingsSingleChoiceDialog(
             title = "Start page",

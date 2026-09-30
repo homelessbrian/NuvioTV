@@ -199,7 +199,7 @@ fun LiveTvPlayerScreen(
         value = null
         // In archive playback the guide entry isn't the live one, so no movie/series hint.
         val hintProgram = if (playback.catchupTitle == null) nowProgram else null
-        value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) }
+        value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) } ?: hintProgram?.icon
     }
 
     BackHandler(enabled = listVisible) { listVisible = false }

@@ -80,6 +80,56 @@ class LiveTvPosterResolver @Inject constructor(
         }
     }
 
+    /**
+     * "Test poster lookup" in settings: what the lookup sees for [title], in plain words, to
+     * track down why a poster isn't showing.
+     */
+    suspend fun diagnose(title: String): String {
+        val query = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
+        val addons = withTimeoutOrNull(8_000) {
+            addonRepository.getInstalledAddons().first { it.enabledAddons().isNotEmpty() }
+        }?.enabledAddons() ?: return "No addons are installed and enabled, so there's nothing to search."
+        val targets = searchTargets(addons)
+        if (targets.isEmpty()) {
+            return "None of your ${addons.size} addons has a searchable movie or series catalog. Posters come from addon search (Cinemeta, TMDB, AIOMetadata and similar)."
+        }
+        val lines = ArrayList<String>()
+        lines += "Searching \"$query\" in ${targets.size} catalogs (showing up to $MAX_CATALOGS per type):"
+        val results = kotlinx.coroutines.coroutineScope {
+            targets.take(MAX_CATALOGS * 2).map { (addon, catalog) ->
+                async {
+                    val r = withTimeoutOrNull(6_000) {
+                        catalogRepository.getCatalog(
+                            addonBaseUrl = addon.baseUrl, addonId = addon.id, addonName = addon.displayName,
+                            catalogId = catalog.id, catalogName = catalog.name, type = catalog.apiType,
+                            extraArgs = mapOf("search" to query), posterScreen = CustomPosterScreen.HOME
+                        ).first { it !is NetworkResult.Loading }
+                    }
+                    Triple(addon, catalog, r)
+                }
+            }.map { it.await() }
+        }
+        val wanted = normalize(query)
+        results.forEach { (addon, catalog, r) ->
+            val text = when (r) {
+                null -> "timed out"
+                is NetworkResult.Error -> "error: ${r.message}"
+                is NetworkResult.Success -> {
+                    val items = r.data.items
+                    val exact = items.firstOrNull { normalize(it.name) == wanted }
+                    "${items.size} results" + when {
+                        exact == null -> ", no exact title match"
+                        exact.poster.isNullOrBlank() -> ", match \"${exact.name}\" but it has no poster"
+                        else -> ", match \"${exact.name}\" with a poster ✓"
+                    }
+                }
+                else -> "no answer"
+            }
+            lines += "• ${addon.displayName} / ${catalog.name} (${catalog.apiType}): $text"
+        }
+        return lines.joinToString("\n")
+    }
+
     /** Tracks whether a lookup actually reached any catalog (so failures aren't remembered). */
     private class Attempt { @Volatile var reached = false }
 
@@ -95,15 +145,16 @@ class LiveTvPosterResolver @Inject constructor(
         val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (clues.year ?: "") +
             "|" + (clues.description?.hashCode() ?: 0)
         cache[key]?.let { return it.poster }
-        val job = inFlight.getOrPut(key) {
-            scope.async {
-                try {
-                    permits.withPermit { resolve(programTitle, query, hint, clues, key) }
-                } finally {
-                    inFlight.remove(key)
-                }
-            }
+        // One lookup per title at a time. Started only after it's registered, so a finished
+        // lookup can never be left behind and answer "no poster" forever.
+        val fresh = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            permits.withPermit { resolve(programTitle, query, hint, clues, key) }
         }
+        val job = inFlight.putIfAbsent(key, fresh) ?: fresh.also { d ->
+            d.invokeOnCompletion { inFlight.remove(key, d) }
+            d.start()
+        }
+        if (job !== fresh) fresh.cancel()
         return runCatching { job.await() }.getOrNull()
     }
 
