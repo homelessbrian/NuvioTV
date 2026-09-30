@@ -191,8 +191,10 @@ private fun LiveSearchCard(
     val now = System.currentTimeMillis()
     val p = hit.program
     val live = p != null && now >= p.startMs && now < p.stopMs
-    val poster by produceState<String?>(initialValue = null, p?.title) {
-        value = posterFor(hit)
+    val poster by produceState<String?>(initialValue = p?.icon, p?.title) {
+        // Give Nuvio's own addon search a head start, so poster lookups never compete with it.
+        kotlinx.coroutines.delay(2_500)
+        posterFor(hit)?.let { value = it }
     }
     val upcoming = p != null && p.startMs > now
     val whenLine = when {

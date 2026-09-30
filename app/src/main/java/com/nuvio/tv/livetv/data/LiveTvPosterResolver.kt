@@ -138,6 +138,7 @@ class LiveTvPosterResolver @Inject constructor(
     // A few lookups at once, so one slow title doesn't hold up every other poster.
     private val permits = kotlinx.coroutines.sync.Semaphore(3)
     private val vodPermits = kotlinx.coroutines.sync.Semaphore(2)
+    private val requestPermits = kotlinx.coroutines.sync.Semaphore(2)
 
     suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
@@ -160,6 +161,7 @@ class LiveTvPosterResolver @Inject constructor(
 
     private suspend fun resolve(programTitle: String, query: String, hint: TypeHint?, clues: Clues, key: String): String? {
         cache[key]?.let { return it.poster }
+        if (System.currentTimeMillis() < pausedUntil) return null
         val attempt = Attempt()
         // Titles like "The Game - The Trey Wiggs Taps Back Episode" glue the show and episode
         // together. For series, try the show name first (that's what catalogs know); otherwise
@@ -186,6 +188,10 @@ class LiveTvPosterResolver @Inject constructor(
         // Only remember "no poster" when the catalogs actually answered. If addons hadn't
         // loaded yet or the network failed, try again next time instead of showing a logo forever.
         if (poster != null || attempt.reached) cache[key] = Result(poster)
+        // Addons not answering (rate limits, offline): back off for a minute.
+        if (poster == null && !attempt.reached) {
+            if (++failuresInARow >= 5) { pausedUntil = System.currentTimeMillis() + 60_000; failuresInARow = 0 }
+        } else failuresInARow = 0
         return poster
     }
 
@@ -227,17 +233,21 @@ class LiveTvPosterResolver @Inject constructor(
         val results = kotlinx.coroutines.coroutineScope {
             targets.map { (addon, catalog) ->
                 async {
-                    withTimeoutOrNull(6_000) {
-                        catalogRepository.getCatalog(
-                            addonBaseUrl = addon.baseUrl,
-                            addonId = addon.id,
-                            addonName = addon.displayName,
-                            catalogId = catalog.id,
-                            catalogName = catalog.name,
-                            type = catalog.apiType,
-                            extraArgs = mapOf("search" to query),
-                            posterScreen = CustomPosterScreen.HOME
-                        ).first { it !is NetworkResult.Loading }
+                    // At most two poster searches hit your addons at any moment, so Nuvio's own
+                    // searches and catalogs are never crowded out (or rate-limited) by posters.
+                    requestPermits.withPermit {
+                        withTimeoutOrNull(6_000) {
+                            catalogRepository.getCatalog(
+                                addonBaseUrl = addon.baseUrl,
+                                addonId = addon.id,
+                                addonName = addon.displayName,
+                                catalogId = catalog.id,
+                                catalogName = catalog.name,
+                                type = catalog.apiType,
+                                extraArgs = mapOf("search" to query),
+                                posterScreen = CustomPosterScreen.HOME
+                            ).first { it !is NetworkResult.Loading }
+                        }
                     }
                 }
             }.map { it.await() }
@@ -324,7 +334,8 @@ class LiveTvPosterResolver @Inject constructor(
         s.lowercase().replace("&", "and").filter { it.isLetterOrDigit() }
 
     companion object {
-        private const val MAX_CATALOGS = 6
+        /** Catalogs searched per kind (movies / series) for one title. */
+        private const val MAX_CATALOGS = 3
 
         /** " - ", " – ", " — " or " | " between a show name and an episode title. */
         private val SHOW_EPISODE_SEPARATOR = Regex("""\s+[-–—|]\s+""")
