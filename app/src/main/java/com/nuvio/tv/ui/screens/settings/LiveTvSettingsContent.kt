@@ -90,6 +90,7 @@ private sealed interface LiveDialog {
     data object PinRemove : LiveDialog
     data object Reminders : LiveDialog
     data object StartPage : LiveDialog
+    data object NameEditor : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -285,6 +286,19 @@ fun LiveTvSettingsContent(
                         !s.showChannelLogos,
                         { update { it.copy(showChannelLogos = !it.showChannelLogos) } }
                     )
+                    SettingsActionRow(
+                        title = "Channel name editor",
+                        subtitle = "Prefixes and suffixes to remove from channel names, like USA, 24/7 or FHD, separated by commas",
+                        value = com.nuvio.tv.livetv.model.ChannelNameEditor.terms(s.nameRemovals).size.let { if (it == 0) "Off" else "$it removed" },
+                        onClick = { dialog = LiveDialog.NameEditor }
+                    )
+                    if (s.nameRemovals.isBlank()) {
+                        SettingsActionRow(
+                            "Add common prefixes and suffixes",
+                            "Fills in: ${com.nuvio.tv.livetv.model.ChannelNameEditor.COMMON}",
+                            onClick = { update { it.copy(nameRemovals = com.nuvio.tv.livetv.model.ChannelNameEditor.COMMON) } }
+                        )
+                    }
                     SettingsToggleRow(
                         "Hide channel names",
                         "Shows only numbers and logos, which leaves more room for the schedule",
@@ -332,6 +346,12 @@ fun LiveTvSettingsContent(
                         "Removes the group with every channel, leaving your groups and the playlist's groups",
                         !s.showAllChannelsGroup,
                         { update { it.copy(showAllChannelsGroup = !it.showAllChannelsGroup) } }
+                    )
+                    SettingsToggleRow(
+                        "Group by playlist",
+                        "With more than one playlist, lists each playlist's groups under its own heading, which you can fold away",
+                        s.groupPlaylistHeadings,
+                        { update { it.copy(groupPlaylistHeadings = !it.groupPlaylistHeadings) } }
                     )
                     SettingsToggleRow(
                         "Hide channel counts",
@@ -734,6 +754,14 @@ fun LiveTvSettingsContent(
             initial = "", hint = "PIN", confirmLabel = "Turn off", numeric = true,
             onDismiss = close,
             onConfirm = { if (it.trim() == s.parentalPin) { update { st -> st.copy(parentalPin = "") }; close() } else pinWrong = true }
+        )
+        LiveDialog.NameEditor -> TextInputDialog(
+            title = "Prefixes and suffixes to remove",
+            initial = s.nameRemovals,
+            hint = "e.g. USA, US, UK, 24/7, FHD, HD",
+            confirmLabel = "Save",
+            onDismiss = close,
+            onConfirm = { text -> update { it.copy(nameRemovals = text.trim()) }; close() }
         )
         LiveDialog.StartPage -> SettingsSingleChoiceDialog(
             title = "Start page",

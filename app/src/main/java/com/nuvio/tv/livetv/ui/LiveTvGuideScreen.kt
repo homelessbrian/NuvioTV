@@ -319,11 +319,8 @@ fun LiveTvGuideScreen(
                 windowStart = floorSlot(now)
                 cursorMs = now
             }
-            ui.selectedGroupId != ui.defaultGroupId -> {
-                viewModel.selectGroup(ui.defaultGroupId)
-                row = 0
-                scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
-            }
+            // Back from the channels: the group list, with the group you're in highlighted.
+            !groupsOpen -> focusGroups()
             else -> openSidebar()
         }
     }
@@ -472,10 +469,26 @@ fun LiveTvGuideScreen(
     }
 
     CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
+    var backHeld by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
+            .onPreviewKeyEvent { e ->
+                // Hold Back: straight back to full screen on what's playing.
+                if (e.key != Key.Back) return@onPreviewKeyEvent false
+                when {
+                    e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount >= 1 -> {
+                        if (!backHeld && playback.channelKey != null) {
+                            backHeld = true
+                            goFullscreen()
+                        }
+                        backHeld
+                    }
+                    e.type == KeyEventType.KeyUp && backHeld -> { backHeld = false; true }
+                    else -> false
+                }
+            }
     ) {
         Column(
             modifier = Modifier
@@ -534,6 +547,7 @@ fun LiveTvGuideScreen(
                         groupVisibilityList = null
                     },
                     playlistNames = playlistNames,
+                    showPlaylistHeadings = settings.groupPlaylistHeadings,
                     collapsed = collapsedPlaylists,
                     onToggleCollapse = { viewModel.togglePlaylistCollapsed(it) },
                     reorderingId = groupReorderId,
@@ -1609,6 +1623,8 @@ private fun GroupColumn(
     onReorderDone: () -> Unit = {},
     /** Non-null while managing group visibility: the groups set to hidden. */
     hiddenPending: Set<String>? = null,
+    /** With several playlists, show each playlist's groups under its own heading (setting). */
+    showPlaylistHeadings: Boolean = false,
     onToggleGroupVisible: (String) -> Unit = {},
     onHideAllGroups: () -> Unit = {},
     onShowAllGroups: () -> Unit = {},
@@ -1661,7 +1677,7 @@ private fun GroupColumn(
         // which folds away when selected. (Not while reordering: that's one plain list.)
         val listed = groups.filter { it.id != ChannelGroup.SEARCH }
         val sources = listed.mapNotNull { it.sourceId }.distinct()
-        val sectioned = reorderingId == null && hiddenPending == null && sources.size > 1
+        val sectioned = showPlaylistHeadings && reorderingId == null && hiddenPending == null && sources.size > 1
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),

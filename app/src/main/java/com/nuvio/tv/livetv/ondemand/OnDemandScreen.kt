@@ -455,7 +455,7 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onFocused: (
     // The provider's image straight away; your addon's poster once the card has been on
     // screen for a moment (scrolling past doesn't trigger lookups).
     val poster by produceState<String?>(initialValue = item.icon, item.uid) {
-        delay(450)
+        delay(600)
         viewModel.posterFor(item)?.let { value = it }
     }
     val shape = RoundedCornerShape(8.dp)

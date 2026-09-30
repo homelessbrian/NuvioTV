@@ -66,7 +66,8 @@ class LiveTvPosterResolver @Inject constructor(
         val key = normalize(query) + "|" + series + "|" + (year ?: "")
         matchCache[key]?.let { return it }
         if (key in noMatch) return null
-        return permits.withPermit {
+        // On Demand has its own small queue, so browsing movies never holds up the guide's posters.
+        return vodPermits.withPermit {
             val attempt = Attempt()
             val hit = runCatching {
                 lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(year = year), attempt)
@@ -86,6 +87,7 @@ class LiveTvPosterResolver @Inject constructor(
     private val inFlight = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<String?>>()
     // A few lookups at once, so one slow title doesn't hold up every other poster.
     private val permits = kotlinx.coroutines.sync.Semaphore(3)
+    private val vodPermits = kotlinx.coroutines.sync.Semaphore(2)
 
     suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
@@ -207,12 +209,9 @@ class LiveTvPosterResolver @Inject constructor(
         }
 
         if (exact.isNotEmpty()) {
-            val best = exact.values.maxByOrNull { score(it.meta, clues) }!!
-            if (clues.year != null) {
-                val y = yearOf(best.meta)
-                if (y != null && kotlin.math.abs(y - clues.year) > 1) return null
-            }
-            return best
+            // Year, cast and description pick the best of several same-named titles; they never
+            // throw away the only match (guides' years are often the airing, not the release).
+            return exact.values.maxByOrNull { score(it.meta, clues) }!!
         }
         val close = closeMatch ?: return null
         if (clues.year != null) {

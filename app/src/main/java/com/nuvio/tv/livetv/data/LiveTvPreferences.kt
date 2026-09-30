@@ -87,6 +87,8 @@ class LiveTvPreferences @Inject constructor(
         val onDemandInSidebar = booleanPreferencesKey("on_demand_in_sidebar")
         val onDemandInStreams = booleanPreferencesKey("on_demand_in_streams")
         val onDemandAddonPosters = booleanPreferencesKey("on_demand_addon_posters")
+        val groupPlaylistHeadings = booleanPreferencesKey("group_playlist_headings")
+        val nameRemovals = stringPreferencesKey("name_removals")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -162,7 +164,9 @@ class LiveTvPreferences @Inject constructor(
             matchFrameRate = p[Keys.matchFrameRate] ?: d.matchFrameRate,
             onDemandInSidebar = p[Keys.onDemandInSidebar] ?: d.onDemandInSidebar,
             onDemandInStreams = p[Keys.onDemandInStreams] ?: d.onDemandInStreams,
-            onDemandAddonPosters = p[Keys.onDemandAddonPosters] ?: d.onDemandAddonPosters
+            onDemandAddonPosters = p[Keys.onDemandAddonPosters] ?: d.onDemandAddonPosters,
+            groupPlaylistHeadings = p[Keys.groupPlaylistHeadings] ?: d.groupPlaylistHeadings,
+            nameRemovals = p[Keys.nameRemovals] ?: d.nameRemovals
         )
     }.distinctUntilChanged()
 
@@ -257,6 +261,8 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.onDemandInSidebar] = s.onDemandInSidebar
         p[Keys.onDemandInStreams] = s.onDemandInStreams
         p[Keys.onDemandAddonPosters] = s.onDemandAddonPosters
+        p[Keys.groupPlaylistHeadings] = s.groupPlaylistHeadings
+        p[Keys.nameRemovals] = s.nameRemovals
     }
 
     // ---------- channel management ----------

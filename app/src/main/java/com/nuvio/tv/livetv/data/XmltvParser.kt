@@ -131,7 +131,9 @@ object XmltvParser {
             if (event == XmlPullParser.END_DOCUMENT) break
             event = parser.next()
         }
-        val year = date?.trim()?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
+        // Only a bare year ("1990") is a release year. Many guides put the broadcast or episode
+        // air date here instead ("20260929"), which would make every poster look "wrong year".
+        val year = date?.trim()?.takeIf { it.length == 4 }?.toIntOrNull()?.takeIf { it in 1900..2100 }
             ?: yearIn(title) ?: yearIn(desc)
         val fullDesc = listOfNotNull(subTitle?.takeIf { it.isNotBlank() }, desc?.takeIf { it.isNotBlank() })
             .joinToString("\n").ifBlank { null }

@@ -198,7 +198,11 @@ data class LiveTvSettings(
     /** Offer "Watch On Demand" in Nuvio's stream list for movies and episodes. */
     val onDemandInStreams: Boolean = true,
     /** On Demand posters from your own addons (off = the provider's images only). */
-    val onDemandAddonPosters: Boolean = true
+    val onDemandAddonPosters: Boolean = true,
+    /** Several playlists: list each playlist's groups under a foldable heading. */
+    val groupPlaylistHeadings: Boolean = false,
+    /** Channel name editor (TiviMate style): prefixes/suffixes to remove, comma-separated. */
+    val nameRemovals: String = ""
 )
 
 data class LiveUserState(
@@ -284,3 +288,50 @@ data class ChannelGroup(
 /** The start page, including the older "Open Live TV when Nuvio starts" switch. */
 val LiveTvSettings.effectiveStartPage: String
     get() = startPage.ifBlank { if (startOnLiveTv) "LIVE_TV" else "HOME" }
+
+
+/**
+ * Channel name editor, TiviMate style: removes each listed prefix or suffix (like "USA", "US:",
+ * "24/7", "FHD") from the start or end of channel names, along with the separator next to it
+ * (":", "|", "-", "/", brackets or spaces). Matching ignores case; the text must be a whole word
+ * or symbol group, so "US" never cuts the start of "USA Network".
+ */
+object ChannelNameEditor {
+    private const val SEP = """[\s:|\-–—/.•*]*"""
+
+    fun terms(raw: String): List<String> =
+        raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
+
+    fun clean(name: String, terms: List<String>): String {
+        if (terms.isEmpty()) return name
+        var out = name.trim()
+        var changed = true
+        var guard = 0
+        while (changed && guard++ < 6) {
+            changed = false
+            for (t in terms) {
+                val q = Regex.escape(t)
+                // Prefix: "USA: ESPN", "[USA] ESPN", "|US| ESPN", "USA - ESPN". A plain word needs
+                // brackets or punctuation after it, so "USA" never eats "USA Network".
+                val lettersOnly = t.all { it.isLetter() }
+                val prefix = if (lettersOnly) {
+                    Regex("""^(?:[\[(|]$q[\])|]|$q\s*[:|\-–—/.•*]+)\s*""", RegexOption.IGNORE_CASE)
+                } else {
+                    Regex("""^[\[(|]?$q[\])|]?$SEP""", RegexOption.IGNORE_CASE)
+                }
+                // Suffix: "ESPN HD", "ESPN (US)", "ESPN | FHD", "ESPN 24/7"
+                val suffix = Regex("""$SEP[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE)
+                val p = prefix.replace(out, "").trim()
+                if (p != out && p.isNotBlank()) { out = p; changed = true }
+                val sfx = suffix.replace(out, "").trim()
+                if (sfx != out && sfx.isNotBlank() && Regex("""(^|[\s:|\-–—/.•*\[(])[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE).containsMatchIn(out)) {
+                    out = sfx; changed = true
+                }
+            }
+        }
+        return out
+    }
+
+    /** Common ones, for "Add common prefixes and suffixes". */
+    const val COMMON = "USA, US, UK, CA, AU, 24/7, FHD, HD, SD, UHD, 4K, HEVC, RAW, VIP, ᴴᴰ, ᵁᴴᴰ, ᶠᴴᴰ"
+}

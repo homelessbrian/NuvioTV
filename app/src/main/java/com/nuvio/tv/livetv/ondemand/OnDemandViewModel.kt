@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -77,8 +79,14 @@ class OnDemandViewModel @Inject constructor(
     init {
         repository.start()
         viewModelScope.launch { repository.version.collect { reload() } }
-        viewModelScope.launch { prefs.userState.map { it.vodHiddenCategories to it.lockedGroups }.collect { reload(keepSelection = true) } }
-        viewModelScope.launch { ParentalControls.unlocked.collect { reload(keepSelection = true) } }
+        // Only reload when hidden or locked categories actually change (not on every saved setting).
+        viewModelScope.launch {
+            prefs.userState.map { it.vodHiddenCategories to it.lockedGroups }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { reload(keepSelection = true) }
+        }
+        viewModelScope.launch { ParentalControls.unlocked.drop(1).collect { reload(keepSelection = true) } }
     }
 
     fun selectKind(kind: VodKind) {

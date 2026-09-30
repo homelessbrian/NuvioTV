@@ -126,11 +126,13 @@ class LiveTvViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** Channels with the user's renames and renumbering applied. */
-    val displayChannels: StateFlow<List<LiveChannel>> = combine(repository.channels, userState) { channels, user ->
-        if (user.channelNames.isEmpty() && user.channelNumbers.isEmpty() && user.groupNames.isEmpty()) channels
+    val displayChannels: StateFlow<List<LiveChannel>> = combine(repository.channels, userState, settings) { channels, user, s ->
+        // Channel name editor: prefixes/suffixes removed from names you haven't renamed yourself.
+        val terms = com.nuvio.tv.livetv.model.ChannelNameEditor.terms(s.nameRemovals)
+        if (user.channelNames.isEmpty() && user.channelNumbers.isEmpty() && user.groupNames.isEmpty() && terms.isEmpty()) channels
         else channels.map { c ->
             c.copy(
-                name = user.channelNames[c.key] ?: c.name,
+                name = user.channelNames[c.key] ?: com.nuvio.tv.livetv.model.ChannelNameEditor.clean(c.name, terms),
                 number = user.channelNumbers[c.key] ?: c.number,
                 group = user.groupNames[c.groupId] ?: c.group
             )
