@@ -1,5 +1,6 @@
 package com.nuvio.tv.livetv.ui
 
+import com.nuvio.tv.livetv.data.LiveTvRepository
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -206,7 +207,8 @@ fun LiveTvPlayerScreen(
         value = null
         // In archive playback the guide entry isn't the live one, so no movie/series hint.
         val hintProgram = if (playback.catchupTitle == null) nowProgram else null
-        value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) } ?: hintProgram?.icon
+        value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) }
+            ?: hintProgram?.takeIf { !LiveTvRepository.isPlaceholderTitle(it.title) }?.icon
     }
 
     BackHandler(enabled = listVisible) { listVisible = false }

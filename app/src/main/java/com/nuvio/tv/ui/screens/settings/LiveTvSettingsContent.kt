@@ -267,16 +267,34 @@ fun LiveTvSettingsContent(
                         { update { it.copy(showProgramDetails = !it.showProgramDetails) } }
                     )
                     SettingsToggleRow(
+                        "Show playlist in info panel",
+                        "Shows which playlist the highlighted channel comes from",
+                        s.showPlaylistInInfo,
+                        { update { it.copy(showPlaylistInInfo = !it.showPlaylistInInfo) } }
+                    )
+                    SettingsToggleRow(
                         "Smaller info panel and preview",
                         "Shrinks the top of the guide to about two-thirds of its height, so more channels fit",
                         s.smallHeader,
                         { update { it.copy(smallHeader = !it.smallHeader) } }
                     )
                     SettingsToggleRow(
+                        "Hide the \"now\" line",
+                        "Removes the vertical line that marks the current time in the guide",
+                        !s.showNowLine,
+                        { update { it.copy(showNowLine = !it.showNowLine) } }
+                    )
+                    SettingsToggleRow(
                         "Compact channel rows",
                         "Makes each channel row slimmer, so about two more channels fit",
                         s.compactRows,
                         { update { it.copy(compactRows = !it.compactRows) } }
+                    )
+                    SettingsToggleRow(
+                        "Browse by channel name",
+                        "Like satellite boxes: picking a group lands on the channel names. OK plays, Right opens the schedule, Left goes back to the groups.",
+                        s.browseByChannelName,
+                        { update { it.copy(browseByChannelName = !it.browseByChannelName) } }
                     )
                     SettingsToggleRow(
                         "Hide channel numbers",
@@ -685,6 +703,14 @@ fun LiveTvSettingsContent(
                 "Update now" to { viewModel.savePlaylist(d.source); close() },
                 (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setPlaylistEnabled(d.source.id, !d.source.enabled); close() },
                 "Delete playlist" to { dialog = LiveDialog.ConfirmDeletePlaylist(d.source) },
+                // Xtream: which stream format to ask for. Auto follows what the account allows.
+                *(if (d.source.isXtream) arrayOf<Pair<String, () -> Unit>>(
+                    "Stream format: " + when (d.source.streamFormat) { "ts" -> "TS"; "m3u8" -> "HLS (m3u8)"; else -> "Auto" } to {
+                        val next = when (d.source.streamFormat) { "auto" -> "ts"; "ts" -> "m3u8"; else -> "auto" }
+                        viewModel.savePlaylist(d.source.copy(streamFormat = next))
+                        close()
+                    }
+                ) else emptyArray()),
                 "Move up" to { viewModel.movePlaylist(d.source.id, -1); close() },
                 "Move down" to { viewModel.movePlaylist(d.source.id, 1); close() }
             ),

@@ -90,6 +90,9 @@ class LiveTvPreferences @Inject constructor(
         val groupPlaylistHeadings = booleanPreferencesKey("group_playlist_headings")
         val nameRemovals = stringPreferencesKey("name_removals")
         val developerTools = booleanPreferencesKey("developer_tools")
+        val browseByChannelName = booleanPreferencesKey("browse_by_channel_name")
+        val showPlaylistInInfo = booleanPreferencesKey("show_playlist_in_info")
+        val showNowLine = booleanPreferencesKey("show_now_line")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -168,7 +171,10 @@ class LiveTvPreferences @Inject constructor(
             onDemandAddonPosters = p[Keys.onDemandAddonPosters] ?: d.onDemandAddonPosters,
             groupPlaylistHeadings = p[Keys.groupPlaylistHeadings] ?: d.groupPlaylistHeadings,
             nameRemovals = p[Keys.nameRemovals] ?: d.nameRemovals,
-            developerTools = p[Keys.developerTools] ?: d.developerTools
+            developerTools = p[Keys.developerTools] ?: d.developerTools,
+            browseByChannelName = p[Keys.browseByChannelName] ?: d.browseByChannelName,
+            showPlaylistInInfo = p[Keys.showPlaylistInInfo] ?: d.showPlaylistInInfo,
+            showNowLine = p[Keys.showNowLine] ?: d.showNowLine
         )
     }.distinctUntilChanged()
 
@@ -266,6 +272,9 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.groupPlaylistHeadings] = s.groupPlaylistHeadings
         p[Keys.nameRemovals] = s.nameRemovals
         p[Keys.developerTools] = s.developerTools
+        p[Keys.browseByChannelName] = s.browseByChannelName
+        p[Keys.showPlaylistInInfo] = s.showPlaylistInInfo
+        p[Keys.showNowLine] = s.showNowLine
     }
 
     // ---------- channel management ----------
@@ -687,7 +696,8 @@ class LiveTvPreferences @Inject constructor(
                     channelCount = o.optInt("channelCount"),
                     // Logins from before On Demand existed stay off until you switch them on.
                     importVod = o.optBoolean("importVod", false),
-                    importLive = o.optBoolean("importLive", true)
+                    importLive = o.optBoolean("importLive", true),
+                    streamFormat = o.optString("streamFormat").ifBlank { "auto" }
                 )
             }
         }.getOrDefault(emptyList())
@@ -707,6 +717,7 @@ class LiveTvPreferences @Inject constructor(
                     .put("channelCount", s.channelCount)
                     .put("importVod", s.importVod)
                     .put("importLive", s.importLive)
+                    .put("streamFormat", s.streamFormat)
             )
         }
         return arr.toString()

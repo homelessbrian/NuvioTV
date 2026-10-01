@@ -21,7 +21,9 @@ data class PlaylistSource(
     /** Xtream: also import the provider's movies and series (On Demand). */
     val importVod: Boolean = true,
     /** Xtream: import the live TV channels (off = On Demand only). */
-    val importLive: Boolean = true
+    val importLive: Boolean = true,
+    /** Xtream live stream format: "auto" (what the provider allows), "ts" or "m3u8". */
+    val streamFormat: String = "auto"
 ) {
     val isXtream: Boolean get() = xtreamServer.isNotBlank()
 
@@ -204,7 +206,13 @@ data class LiveTvSettings(
     /** Channel name editor (TiviMate style): prefixes/suffixes to remove, comma-separated. */
     val nameRemovals: String = "",
     /** Hidden developer tools (Test poster lookup). Turned on with a secret word. */
-    val developerTools: Boolean = false
+    val developerTools: Boolean = false,
+    /** Satellite-box style: picking a group lands on the channel names (OK plays, Right opens the schedule). */
+    val browseByChannelName: Boolean = false,
+    /** Show which playlist the highlighted channel comes from in the info panel. */
+    val showPlaylistInInfo: Boolean = true,
+    /** The vertical line marking the current time in the guide. */
+    val showNowLine: Boolean = true
 )
 
 data class LiveUserState(
@@ -335,6 +343,9 @@ object ChannelNameEditor {
 
     fun clean(name: String, terms: List<String>): String {
         if (terms.isEmpty()) return name
+        // Fast path: most names contain none of the terms, so skip the patterns entirely.
+        val lower = name.lowercase()
+        if (terms.none { lower.contains(it.lowercase()) }) return name.trim()
         val patterns = compile(terms)
         var out = name.trim()
         var changed = true

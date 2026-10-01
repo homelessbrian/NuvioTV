@@ -1,5 +1,6 @@
 package com.nuvio.tv.livetv.ui
 
+import com.nuvio.tv.livetv.data.LiveTvRepository
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -119,7 +120,10 @@ fun rememberLiveTvSearchResults(
             viewModel.markFullscreenOpened()
             onOpened()
         },
-        posterFor = { hit -> hit.program?.let { viewModel.posterFor(it.title, it, hit.channel) ?: it.icon } },
+        posterFor = { hit ->
+            hit.program?.takeIf { !LiveTvRepository.isPlaceholderTitle(it.title) }
+                ?.let { viewModel.posterFor(it.title, it, hit.channel) ?: it.icon }
+        },
         viewModel = viewModel,
         playlistNames = playlistNames
     )

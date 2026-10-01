@@ -178,6 +178,7 @@ class OnDemandRepository @Inject constructor(
         val api = pl.xtreamApiUrl()
         val catAction = if (kind == VodKind.MOVIE) "get_vod_categories" else "get_series_categories"
         val listAction = if (kind == VodKind.MOVIE) "get_vod_streams" else "get_series"
+        val what = if (kind == VodKind.MOVIE) "movies" else "series"
         val categories = ArrayList<Pair<String, String>>()
         runCatching {
             val arr = org.json.JSONArray(getText("$api&action=$catAction", pl.userAgent))
@@ -186,63 +187,116 @@ class OnDemandRepository @Inject constructor(
                 categories += c.optString("category_id") to c.optString("category_name").ifBlank { "Other" }
             }
         }
-        val request = Request.Builder().url("$api&action=$listAction")
+        _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}…")
+        var n = 0
+        fun progress() {
+            if (++n % 500 == 0) _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}… ${"%,d".format(n)}")
+        }
+
+        // 1. The whole list in one go (fastest).
+        var stoppedEarly: Throwable? = null
+        val saved = db.replace(
+            pl.id, kind, categories,
+            streamItems(pl, kind, "$api&action=$listAction", onStop = { stoppedEarly = it }, onItem = ::progress)
+        )
+        val firstProblem = stoppedEarly ?: return
+
+        // 2. Some panels cut off huge lists part-way (an "EOFException" partway through).
+        //    Ask again one category at a time: many small lists instead of one huge one.
+        if (categories.isEmpty()) {
+            reportStop(pl, what, saved, firstProblem)
+            if (saved == 0) throw firstProblem
+            return
+        }
+        Log.w(TAG, "${pl.name}: $what list stopped after $saved; importing by category", firstProblem)
+        n = 0
+        _status.value = OnDemandStatus(true, "Importing $what from ${pl.name} by category…")
+        var failedCategories = 0
+        val byCategory = sequence {
+            for ((catId, _) in categories) {
+                var problem: Throwable? = null
+                yieldAll(
+                    streamItems(
+                        pl, kind, "$api&action=$listAction&category_id=${enc(catId)}",
+                        onStop = { problem = it }, onItem = ::progress
+                    )
+                )
+                if (problem != null) failedCategories++
+            }
+        }
+        val total = db.replace(pl.id, kind, categories, byCategory)
+        if (total < saved) {
+            // Category by category did worse: go back to what the full list gave.
+            db.replace(pl.id, kind, categories, streamItems(pl, kind, "$api&action=$listAction", onStop = {}, onItem = {}))
+            reportStop(pl, what, saved, firstProblem)
+        } else if (failedCategories > 0) {
+            lastProblem = "${pl.name}: imported ${"%,d".format(total)} $what, but $failedCategories categories " +
+                "didn't finish. It will try again in an hour."
+        }
+    }
+
+    private fun reportStop(pl: PlaylistSource, what: String, saved: Int, e: Throwable) {
+        lastProblem = "${pl.name} stopped sending $what after ${"%,d".format(saved)} " +
+            "(${e.message ?: e.javaClass.simpleName}). Those were saved; it will try again in an hour."
+    }
+
+    /**
+     * Streams one provider list straight into the database, a title at a time. If the provider
+     * stops part-way, [onStop] is told and everything received so far is still yielded.
+     */
+    private fun streamItems(
+        pl: PlaylistSource,
+        kind: VodKind,
+        url: String,
+        onStop: (Throwable) -> Unit,
+        onItem: () -> Unit
+    ): Sequence<VodItem> = sequence {
+        val request = Request.Builder().url(url)
             .header("User-Agent", pl.userAgent.ifBlank { LiveTvRepository.DEFAULT_UA }).build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("HTTP ${response.code}")
-            val body = response.body ?: error("Empty response")
+        val response = try {
+            http.newCall(request).execute()
+        } catch (e: Exception) {
+            onStop(e); return@sequence
+        }
+        response.use { r ->
+            if (!r.isSuccessful) { onStop(IllegalStateException("HTTP ${r.code}")); return@sequence }
+            val body = r.body ?: run { onStop(IllegalStateException("Empty response")); return@sequence }
             JsonReader(body.charStream()).use { reader ->
                 // Panels don't always send perfectly valid JSON; be forgiving.
                 reader.isLenient = true
-                if (reader.peek() != JsonToken.BEGIN_ARRAY) {
-                    reader.skipValue()
-                    db.replace(pl.id, kind, categories, emptySequence())
-                    return
+                try {
+                    if (reader.peek() != JsonToken.BEGIN_ARRAY) { reader.skipValue(); return@sequence }
+                    reader.beginArray()
+                } catch (e: Exception) {
+                    onStop(e); return@sequence
                 }
-                reader.beginArray()
-                val what = if (kind == VodKind.MOVIE) "movies" else "series"
-                var n = 0
-                _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}…")
-                var stoppedEarly: Throwable? = null
-                val items = sequence {
-                    while (true) {
-                        // If the provider stops sending part-way (timeout, broken data), keep
-                        // everything received so far instead of throwing it all away.
-                        val f = try {
-                            if (!reader.hasNext()) break
-                            readFlat(reader)
-                        } catch (e: Exception) {
-                            stoppedEarly = e
-                            break
-                        }
-                        val id = (if (kind == VodKind.MOVIE) f["stream_id"] else f["series_id"]) ?: continue
-                        val name = f["name"]?.trim().orEmpty().ifBlank { f["title"].orEmpty() }
-                        if (name.isBlank()) continue
-                        yield(
-                            VodItem(
-                                playlistId = pl.id,
-                                kind = kind,
-                                id = id,
-                                name = name,
-                                icon = (if (kind == VodKind.MOVIE) f["stream_icon"] else f["cover"])?.takeIf { it.startsWith("http") },
-                                categoryId = f["category_id"].orEmpty(),
-                                ext = f["container_extension"]?.takeIf { it.isNotBlank() },
-                                tmdbId = (f["tmdb"] ?: f["tmdb_id"])?.takeIf { it.isNotBlank() && it != "0" },
-                                year = yearOf(f["year"] ?: f["releaseDate"] ?: f["release_date"] ?: name),
-                                rating = f["rating"]?.takeIf { it.isNotBlank() && it != "0" },
-                                addedSec = (f["added"] ?: f["last_modified"])?.toLongOrNull() ?: 0L
-                            )
-                        )
-                        if (++n % 500 == 0) _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}… ${"%,d".format(n)}")
+                while (true) {
+                    val f = try {
+                        if (!reader.hasNext()) break
+                        readFlat(reader)
+                    } catch (e: Exception) {
+                        onStop(e)
+                        break
                     }
-                }
-                val saved = db.replace(pl.id, kind, categories, items)
-                if (stoppedEarly == null) runCatching { reader.endArray() }
-                stoppedEarly?.let { e ->
-                    Log.w(TAG, "${pl.name}: $what stopped after $saved", e)
-                    lastProblem = "${pl.name} stopped sending $what after ${"%,d".format(saved)} " +
-                        "(${e.message ?: e.javaClass.simpleName}). Those were saved; it will try again in an hour."
-                    if (saved == 0) throw e
+                    val id = (if (kind == VodKind.MOVIE) f["stream_id"] else f["series_id"]) ?: continue
+                    val name = f["name"]?.trim().orEmpty().ifBlank { f["title"].orEmpty() }
+                    if (name.isBlank()) continue
+                    yield(
+                        VodItem(
+                            playlistId = pl.id,
+                            kind = kind,
+                            id = id,
+                            name = name,
+                            icon = (if (kind == VodKind.MOVIE) f["stream_icon"] else f["cover"])?.takeIf { it.startsWith("http") },
+                            categoryId = f["category_id"].orEmpty(),
+                            ext = f["container_extension"]?.takeIf { it.isNotBlank() },
+                            tmdbId = (f["tmdb"] ?: f["tmdb_id"])?.takeIf { it.isNotBlank() && it != "0" },
+                            year = yearOf(f["year"] ?: f["releaseDate"] ?: f["release_date"] ?: name),
+                            rating = f["rating"]?.takeIf { it.isNotBlank() && it != "0" },
+                            addedSec = (f["added"] ?: f["last_modified"])?.toLongOrNull() ?: 0L
+                        )
+                    )
+                    onItem()
                 }
             }
         }

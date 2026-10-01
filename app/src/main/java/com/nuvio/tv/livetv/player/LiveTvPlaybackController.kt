@@ -117,6 +117,25 @@ class LiveTvPlaybackController @Inject constructor(
         p.playWhenReady = true
     }
 
+    /** Plain words for playback errors, with the provider's HTTP status when there is one. */
+    private fun describe(error: PlaybackException): String {
+        var cause: Throwable? = error
+        while (cause != null) {
+            if (cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                return when (cause.responseCode) {
+                    401, 403 -> "Provider refused the stream (HTTP ${cause.responseCode}): account limit, expired, or blocked"
+                    404 -> "Stream not found (HTTP 404). Try another stream format in the playlist's settings"
+                    429, 456, 458, 509 -> "Too many connections on this account (HTTP ${cause.responseCode})"
+                    in 500..599 -> "Provider's server error (HTTP ${cause.responseCode})"
+                    else -> "Provider answered HTTP ${cause.responseCode}"
+                }
+            }
+            cause = cause.cause
+        }
+        return error.errorCodeName.removePrefix("ERROR_CODE_").replace('_', ' ').lowercase()
+            .replaceFirstChar { it.uppercase() }
+    }
+
     // ---------------------------------------------------------------- sleep timer
 
     private val _sleepAtMs = MutableStateFlow<Long?>(null)
@@ -277,8 +296,7 @@ class LiveTvPlaybackController @Inject constructor(
                 p.prepare()
                 return
             }
-            scheduleReconnect(error.errorCodeName.removePrefix("ERROR_CODE_").replace('_', ' ').lowercase()
-                .replaceFirstChar { it.uppercase() })
+            scheduleReconnect(describe(error))
         }
     }
 

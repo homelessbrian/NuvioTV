@@ -1,5 +1,6 @@
 package com.nuvio.tv.livetv.ui
 
+import com.nuvio.tv.livetv.data.LiveTvRepository
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -148,6 +149,10 @@ fun LiveTvGuideScreen(
     // The group list slides in from the left when you press Left, and slides away again when
     // you pick a group or go back to the channels, giving the guide the full width.
     var groupsOpen by remember { mutableStateOf(false) }
+    var leftTapPending by remember { mutableStateOf(false) }
+    // "Browse by channel name": the highlight is on the channel name itself (OK plays it,
+    // Right steps into its shows, Left opens the groups).
+    var nameFocus by remember { mutableStateOf(false) }
     var focusGroupsOnOpen by remember { mutableStateOf(false) }
     // Manage visibility (TiviMate style): every channel in the group, hidden ones included.
     var visibilityMode by remember { mutableStateOf(false) }
@@ -221,10 +226,18 @@ fun LiveTvGuideScreen(
     // Coming back from full screen: stay on the channel.
     LaunchedEffect(Unit) {
         delay(150)
-        if (viewModel.consumeReturningFromFullscreen() && !viewModel.consumeGroupsOnReturn()) {
+        val returning = viewModel.consumeReturningFromFullscreen()
+        val toGroups = returning && viewModel.consumeGroupsOnReturn()
+        if (returning && !toGroups) {
+            nameFocus = viewModel.settings.value.browseByChannelName
             runCatching { gridFocus.requestFocus() }
         } else {
-            viewModel.awaitGroups()
+            val loaded = viewModel.awaitGroups()
+            // "Open on last group" off: opening Live TV starts on the main group every time
+            // (not the group from earlier in this session, or the last channel's group).
+            if (!returning && !viewModel.settings.value.rememberLastGroup && loaded != null) {
+                viewModel.selectGroup(loaded.defaultGroupId)
+            }
             delay(100)
             focusGroupsOnOpen = true
         }
@@ -295,8 +308,15 @@ fun LiveTvGuideScreen(
         val target = viewModel.channelByKey(viewModel.playbackState.value.channelKey)
             ?: viewModel.resumeCandidate()?.also { viewModel.preview(it) }
             ?: return@LaunchedEffect
-        val current = viewModel.uiState.value
-        if (current.channels.none { it.key == target.key }) viewModel.selectGroup(current.groupFor(target))
+        // Only change group when coming back from full screen, or when "Open on last group" is
+        // on. Then it's the group you watched in (a custom group stays a custom group), not
+        // the channel's original playlist group.
+        val mayChangeGroup = viewModel.isReturningFromFullscreen() || viewModel.settings.value.rememberLastGroup
+        val group = viewModel.groupToShow(target)
+        if (group != null) {
+            if (!mayChangeGroup) return@LaunchedEffect
+            viewModel.selectGroup(group)
+        }
         highlightKey = target.key
     }
     LaunchedEffect(highlightKey, channels) {
@@ -319,6 +339,8 @@ fun LiveTvGuideScreen(
                 windowStart = floorSlot(now)
                 cursorMs = now
             }
+            // Browse by channel name: from the shows, Back goes to the channel name first.
+            settings.browseByChannelName && !nameFocus && !groupsOpen -> nameFocus = true
             // Back from the channels: the group list, with the group you're in highlighted.
             !groupsOpen -> focusGroups()
             else -> openSidebar()
@@ -363,6 +385,7 @@ fun LiveTvGuideScreen(
         if (!settings.showProgramDetails) return@produceState
         // The guide's own image for the show (if it has one) straight away; your addon's
         // poster replaces it when found.
+        if (LiveTvRepository.isPlaceholderTitle(p.title)) return@produceState // channel logo
         value = p.icon
         delay(250) // don't look up every show while scrolling quickly
         viewModel.posterFor(p.title, p, headerChannel)?.let { value = it }
@@ -450,17 +473,38 @@ fun LiveTvGuideScreen(
         cursorMs = now
     }
 
-    fun moveLeft() {
+    /** True when the cursor is on what's on now. */
+    fun isAtNow(): Boolean {
+        val ch = focusedChannel ?: return true
+        if (column == GuideColumn.CHANNEL) return true
+        val b = blockAt(ch, cursorMs)
+        return now >= b.startMs && now < b.stopMs
+    }
+
+    /**
+     * Left. A tap on what's on now opens the groups (catch-up or not). Holding Left on a
+     * catch-up channel goes back into earlier shows; once you're there, each Left steps back.
+     */
+    fun moveLeft(held: Boolean = false) {
         val ch = focusedChannel ?: return
         val from = if (column == GuideColumn.CHANNEL) now else cursorMs
         val block = blockAt(ch, from)
+        val atNow = now >= block.startMs && now < block.stopMs
         val earliest = if (ch.catchup != null) {
             floorSlot(now - (ch.catchup.days.coerceAtMost(7) * 24L * 60 * 60 * 1000).coerceAtMost(settings.epgPastHours * 60L * 60 * 1000))
         } else floorSlot(now)
-        // At the start (what's on now, or the oldest catch-up program): Left brings out the groups.
-        if (block.startMs <= earliest || (ch.catchup == null && block.startMs <= now)) {
+        if (atNow && !held) {
             resetToNow()
-            focusGroups()
+            if (settings.browseByChannelName) nameFocus = true else focusGroups()
+            return
+        }
+        // At the oldest show (or no catch-up on this channel): a tap opens the groups; holding
+        // just stays put.
+        if (block.startMs <= earliest || (ch.catchup == null && block.startMs <= now)) {
+            if (!held) {
+                resetToNow()
+                if (settings.browseByChannelName) nameFocus = true else focusGroups()
+            }
             return
         }
         column = GuideColumn.PROGRAM
@@ -508,6 +552,7 @@ fun LiveTvGuideScreen(
                 channel = headerChannel,
                 block = headerBlock,
                 poster = headerPoster,
+                playlistName = if (settings.showPlaylistInInfo) headerChannel?.sourceId?.let { playlistNames[it] } else null,
                 settings = settings,
                 now = now,
                 showPreview = settings.showPreview,
@@ -590,6 +635,7 @@ fun LiveTvGuideScreen(
                             }
                             resetToNow()
                             groupsOpen = false
+                            nameFocus = settings.browseByChannelName
                             scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                         }
                     },
@@ -597,6 +643,7 @@ fun LiveTvGuideScreen(
                     onRight = {
                         column = GuideColumn.CHANNEL
                         groupsOpen = false
+                        nameFocus = settings.browseByChannelName
                         runCatching { gridFocus.requestFocus() }
                     }
                 )
@@ -725,6 +772,31 @@ fun LiveTvGuideScreen(
                                         return@onPreviewKeyEvent true
                                     }
                                 }
+                                // Left, TiviMate style: a tap on what's on now opens the groups; holding
+                                // Left goes back into earlier shows (catch-up). The tap is acted on
+                                // when the button is let go, so a hold never opens the groups first.
+                                if (nameFocus && (event.key == Key.DirectionLeft || event.key == Key.DirectionRight)) {
+                                    if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+                                        if (event.key == Key.DirectionLeft) focusGroups()
+                                        else { nameFocus = false; resetToNow() }
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
+                                if (event.key == Key.DirectionLeft) {
+                                    val held = event.nativeKeyEvent.repeatCount >= 1 || event.nativeKeyEvent.isLongPress
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        if (!held && isAtNow()) {
+                                            leftTapPending = true
+                                        } else {
+                                            leftTapPending = false
+                                            moveLeft(held)
+                                        }
+                                    } else if (event.type == KeyEventType.KeyUp && leftTapPending) {
+                                        leftTapPending = false
+                                        moveLeft(held = false)
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
                                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                 val code = event.nativeKeyEvent.keyCode
                                 when {
@@ -733,9 +805,8 @@ fun LiveTvGuideScreen(
                                     event.key == Key.PageUp || event.key == Key.ChannelUp -> { moveRow(-8); true }
                                     event.key == Key.PageDown || event.key == Key.ChannelDown -> { moveRow(8); true }
                                     event.key == Key.DirectionRight -> { moveRight(); true }
-                                    event.key == Key.DirectionLeft -> { moveLeft(); true }
                                     event.key == Key.MediaFastForward -> { repeat(4) { moveRight() }; true }
-                                    event.key == Key.MediaRewind -> { repeat(4) { moveLeft() }; true }
+                                    event.key == Key.MediaRewind -> { repeat(4) { moveLeft(held = true) }; true }
                                     event.key == Key.Menu || event.key == Key.Info -> {
                                         focusedChannel?.let { menuTarget = MenuTarget(it, focusedBlock) }
                                         true
@@ -786,7 +857,8 @@ fun LiveTvGuideScreen(
                                             now = now,
                                             isFavorite = ch.key in user.favorites,
                                             isPlaying = ch.key == playback.channelKey,
-                                            focusColumn = if (index == row && (gridFocused || epgPickerFor != null)) column else null,
+                                            focusColumn = if (index == row && (gridFocused || epgPickerFor != null) && !nameFocus) column else null,
+                                            nameFocused = index == row && gridFocused && nameFocus,
                                             focusedBlock = if (index == row) focusedBlock else null,
                                             visible = if (visibilityMode) ch.key !in pendingHidden else null,
                                             moving = reorderKey == ch.key,
@@ -794,8 +866,8 @@ fun LiveTvGuideScreen(
                                         )
                                     }
                                 }
-                                // "Now" line across the program area.
-                                if (now in windowStart until windowStart + WINDOW_MS) {
+                                // "Now" line across the program area (can be hidden in settings).
+                                if (settings.showNowLine && now in windowStart until windowStart + WINDOW_MS) {
                                     BoxWithConstraints(
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -1192,6 +1264,8 @@ private fun GuideHeader(
     channel: LiveChannel?,
     block: GuideBlock?,
     poster: String?,
+    /** Which playlist the channel comes from (setting "Show playlist in info panel"). */
+    playlistName: String?,
     settings: LiveTvSettings,
     now: Long,
     showPreview: Boolean,
@@ -1257,6 +1331,7 @@ private fun GuideHeader(
                         val label = buildString {
                             if (settings.showChannelNumbers) append("${channel.number}  ")
                             append(channel.name)
+                            playlistName?.let { append("  ·  $it") }
                         }
                         LiveText(label, color = NuvioTheme.colors.TextSecondary, size = 14.sp, weight = FontWeight.Medium)
                     }
@@ -1279,6 +1354,8 @@ private fun GuideHeader(
                         p?.episode?.let { add(it) }
                         p?.category?.let { add(it) }
                         if (channel.catchup != null) add("Catch-up")
+                        // The small info panel has no channel line, so the playlist goes here.
+                        if (small) playlistName?.let { add(it) }
                     }.joinToString("  ·  ")
                     LiveText(meta, color = NuvioTheme.colors.TextSecondary, size = if (small) 13.sp else 14.sp)
                     if (now in block.startMs until block.stopMs) {
@@ -1332,19 +1409,25 @@ private fun GuideHeader(
 }
 
 @Composable
-internal fun ProgressBar(fraction: Float, modifier: Modifier = Modifier) {
+internal fun ProgressBar(
+    fraction: Float,
+    modifier: Modifier = Modifier,
+    /** Overrides for when the bar sits on a solid highlight (otherwise it'd vanish into it). */
+    color: Color? = null,
+    trackColor: Color? = null
+) {
     Box(
         modifier = modifier
             .width(260.dp)
             .height(4.dp)
             .clip(RoundedCornerShape(2.dp))
-            .background(NuvioTheme.colors.Border)
+            .background(trackColor ?: NuvioTheme.colors.Border)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxHeight()
                 .fillMaxWidth(fraction)
-                .background(NuvioTheme.colors.Secondary)
+                .background(color ?: NuvioTheme.colors.Secondary)
         )
     }
 }
@@ -1368,6 +1451,8 @@ private fun GuideRow(
     visible: Boolean? = null,
     /** Being moved with "Reorder channels". */
     moving: Boolean = false,
+    /** "Browse by channel name": this row's channel name has the highlight. */
+    nameFocused: Boolean = false,
     /** Picture quality seen when this channel last played ("4K", "FHD", "HD", "SD"). */
     quality: String? = null
 ) {
@@ -1383,8 +1468,8 @@ private fun GuideRow(
         // Channel cell
         // The channel cell is never highlighted; the program under the cursor is.
         // …except while it's being moved with Reorder channels.
-        val channelFocused = moving
-        val cell = liveCellColors(focused = moving, idle = guideSurface())
+        val channelFocused = moving || nameFocused
+        val cell = liveCellColors(focused = moving || nameFocused, idle = guideSurface())
         Row(
             modifier = Modifier
                 .width(channelColWidth)

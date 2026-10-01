@@ -141,6 +141,8 @@ class LiveTvPosterResolver @Inject constructor(
     private val requestPermits = kotlinx.coroutines.sync.Semaphore(2)
 
     suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
+        // "Programming" and the like aren't shows: the channel logo is the right picture.
+        if (LiveTvRepository.isPlaceholderTitle(programTitle)) return null
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
         val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (clues.year ?: "") +

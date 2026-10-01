@@ -605,6 +605,11 @@ class LiveTvRepository @Inject constructor(
         val apiResult = runCatching {
             // 1. Account
             val info = JSONObject(getText(api, pl.userAgent))
+            // Which stream formats this account may use (some panels turn off .ts and only
+            // allow .m3u8; asking for .ts then fails on every channel with "bad http status").
+            allowedFormats = info.optJSONObject("user_info")?.optJSONArray("allowed_output_formats")?.let { arr ->
+                (0 until arr.length()).map { arr.optString(it).lowercase() }.toSet()
+            } ?: emptySet()
             info.optJSONObject("user_info")?.let { ui ->
                 if (ui.optString("auth") == "0") throw XtreamLoginError("Login failed: check the username and password")
                 val status = ui.optString("status")
@@ -642,7 +647,18 @@ class LiveTvRepository @Inject constructor(
 
     private class XtreamLoginError(message: String) : Exception(message)
 
+    /** Stream formats the provider allows for the account being loaded (from user_info). */
+    @Volatile private var allowedFormats: Set<String> = emptySet()
+
+    private fun xtreamExtension(pl: PlaylistSource): String = when (pl.streamFormat) {
+        "ts" -> "ts"
+        "m3u8" -> "m3u8"
+        // Auto: .ts unless the provider only allows HLS.
+        else -> if (allowedFormats.isNotEmpty() && "ts" !in allowedFormats && "m3u8" in allowedFormats) "m3u8" else "ts"
+    }
+
     private fun writeXtreamPlaylist(pl: PlaylistSource, url: String, categories: Map<String, String>, target: File) {
+        val ext = xtreamExtension(pl)
         target.parentFile?.mkdirs()
         val tmp = File(target.parentFile, target.name + ".tmp")
         val base = pl.xtreamBase()
@@ -688,7 +704,7 @@ class LiveTvRepository @Inject constructor(
                             }
                         }
                         out.write("#EXTINF:-1$attrs,$title\n")
-                        out.write("$base/live/$user/$pass/$streamId.ts\n")
+                        out.write("$base/live/$user/$pass/$streamId.$ext\n")
                         count++
                         if (count % 500 == 0) setStatus(loading = true, message = "Loading channels from ${pl.name}… ${"%,d".format(count)}")
                     }
@@ -745,6 +761,9 @@ class LiveTvRepository @Inject constructor(
                 """to be announced|tba|tbd|n/?a|off air|no data|no epg|not available|information not available|""" +
                 """regular programming|scheduled programming|paid programming|coming soon)\.?"""
         )
+        /** "Programming", "No information", "To Be Announced"… (no real show to show a poster for). */
+        fun isPlaceholderTitle(title: String): Boolean = PLACEHOLDER_TITLES.matches(title.trim().lowercase())
+
         const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android 12; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
         private val qualityTokens = Regex("""\b(fhd|uhd|hd|sd|4k|8k|hevc|h265|h264|1080p|720p|backup|raw)\b""")

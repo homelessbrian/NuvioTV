@@ -62,7 +62,7 @@ data class SignInPrompt(val userCode: String, val url: String, val qrUrl: String
  */
 @Singleton
 class LiveTvDriveSync @Inject constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
     private val prefs: LiveTvPreferences,
     private val repository: LiveTvRepository
 ) {
@@ -209,6 +209,7 @@ class LiveTvDriveSync @Inject constructor(
     fun disconnect() {
         val refresh = store.getString(KEY_REFRESH, null)
         store.edit().remove(KEY_REFRESH).remove(KEY_EMAIL).remove(KEY_FILE_ID).remove(KEY_LAST_HASH).remove(KEY_MODE).apply()
+        runCatching { baseFile().delete() }
         accessToken = null
         _state.value = _state.value.copy(connected = false, email = null, message = "Disconnected. Your backup stays in your Google Drive.")
         if (refresh != null) scope.launch {
@@ -231,9 +232,22 @@ class LiveTvDriveSync @Inject constructor(
         val token = token() ?: return@withLock
         _state.value = _state.value.copy(busy = true, message = if (force) "Backing up…" else null)
         val result = runCatching {
-            val data = prefs.exportForSync()
+            var data = prefs.exportForSync()
+            val hash0 = sha(data.toString())
+            if (!force && hash0 == store.getString(KEY_LAST_HASH, null)) return@runCatching false
+            // Another TV saved since we last synced: combine its changes with ours first, so
+            // neither TV overwrites the other (that made favorites and names flip back and forth).
+            remoteCopy(token)?.let { remote ->
+                val newer = remote.optLong("savedAt") > store.getLong(KEY_APPLIED_AT, 0L) &&
+                    remote.optString("deviceId") != deviceId
+                val remoteData = remote.optJSONObject("data")
+                if (newer && remoteData != null) {
+                    val merged = merge(readBase(), local = data, remote = remoteData, localWinsWithoutBase = true)
+                    if (merged.toString() != data.toString()) applyLocally(merged)
+                    data = merged
+                }
+            }
             val hash = sha(data.toString())
-            if (!force && hash == store.getString(KEY_LAST_HASH, null)) return@runCatching false
             val now = System.currentTimeMillis()
             val body = JSONObject()
                 .put("format", 1)
@@ -268,6 +282,7 @@ class LiveTvDriveSync @Inject constructor(
                 )
             }
             store.edit().putString(KEY_LAST_HASH, hash).putLong(KEY_LAST_SYNC, now).putLong(KEY_APPLIED_AT, now).apply()
+            writeBase(data)
             true
         }
         _state.value = _state.value.copy(
@@ -301,21 +316,20 @@ class LiveTvDriveSync @Inject constructor(
             val savedAt = json.optLong("savedAt")
             val fromThisTv = json.optString("deviceId") == deviceId
             if (!force && (fromThisTv || savedAt <= store.getLong(KEY_APPLIED_AT, 0L))) return@runCatching false
-            val data = json.optJSONObject("data") ?: return@runCatching false
-            applying = true
-            try {
-                prefs.importFromSync(data)
-                // Download any playlists or guides this TV doesn't have yet, and rebuild the guide.
-                repository.reloadAfterSync()
-                delay(500)
-            } finally {
-                applying = false
-            }
+            val remoteData = json.optJSONObject("data") ?: return@runCatching false
+            // "Restore" replaces this TV's setup; automatic sync keeps changes made on this TV
+            // since the last sync and takes everything else from the other TV.
+            val data = if (force) remoteData
+            else merge(readBase(), local = prefs.exportForSync(), remote = remoteData, localWinsWithoutBase = false)
+            applyLocally(data)
             store.edit()
                 .putLong(KEY_APPLIED_AT, savedAt)
                 .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
-                .putString(KEY_LAST_HASH, sha(prefs.exportForSync().toString()))
+                .putString(KEY_LAST_HASH, sha(remoteData.toString()))
                 .apply()
+            writeBase(remoteData)
+            // Our own changes were kept on top: send the combined setup back up.
+            if (data.toString() != remoteData.toString()) scope.launch { delay(2_000); push(force = false) }
             true
         }
         val applied = result.getOrNull() == true
@@ -331,6 +345,64 @@ class LiveTvDriveSync @Inject constructor(
             }
         )
         applied
+    }
+
+    // ------------------------------------------------------------------ merging
+
+    private suspend fun applyLocally(data: JSONObject) {
+        applying = true
+        try {
+            prefs.importFromSync(data)
+            // Download any playlists or guides this TV doesn't have yet, and rebuild the guide.
+            repository.reloadAfterSync()
+            delay(500)
+        } finally {
+            applying = false
+        }
+    }
+
+    /** The Drive copy, or null if there isn't one or it can't be read. */
+    private suspend fun remoteCopy(token: String): JSONObject? = runCatching {
+        val fileId = fileId(token) ?: return null
+        JSONObject(
+            execute(
+                Request.Builder()
+                    .url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+            )
+        )
+    }.getOrNull()
+
+    /**
+     * Combines two setups setting by setting: whatever this TV changed since the last sync
+     * ([base]) is kept, everything else comes from the other TV. Without a base, [localWinsWithoutBase]
+     * decides.
+     */
+    private fun merge(base: JSONObject?, local: JSONObject, remote: JSONObject, localWinsWithoutBase: Boolean): JSONObject {
+        if (base == null) return if (localWinsWithoutBase) local else remote
+        val out = JSONObject(remote.toString())
+        val keys = HashSet<String>().apply {
+            local.keys().forEach { add(it) }
+            base.keys().forEach { add(it) }
+        }
+        keys.forEach { k ->
+            val l = local.opt(k)?.toString()
+            val b = base.opt(k)?.toString()
+            if (l != b) {
+                if (local.has(k)) out.put(k, local.get(k)) else out.remove(k)
+            }
+        }
+        return out
+    }
+
+    private fun baseFile() = java.io.File(context.filesDir, "livetv_drive_base.json")
+
+    private fun readBase(): JSONObject? = runCatching { JSONObject(baseFile().readText()) }.getOrNull()
+
+    private fun writeBase(data: JSONObject) {
+        runCatching { baseFile().writeText(data.toString()) }
     }
 
     // ------------------------------------------------------------------ Google plumbing

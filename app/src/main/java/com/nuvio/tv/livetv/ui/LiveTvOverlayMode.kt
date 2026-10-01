@@ -388,6 +388,9 @@ private fun ChannelsPanel(
                 val p = programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs }
                 val isFocused = i == index
                 val colors = liveCellColors(focused = isFocused && focused, idle = if (isFocused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                // On a solid highlight the accent-colored bits would disappear: make them white.
+                val onSolid = isFocused && focused && LocalLiveSolidHighlight.current
+                val accent = if (onSolid) Color.White else NuvioTheme.colors.Secondary
                 val shape = RoundedCornerShape(8.dp)
                 Row(
                     modifier = Modifier
@@ -410,23 +413,31 @@ private fun ChannelsPanel(
                             LiveText(ch.name, color = colors.text, size = 15.sp, modifier = Modifier.weight(1f, fill = false), marquee = isFocused)
                             if (ch.catchup != null) {
                                 Spacer(Modifier.width(4.dp))
-                                Icon(androidx.compose.material.icons.Icons.Default.History, contentDescription = "Catch-up", tint = NuvioTheme.colors.TextSecondary, modifier = Modifier.size(13.dp))
+                                Icon(androidx.compose.material.icons.Icons.Default.History, contentDescription = "Catch-up", tint = if (onSolid) Color.White else NuvioTheme.colors.TextSecondary, modifier = Modifier.size(13.dp))
                             }
-                            if (ch.key in favorites) LiveText("  ★", color = NuvioTheme.colors.Rating, size = 12.sp)
+                            if (ch.key in favorites) LiveText("  ★", color = if (onSolid) Color.White else NuvioTheme.colors.Rating, size = 12.sp)
                         }
                         LiveText(
                             p?.title ?: "No program information",
-                            color = if (p != null) NuvioTheme.colors.Secondary else NuvioTheme.colors.TextTertiary,
+                            color = when {
+                                p == null -> if (onSolid) Color.White.copy(alpha = 0.8f) else NuvioTheme.colors.TextTertiary
+                                else -> accent
+                            },
                             size = 13.sp,
                             marquee = isFocused
                         )
                         if (p != null) {
                             Spacer(Modifier.height(3.dp))
-                            ProgressBar(p.progress(now), Modifier.fillMaxWidth())
+                            ProgressBar(
+                                p.progress(now),
+                                Modifier.fillMaxWidth(),
+                                color = if (onSolid) Color.White else null,
+                                trackColor = if (onSolid) Color.White.copy(alpha = 0.35f) else null
+                            )
                         }
                     }
                     if (ch.key == playingKey) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Playing", tint = NuvioTheme.colors.Secondary, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Playing", tint = accent, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -559,7 +570,12 @@ private fun SchedulePanel(
                             LiveText(formatClock(p.startMs, use24h), color = colors.text, size = 14.sp, modifier = Modifier.width(80.dp))
                             LiveText(p.title, color = colors.text, size = 14.sp, modifier = Modifier.weight(1f), marquee = isFocused)
                             if (live && channel.key == playingKey) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = NuvioTheme.colors.Secondary, modifier = Modifier.size(18.dp))
+                                val onSolid = isFocused && focused && LocalLiveSolidHighlight.current
+                                Icon(
+                                    Icons.Default.PlayArrow, contentDescription = null,
+                                    tint = if (onSolid) Color.White else NuvioTheme.colors.Secondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                             if (live) {
                                 Spacer(Modifier.width(6.dp))

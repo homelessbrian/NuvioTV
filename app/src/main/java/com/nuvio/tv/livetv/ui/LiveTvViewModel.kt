@@ -129,6 +129,7 @@ class LiveTvViewModel @Inject constructor(
     val displayChannels: StateFlow<List<LiveChannel>> = combine(repository.channels, userState, settings) { channels, user, s ->
         // Channel name editor: prefixes/suffixes removed from names you haven't renamed yourself.
         val terms = com.nuvio.tv.livetv.model.ChannelNameEditor.terms(s.nameRemovals)
+        val cleaned = cleanedNames(channels, s.nameRemovals, terms)
         if (user.channelNames.isEmpty() && user.channelNumbers.isEmpty() && user.groupNames.isEmpty() && terms.isEmpty()) channels
         else {
             // Renames and numbers are saved against the channel's key (playlist + tvg-id + name).
@@ -144,13 +145,32 @@ class LiveTvViewModel @Inject constructor(
                 val id = stableId(c.key)
                 c.copy(
                     name = user.channelNames[c.key] ?: id?.let { namesById[it] }
-                        ?: com.nuvio.tv.livetv.model.ChannelNameEditor.clean(c.name, terms),
+                        ?: cleaned[c.key] ?: c.name,
                     number = user.channelNumbers[c.key] ?: id?.let { numbersById[it] } ?: c.number,
                     group = user.groupNames[c.groupId] ?: c.group
                 )
             }
         }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // Channel name editor results, kept until the channel list or the terms change. Cleaning
+    // tens of thousands of names took long enough that renames seemed to take 20-30 seconds.
+    @Volatile private var cleanedFor: Pair<List<LiveChannel>, String>? = null
+    @Volatile private var cleanedCache: Map<String, String> = emptyMap()
+
+    private fun cleanedNames(channels: List<LiveChannel>, raw: String, terms: List<String>): Map<String, String> {
+        if (terms.isEmpty()) return emptyMap()
+        val key = cleanedFor
+        if (key != null && key.first === channels && key.second == raw) return cleanedCache
+        val out = HashMap<String, String>(channels.size)
+        channels.forEach { c ->
+            val n = com.nuvio.tv.livetv.model.ChannelNameEditor.clean(c.name, terms)
+            if (n != c.name) out[c.key] = n
+        }
+        cleanedCache = out
+        cleanedFor = channels to raw
+        return out
+    }
 
     /** "playlist|tvg-id" from a channel key, or null when the channel has no tvg-id. */
     private fun stableId(key: String): String? {
@@ -412,6 +432,32 @@ class LiveTvViewModel @Inject constructor(
 
     fun consumeGroupsOnReturn(): Boolean =
         session.openGroupsOnReturn.also { session.openGroupsOnReturn = false }
+
+    /** Whether the guide is being shown again after full screen (without using it up). */
+    fun isReturningFromFullscreen(): Boolean = session.returningFromFullscreen
+
+    /**
+     * The group to show [channel] in when Live TV opens or you come back to it: the group you
+     * watched it in (a custom group, Favorites…) if it's still there, otherwise the group on
+     * screen, otherwise its own playlist group.
+     */
+    suspend fun groupToShow(channel: LiveChannel): String? {
+        val ui = awaitGroups() ?: uiState.value
+        val user = prefs.userState.first()
+        val last = user.lastGroupId
+        if (last != null && ui.groups.any { it.id == last } && channelInGroup(channel, last, user)) return last
+        if (ui.channels.any { it.key == channel.key }) return null // already showing
+        return ui.groupFor(channel)
+    }
+
+    private fun channelInGroup(channel: LiveChannel, groupId: String, user: LiveUserState): Boolean = when {
+        groupId == ChannelGroup.ALL -> true
+        groupId == ChannelGroup.FAVORITES -> channel.key in user.favorites
+        groupId == ChannelGroup.RECENT -> channel.key in user.recent
+        groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
+            user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.contains(channel.key) == true
+        else -> channel.groupId == groupId || channel.key in user.channelCopies[groupId].orEmpty()
+    }
 
     fun markFullscreenOpened() {
         session.returningFromFullscreen = true
