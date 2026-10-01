@@ -105,7 +105,8 @@ class OnDemandRepository @Inject constructor(
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
-        .callTimeout(15, TimeUnit.MINUTES)
+        // Big catalogs (100,000+ titles) on slow panels can take a long time to send.
+        .callTimeout(40, TimeUnit.MINUTES)
         .build()
 
     private val _hasContent = MutableStateFlow(false)
@@ -120,6 +121,8 @@ class OnDemandRepository @Inject constructor(
     val status: StateFlow<OnDemandStatus> = _status.asStateFlow()
 
     private val infoCache = ConcurrentHashMap<String, VodInfo>()
+    /** The last import problem, shown in settings (cleared by a clean import). */
+    @Volatile private var lastProblem: String? = null
     private var started = false
 
     @Synchronized
@@ -152,10 +155,13 @@ class OnDemandRepository @Inject constructor(
             val last = stamps[pl.id] ?: 0L
             if (!force && now - last < REFRESH_MS) continue
             _status.value = OnDemandStatus(true, "Importing movies and series from ${pl.name}…")
-            val ok = runCatching {
-                importKind(pl, VodKind.MOVIE)
-                importKind(pl, VodKind.SERIES)
-            }.onFailure { Log.w(TAG, "On Demand import for ${pl.name} failed", it) }.isSuccess
+            lastProblem = null
+            // Movies and series import separately, so a problem with one keeps the other.
+            val movies = runCatching { importKind(pl, VodKind.MOVIE) }
+                .onFailure { Log.w(TAG, "Movies for ${pl.name} failed", it); lastProblem = "Couldn't import movies from ${pl.name}: ${it.message ?: it.javaClass.simpleName}" }
+            val series = runCatching { importKind(pl, VodKind.SERIES) }
+                .onFailure { Log.w(TAG, "Series for ${pl.name} failed", it); lastProblem = "Couldn't import series from ${pl.name}: ${it.message ?: it.javaClass.simpleName}" }
+            val ok = movies.isSuccess && series.isSuccess && lastProblem == null
             // Success: next import in a day. Failure: try again in an hour, not on every start.
             prefs.setOnDemandImportTime(
                 pl.id,
@@ -164,7 +170,8 @@ class OnDemandRepository @Inject constructor(
             _version.value++
         }
         _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
-        _status.value = OnDemandStatus(false, null)
+        // A problem stays visible in Settings → Live TV → On Demand (no more silent failures).
+        _status.value = OnDemandStatus(false, lastProblem)
     }
 
     private fun importKind(pl: PlaylistSource, kind: VodKind) {
@@ -185,6 +192,8 @@ class OnDemandRepository @Inject constructor(
             if (!response.isSuccessful) error("HTTP ${response.code}")
             val body = response.body ?: error("Empty response")
             JsonReader(body.charStream()).use { reader ->
+                // Panels don't always send perfectly valid JSON; be forgiving.
+                reader.isLenient = true
                 if (reader.peek() != JsonToken.BEGIN_ARRAY) {
                     reader.skipValue()
                     db.replace(pl.id, kind, categories, emptySequence())
@@ -194,9 +203,18 @@ class OnDemandRepository @Inject constructor(
                 val what = if (kind == VodKind.MOVIE) "movies" else "series"
                 var n = 0
                 _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}…")
+                var stoppedEarly: Throwable? = null
                 val items = sequence {
-                    while (reader.hasNext()) {
-                        val f = readFlat(reader)
+                    while (true) {
+                        // If the provider stops sending part-way (timeout, broken data), keep
+                        // everything received so far instead of throwing it all away.
+                        val f = try {
+                            if (!reader.hasNext()) break
+                            readFlat(reader)
+                        } catch (e: Exception) {
+                            stoppedEarly = e
+                            break
+                        }
                         val id = (if (kind == VodKind.MOVIE) f["stream_id"] else f["series_id"]) ?: continue
                         val name = f["name"]?.trim().orEmpty().ifBlank { f["title"].orEmpty() }
                         if (name.isBlank()) continue
@@ -218,8 +236,14 @@ class OnDemandRepository @Inject constructor(
                         if (++n % 500 == 0) _status.value = OnDemandStatus(true, "Importing $what from ${pl.name}… ${"%,d".format(n)}")
                     }
                 }
-                db.replace(pl.id, kind, categories, items)
-                runCatching { reader.endArray() }
+                val saved = db.replace(pl.id, kind, categories, items)
+                if (stoppedEarly == null) runCatching { reader.endArray() }
+                stoppedEarly?.let { e ->
+                    Log.w(TAG, "${pl.name}: $what stopped after $saved", e)
+                    lastProblem = "${pl.name} stopped sending $what after ${"%,d".format(saved)} " +
+                        "(${e.message ?: e.javaClass.simpleName}). Those were saved; it will try again in an hour."
+                    if (saved == 0) throw e
+                }
             }
         }
     }

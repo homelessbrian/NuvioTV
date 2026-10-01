@@ -382,7 +382,9 @@ class LiveTvRepository @Inject constructor(
                     tvgName = e.tvgName,
                     logo = e.logo,
                     groupId = if (multi) "${pl.id}::$groupTitle" else groupTitle,
-                    group = if (multi) "$groupTitle · ${pl.name}" else groupTitle,
+                    // Names stay exactly as the playlist has them (the playlist is shown, if you want
+                    // it, with "Group by playlist").
+                    group = groupTitle,
                     number = number,
                     url = e.url,
                     headers = headers,

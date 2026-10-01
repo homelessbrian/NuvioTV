@@ -304,30 +304,49 @@ object ChannelNameEditor {
     fun terms(raw: String): List<String> =
         raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
 
+    /** The prefix / suffix / suffix-check patterns for one term, built once and reused. */
+    private class Compiled(val prefix: Regex, val suffix: Regex, val suffixCheck: Regex)
+
+    @Volatile private var compiledFor: List<String> = emptyList()
+    @Volatile private var compiled: List<Compiled> = emptyList()
+
+    private fun compile(terms: List<String>): List<Compiled> {
+        if (terms == compiledFor) return compiled
+        val list = terms.map { t ->
+            val q = Regex.escape(t)
+            // Prefix: "USA: ESPN", "[USA] ESPN", "|US| ESPN", "USA - ESPN". A plain word needs
+            // brackets or punctuation after it, so "USA" never eats "USA Network".
+            val prefix = if (t.all { it.isLetter() }) {
+                Regex("""^(?:[\[(|]$q[\])|]|$q\s*[:|\-–—/.•*]+)\s*""", RegexOption.IGNORE_CASE)
+            } else {
+                Regex("""^[\[(|]?$q[\])|]?$SEP""", RegexOption.IGNORE_CASE)
+            }
+            // Suffix: "ESPN HD", "ESPN (US)", "ESPN | FHD", "ESPN 24/7"
+            Compiled(
+                prefix,
+                Regex("""$SEP[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE),
+                Regex("""(^|[\s:|\-–—/.•*\[(])[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE)
+            )
+        }
+        compiled = list
+        compiledFor = terms
+        return list
+    }
+
     fun clean(name: String, terms: List<String>): String {
         if (terms.isEmpty()) return name
+        val patterns = compile(terms)
         var out = name.trim()
         var changed = true
         var guard = 0
         while (changed && guard++ < 6) {
             changed = false
-            for (t in terms) {
-                val q = Regex.escape(t)
-                // Prefix: "USA: ESPN", "[USA] ESPN", "|US| ESPN", "USA - ESPN". A plain word needs
-                // brackets or punctuation after it, so "USA" never eats "USA Network".
-                val lettersOnly = t.all { it.isLetter() }
-                val prefix = if (lettersOnly) {
-                    Regex("""^(?:[\[(|]$q[\])|]|$q\s*[:|\-–—/.•*]+)\s*""", RegexOption.IGNORE_CASE)
-                } else {
-                    Regex("""^[\[(|]?$q[\])|]?$SEP""", RegexOption.IGNORE_CASE)
-                }
-                // Suffix: "ESPN HD", "ESPN (US)", "ESPN | FHD", "ESPN 24/7"
-                val suffix = Regex("""$SEP[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE)
-                val p = prefix.replace(out, "").trim()
+            for (c in patterns) {
+                val p = c.prefix.replace(out, "").trim()
                 if (p != out && p.isNotBlank()) { out = p; changed = true }
-                val sfx = suffix.replace(out, "").trim()
-                if (sfx != out && sfx.isNotBlank() && Regex("""(^|[\s:|\-–—/.•*\[(])[\[(|]?$q[\])|]?$""", RegexOption.IGNORE_CASE).containsMatchIn(out)) {
-                    out = sfx; changed = true
+                if (c.suffixCheck.containsMatchIn(out)) {
+                    val sfx = c.suffix.replace(out, "").trim()
+                    if (sfx != out && sfx.isNotBlank()) { out = sfx; changed = true }
                 }
             }
         }

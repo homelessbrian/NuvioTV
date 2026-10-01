@@ -130,14 +130,40 @@ class LiveTvViewModel @Inject constructor(
         // Channel name editor: prefixes/suffixes removed from names you haven't renamed yourself.
         val terms = com.nuvio.tv.livetv.model.ChannelNameEditor.terms(s.nameRemovals)
         if (user.channelNames.isEmpty() && user.channelNumbers.isEmpty() && user.groupNames.isEmpty() && terms.isEmpty()) channels
-        else channels.map { c ->
-            c.copy(
-                name = user.channelNames[c.key] ?: com.nuvio.tv.livetv.model.ChannelNameEditor.clean(c.name, terms),
-                number = user.channelNumbers[c.key] ?: c.number,
-                group = user.groupNames[c.groupId] ?: c.group
-            )
+        else {
+            // Renames and numbers are saved against the channel's key (playlist + tvg-id + name).
+            // Providers often change channel names (event titles, "HD"/"ᴴᴰ" tags, status
+            // markers), which changes the key. So also match by playlist + tvg-id when the
+            // channel has one, which stays the same when the name changes.
+            // Only saved entries whose exact channel no longer exists are carried over, so two
+            // channels sharing a tvg-id (ESPN and ESPN HD) never pick up each other's rename.
+            val currentKeys = channels.mapTo(HashSet()) { it.key }
+            val namesById = stableIndex(user.channelNames.filterKeys { it !in currentKeys })
+            val numbersById = stableIndex(user.channelNumbers.filterKeys { it !in currentKeys })
+            channels.map { c ->
+                val id = stableId(c.key)
+                c.copy(
+                    name = user.channelNames[c.key] ?: id?.let { namesById[it] }
+                        ?: com.nuvio.tv.livetv.model.ChannelNameEditor.clean(c.name, terms),
+                    number = user.channelNumbers[c.key] ?: id?.let { numbersById[it] } ?: c.number,
+                    group = user.groupNames[c.groupId] ?: c.group
+                )
+            }
         }
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** "playlist|tvg-id" from a channel key, or null when the channel has no tvg-id. */
+    private fun stableId(key: String): String? {
+        val parts = key.split('|', limit = 3)
+        if (parts.size < 3 || parts[1].isBlank()) return null
+        return parts[0] + "|" + parts[1]
+    }
+
+    private fun <T> stableIndex(byKey: Map<String, T>): Map<String, T> {
+        val out = HashMap<String, T>()
+        byKey.forEach { (k, v) -> stableId(k)?.let { out.putIfAbsent(it, v) } }
+        return out
+    }
 
     val uiState: StateFlow<LiveTvUiState> = combine(
         combine(displayChannels, userState, settings) { a, b, c -> Triple(a, b, c) },
@@ -559,7 +585,7 @@ class LiveTvViewModel @Inject constructor(
     }
 
     fun channelByKey(key: String?): LiveChannel? =
-        key?.let { k -> displayChannels.value.firstOrNull { it.key == k } }
+        key?.let { k -> displayChannels.value.firstOrNull { it.key == k } ?: playback.playingChannel?.takeIf { it.key == k } }
 
     fun currentProgram(channelKey: String, at: Long = _now.value): EpgProgram? =
         programs.value[channelKey]?.firstOrNull { at >= it.startMs && at < it.stopMs }

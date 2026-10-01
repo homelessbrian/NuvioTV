@@ -473,15 +473,21 @@ fun LiveTvGuideScreen(
 
     CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
     val hostActivity = androidx.compose.ui.platform.LocalContext.current as? com.nuvio.tv.MainActivity
+    // Only a Back press that *started* in the guide counts as "hold Back" here.
+    var backPressStartedHere by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
             .onPreviewKeyEvent { e ->
                 // Hold Back: straight back to full screen on what's playing.
-                if (e.key != Key.Back || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (e.key != Key.Back) return@onPreviewKeyEvent false
+                if (e.type == KeyEventType.KeyUp) { backPressStartedHere = false; return@onPreviewKeyEvent false }
+                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val held = e.nativeKeyEvent.isLongPress || e.nativeKeyEvent.repeatCount >= 1
-                if (!held || playback.channelKey == null) return@onPreviewKeyEvent false
+                if (!held) { backPressStartedHere = true; return@onPreviewKeyEvent false }
+                if (!backPressStartedHere || playback.channelKey == null) return@onPreviewKeyEvent false
+                backPressStartedHere = false
                 // Nuvio then swallows the rest of this Back press (so letting go doesn't
                 // also count as a normal Back and leave full screen again).
                 hostActivity?.longPressBackHeld?.value = true

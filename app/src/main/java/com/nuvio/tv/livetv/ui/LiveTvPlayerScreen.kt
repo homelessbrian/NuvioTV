@@ -111,7 +111,14 @@ fun LiveTvPlayerScreen(
     var longPressFired by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
-    val current: LiveChannel? = viewModel.channelByKey(playback.channelKey)
+    // Follows the channel list as it loads (it was read once before, so a list that was still
+    // loading left full screen stuck on "Nothing playing"). Falls back to the player's own
+    // channel, so full screen always knows what it's showing.
+    val displayList by viewModel.displayChannels.collectAsStateWithLifecycle()
+    val current: LiveChannel? = remember(displayList, playback.channelKey) {
+        playback.channelKey?.let { k -> displayList.firstOrNull { it.key == k } }
+            ?: viewModel.playback.playingChannel?.takeIf { it.key == playback.channelKey }
+    }
 
     fun showBanner() { bannerVisible = true; bannerToken++ }
 
@@ -268,7 +275,13 @@ fun LiveTvPlayerScreen(
                         if (numberBuffer.length < 5) numberBuffer += (code - AndroidKeyEvent.KEYCODE_0).toString()
                         true
                     }
-                    e.key == Key.Back -> { onBack(); true }
+                    e.key == Key.Back -> {
+                        // Swallow the rest of this Back press (held repeats and letting go), so
+                        // holding Back here can't reach the guide and bounce back to full screen.
+                        (context as? com.nuvio.tv.MainActivity)?.longPressBackHeld?.value = true
+                        onBack()
+                        true
+                    }
                     else -> false
                 }
             }
