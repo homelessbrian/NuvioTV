@@ -212,7 +212,9 @@ data class LiveTvSettings(
     /** Show which playlist the highlighted channel comes from in the info panel. */
     val showPlaylistInInfo: Boolean = true,
     /** The vertical line marking the current time in the guide. */
-    val showNowLine: Boolean = true
+    val showNowLine: Boolean = true,
+    /** Send Dolby / DTS audio untouched to the TV or speaker (off: the app decodes it). */
+    val audioPassthrough: Boolean = true
 )
 
 data class LiveUserState(

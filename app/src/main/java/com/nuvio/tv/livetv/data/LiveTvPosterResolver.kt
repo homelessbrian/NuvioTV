@@ -33,7 +33,7 @@ class LiveTvPosterResolver @Inject constructor(
     private val addonRepository: AddonRepository,
     private val catalogRepository: CatalogRepository
 ) {
-    private val cache = ConcurrentHashMap<String, Result>()
+    private val cache = boundedCache<String, Result>(4_000)
     private val mutex = Mutex()
 
     data class Result(val poster: String?)
@@ -44,33 +44,35 @@ class LiveTvPosterResolver @Inject constructor(
 
     /** What the guide says about the program, used to tell same-named titles apart. */
     data class Clues(
+        /** When known (On Demand titles with a TMDB id), the match with this IMDb id wins. */
+        val imdbId: String? = null,
         val year: Int? = null,
         val people: List<String> = emptyList(),
         val description: String? = null
     )
 
-    private val matchCache = ConcurrentHashMap<String, Hit>()
+    private val matchCache = boundedCache<String, Hit>(3_000)
     @Volatile private var pausedUntil = 0L
     @Volatile private var failuresInARow = 0
-    private val noMatch = ConcurrentHashMap.newKeySet<String>()
+    private val noMatch = boundedSet<String>(3_000)
 
     /**
      * On Demand: finds a provider title in your own addon catalogs, so it opens on Nuvio's
      * details page with your metadata and posters. Null if none of your catalogs has it.
      */
-    suspend fun matchFor(title: String, series: Boolean, year: Int?): Hit? {
+    suspend fun matchFor(title: String, series: Boolean, year: Int?, imdbId: String? = null): Hit? {
         // If addons keep failing (rate limits, offline), pause lookups for a minute.
         if (System.currentTimeMillis() < pausedUntil) return null
         val query = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
         if (query.length < 2) return null
-        val key = normalize(query) + "|" + series + "|" + (year ?: "")
+        val key = normalize(query) + "|" + series + "|" + (year ?: "") + "|" + (imdbId ?: "")
         matchCache[key]?.let { return it }
         if (key in noMatch) return null
         // On Demand has its own small queue, so browsing movies never holds up the guide's posters.
         return vodPermits.withPermit {
             val attempt = Attempt()
             val hit = runCatching {
-                lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(year = year), attempt)
+                lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(imdbId = imdbId, year = year), attempt)
             }.getOrNull()
             if (hit != null) matchCache[key] = hit else if (attempt.reached) noMatch += key
             if (hit == null && !attempt.reached) {
@@ -289,6 +291,8 @@ class LiveTvPosterResolver @Inject constructor(
 
     private fun score(item: MetaPreview, clues: Clues): Double {
         var score = 0.0
+        // The same IMDb id is a certain match.
+        if (clues.imdbId != null && (item.imdbId == clues.imdbId || item.id == clues.imdbId)) score += 1_000.0
         val y = yearOf(item)
         if (clues.year != null && y != null) {
             val diff = kotlin.math.abs(y - clues.year)

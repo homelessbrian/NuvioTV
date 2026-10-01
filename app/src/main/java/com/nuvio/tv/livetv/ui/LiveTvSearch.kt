@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
@@ -87,29 +88,38 @@ fun rememberLiveTvSearchResults(
     val playlistNames by viewModel.playlistNames.collectAsStateWithLifecycle()
     val q = query.trim()
 
-    val hits = remember(q, ui.allVisibleChannels, programs, now, settings.showInSearch) {
-        if (!settings.showInSearch || q.length < 2) return@remember emptyList()
-        val out = ArrayList<LiveSearchHit>()
-        val seen = HashSet<String>()
-        for (c in ui.allVisibleChannels) {
-            if (out.size >= MAX_HITS) break
-            if (c.name.contains(q, ignoreCase = true) || c.number.toString() == q) {
-                val current = programs[c.key]?.firstOrNull { now >= it.startMs && now < it.stopMs }
-                out += LiveSearchHit(c, current, matchedProgram = false)
-                seen += c.key
-            }
-        }
-        if (out.size < MAX_HITS) {
+    // Search once typing pauses (not on every letter), and off the main thread, so typing
+    // stays smooth on slower devices with big playlists.
+    val settled by produceState(initialValue = q, q) {
+        if (q.length >= 2) delay(300)
+        value = q
+    }
+    val hits by produceState(initialValue = emptyList<LiveSearchHit>(), settled, ui.allVisibleChannels, programs, now, settings.showInSearch) {
+        val q = settled
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            if (!settings.showInSearch || q.length < 2) return@withContext emptyList()
+            val out = ArrayList<LiveSearchHit>()
+            val seen = HashSet<String>()
             for (c in ui.allVisibleChannels) {
                 if (out.size >= MAX_HITS) break
-                if (c.key in seen) continue
-                val match = programs[c.key]?.firstOrNull {
-                    it.stopMs > now && it.startMs < now + UPCOMING_WINDOW_MS && it.title.contains(q, ignoreCase = true)
-                } ?: continue
-                out += LiveSearchHit(c, match, matchedProgram = true)
+                if (c.name.contains(q, ignoreCase = true) || c.number.toString() == q) {
+                    val current = programs[c.key]?.firstOrNull { now >= it.startMs && now < it.stopMs }
+                    out += LiveSearchHit(c, current, matchedProgram = false)
+                    seen += c.key
+                }
             }
+            if (out.size < MAX_HITS) {
+                for (c in ui.allVisibleChannels) {
+                    if (out.size >= MAX_HITS) break
+                    if (c.key in seen) continue
+                    val match = programs[c.key]?.firstOrNull {
+                        it.stopMs > now && it.startMs < now + UPCOMING_WINDOW_MS && it.title.contains(q, ignoreCase = true)
+                    } ?: continue
+                    out += LiveSearchHit(c, match, matchedProgram = true)
+                }
+            }
+            out
         }
-        out
     }
 
     return LiveTvSearchResults(

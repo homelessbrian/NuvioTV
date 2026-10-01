@@ -48,7 +48,7 @@ data class VodCategory(
  */
 @Singleton
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 2) {
+    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -73,6 +73,9 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // Version 2 only adds the poster cache; the imported catalogs are kept.
         if (oldVersion < 2) createPosterTable(db)
+        // Version 3: titles are cleaned and matched by IMDb id now, so forget the old
+        // "no poster found" answers (the catalogs themselves are kept).
+        if (oldVersion < 3) db.execSQL("DELETE FROM posters")
     }
 
     private fun createPosterTable(db: SQLiteDatabase) {
@@ -257,6 +260,20 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
 
         private val PREFIX = Regex("""^(\[[^\]]*\]|\|[^|]*\||[A-Z]{2,4}\s*[-|:]\s+)+""")
         private val NOISE = Regex("""\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|multi|sub|dub|vostfr)\b""")
+
+        /**
+         * The title without the provider's decorations: language / country / service tags in
+         * front ("EN - ", "|EN| ", "[US] ", "NF - "), a year in brackets, and quality tags.
+         * "EN  - Coyote vs. Acme (2026) 4K" becomes "Coyote vs. Acme".
+         */
+        fun displayTitle(s: String): String {
+            val t = s.replace(PREFIX, "")
+                .replace(Regex("""\s*\((19|20)\d{2}\)"""), "")
+                .replace(Regex("""\s*[-|]\s*(19|20)\d{2}\s*$"""), "")
+                .replace(Regex("""(?i)\s*[\[(]?\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|hdr|multi|multi-?sub|vostfr|dub|sub)\b[\])]?\s*$"""), "")
+                .trim()
+            return t.ifBlank { s.trim() }
+        }
 
         fun normalizeWords(s: String): List<String> =
             s.replace(PREFIX, "")

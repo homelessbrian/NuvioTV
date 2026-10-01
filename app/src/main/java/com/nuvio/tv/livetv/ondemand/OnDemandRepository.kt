@@ -120,7 +120,7 @@ class OnDemandRepository @Inject constructor(
     private val _status = MutableStateFlow(OnDemandStatus())
     val status: StateFlow<OnDemandStatus> = _status.asStateFlow()
 
-    private val infoCache = ConcurrentHashMap<String, VodInfo>()
+    private val infoCache = com.nuvio.tv.livetv.data.boundedCache<String, VodInfo>(300)
     /** The last import problem, shown in settings (cleared by a clean import). */
     @Volatile private var lastProblem: String? = null
     private var started = false

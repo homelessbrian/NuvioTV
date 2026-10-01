@@ -189,6 +189,7 @@ fun LiveTvGuideScreen(
     var groupPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
     var groupMenu by remember { mutableStateOf<ChannelGroup?>(null) }
     var epgPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
+    LaunchedEffect(epgPickerFor) { if (epgPickerFor != null) viewModel.ensureEpgDetails() }
     val epgSources by viewModel.epgSources.collectAsStateWithLifecycle()
     val epgAutoMatches by viewModel.epgAutoMatches.collectAsStateWithLifecycle()
     val menuStyle by viewModel.menuStyle.collectAsStateWithLifecycle()

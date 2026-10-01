@@ -41,6 +41,15 @@ class LiveTvPreferences @Inject constructor(
         produceFile = { context.preferencesDataStoreFile("live_tv") }
     )
 
+    /**
+     * Small, frequently written, this-TV-only data (quality badges, On Demand import times),
+     * kept apart so saving it doesn't rewrite and re-read the main settings every time.
+     */
+    private val deviceStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+        produceFile = { context.preferencesDataStoreFile("live_tv_device") }
+    )
+
     private object Keys {
         val playlists = stringPreferencesKey("playlists")
         val epgs = stringPreferencesKey("epg_sources")
@@ -93,6 +102,7 @@ class LiveTvPreferences @Inject constructor(
         val browseByChannelName = booleanPreferencesKey("browse_by_channel_name")
         val showPlaylistInInfo = booleanPreferencesKey("show_playlist_in_info")
         val showNowLine = booleanPreferencesKey("show_now_line")
+        val audioPassthrough = booleanPreferencesKey("audio_passthrough")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -174,11 +184,12 @@ class LiveTvPreferences @Inject constructor(
             developerTools = p[Keys.developerTools] ?: d.developerTools,
             browseByChannelName = p[Keys.browseByChannelName] ?: d.browseByChannelName,
             showPlaylistInInfo = p[Keys.showPlaylistInInfo] ?: d.showPlaylistInInfo,
-            showNowLine = p[Keys.showNowLine] ?: d.showNowLine
+            showNowLine = p[Keys.showNowLine] ?: d.showNowLine,
+            audioPassthrough = p[Keys.audioPassthrough] ?: d.audioPassthrough
         )
     }.distinctUntilChanged()
 
-    val userState: Flow<LiveUserState> = store.data.map { p ->
+    val userState: Flow<LiveUserState> = kotlinx.coroutines.flow.combine(store.data, deviceStore.data) { p, d ->
         LiveUserState(
             hiddenChannels = p[Keys.hiddenChannels] ?: emptySet(),
             hiddenGroups = p[Keys.hiddenGroups] ?: emptySet(),
@@ -200,7 +211,7 @@ class LiveTvPreferences @Inject constructor(
             channelCopies = decodeListMap(p[Keys.channelCopies]),
             lockedGroups = p[Keys.lockedGroups] ?: emptySet(),
             reminders = decodeReminders(p[Keys.reminders]),
-            channelQuality = decodeStringMap(p[Keys.channelQuality]),
+            channelQuality = decodeStringMap(d[Keys.channelQuality] ?: p[Keys.channelQuality]),
             vodHiddenCategories = p[Keys.vodHiddenCategories] ?: emptySet()
         )
     }.distinctUntilChanged()
@@ -275,6 +286,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.browseByChannelName] = s.browseByChannelName
         p[Keys.showPlaylistInInfo] = s.showPlaylistInInfo
         p[Keys.showNowLine] = s.showNowLine
+        p[Keys.audioPassthrough] = s.audioPassthrough
     }
 
     // ---------- channel management ----------
@@ -391,9 +403,12 @@ class LiveTvPreferences @Inject constructor(
     }
 
     suspend fun setChannelQuality(key: String, quality: String) {
-        store.edit { p ->
-            val m = decodeStringMap(p[Keys.channelQuality]).toMutableMap()
-            if (m[key] == quality) return@edit
+        // Older versions kept these in the main settings: move them over once.
+        val legacy = store.data.first()[Keys.channelQuality]
+        if (legacy != null) store.edit { it.remove(Keys.channelQuality) }
+        deviceStore.edit { p ->
+            val m = decodeStringMap(p[Keys.channelQuality] ?: legacy).toMutableMap()
+            if (m[key] == quality && p[Keys.channelQuality] != null) return@edit
             m[key] = quality
             p[Keys.channelQuality] = encodeStringMap(m)
         }
@@ -408,11 +423,14 @@ class LiveTvPreferences @Inject constructor(
 
     /** When each provider's On Demand catalog was last imported (per TV, not synced). */
     suspend fun onDemandImportTimes(): Map<String, Long> =
-        decodeStringMap(store.data.first()[Keys.onDemandImports]).mapValues { it.value.toLongOrNull() ?: 0L }
+        decodeStringMap(deviceStore.data.first()[Keys.onDemandImports] ?: store.data.first()[Keys.onDemandImports])
+            .mapValues { it.value.toLongOrNull() ?: 0L }
 
     suspend fun setOnDemandImportTime(playlistId: String, time: Long) {
-        store.edit { p ->
-            val m = decodeStringMap(p[Keys.onDemandImports]).toMutableMap()
+        val legacy = store.data.first()[Keys.onDemandImports]
+        if (legacy != null) store.edit { it.remove(Keys.onDemandImports) }
+        deviceStore.edit { p ->
+            val m = decodeStringMap(p[Keys.onDemandImports] ?: legacy).toMutableMap()
             m[playlistId] = time.toString()
             p[Keys.onDemandImports] = encodeStringMap(m)
         }

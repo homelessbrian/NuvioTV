@@ -467,6 +467,12 @@ fun LiveTvSettingsContent(
                         { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
                     )
                     SettingsToggleRow(
+                        "Audio passthrough",
+                        "Sends Dolby audio untouched to your TV or speaker. Turn off if sound cuts out or stops, especially with Echo speakers or Alexa Home Theater on Fire TV.",
+                        s.audioPassthrough,
+                        { update { it.copy(audioPassthrough = !it.audioPassthrough) } }
+                    )
+                    SettingsToggleRow(
                         "Match frame rate",
                         "Switches the TV to the video's frame rate (for example 50 Hz for UK and European channels) for smoother motion. Only on TVs that support it.",
                         s.matchFrameRate,

@@ -77,6 +77,24 @@ class LiveTvPlaybackController @Inject constructor(
     private var reconnectJob: Job? = null
     var autoReconnect: Boolean = true
 
+    /**
+     * Audio passthrough. Off: Dolby / DTS audio is decoded by the app and sent as plain PCM,
+     * which is far more robust with Alexa Home Theater / Echo speakers on Fire TV. Changing it
+     * rebuilds the player (and carries on with the same channel).
+     */
+    var audioPassthrough: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            val p = _player ?: return
+            val ch = currentChannel
+            val url = currentUrl
+            val title = _state.value.catchupTitle
+            val wasPlaying = p.playWhenReady
+            release()
+            if (ch != null && wasPlaying) play(ch, overrideUrl = url.takeIf { it != ch.url }, catchupTitle = title)
+        }
+
     fun attach(): ExoPlayer {
         releaseJob?.cancel()
         attachCount++
@@ -242,7 +260,23 @@ class LiveTvPlaybackController @Inject constructor(
     }
 
     private fun buildPlayer(): ExoPlayer {
-        val renderers = DefaultRenderersFactory(context)
+        val passthrough = audioPassthrough
+        val renderers = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: android.content.Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): androidx.media3.exoplayer.audio.AudioSink? {
+                if (passthrough) return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+                // Pretend the output only takes plain PCM: Dolby / DTS gets decoded here.
+                @Suppress("DEPRECATION")
+                return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setAudioCapabilities(androidx.media3.exoplayer.audio.AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .build()
+            }
+        }
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
         val loadControl = DefaultLoadControl.Builder()
@@ -340,6 +374,14 @@ class LiveTvPlaybackController @Inject constructor(
             )
         }
         return builder.build()
+    }
+
+    /**
+     * Lets go of the player (and its hold on the audio output) right away. Called when Nuvio's
+     * own player opens, so the two never hold the audio at the same time.
+     */
+    fun releaseNow() {
+        if (_player != null) release()
     }
 
     private fun release() {

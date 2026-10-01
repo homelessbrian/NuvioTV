@@ -36,10 +36,36 @@ class CrashReportActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
         val hint = TextView(this).apply {
-            text = "Take a photo of this screen (mainly the ROOT CAUSE part) and send it to whoever maintains this build. Use up/down to scroll."
+            text = "Scan the code with your phone's camera to copy this report (app version, device and " +
+                "what went wrong), then send it to whoever maintains this build. Or take a photo of " +
+                "this screen. Use up/down to scroll."
             setTextColor(Color.parseColor("#B0B0B8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(0, dp(6), 0, dp(12))
+            setPadding(0, dp(6), dp(16), dp(12))
+        }
+        // The important part (version, device, root cause) as a QR code; a QR code holds about
+        // 2,000 characters comfortably, so the full trace stays on screen only.
+        val summary = report.substringBefore("FULL TRACE:").trim().take(1_800)
+        val qr = runCatching { com.nuvio.tv.core.qr.QrCodeGenerator.generate(summary, dp(200)) }.getOrNull()
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val texts = LinearLayout(this@CrashReportActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(title)
+                addView(hint)
+            }
+            addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            if (qr != null) {
+                addView(
+                    android.widget.ImageView(this@CrashReportActivity).apply {
+                        setImageBitmap(qr)
+                        setBackgroundColor(Color.WHITE)
+                        setPadding(dp(6), dp(6), dp(6), dp(6))
+                    },
+                    LinearLayout.LayoutParams(dp(170), dp(170)).apply { bottomMargin = dp(10) }
+                )
+            }
         }
         val body = TextView(this).apply {
             text = report
@@ -88,8 +114,7 @@ class CrashReportActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#0B0B0D"))
             setPadding(dp(48), dp(28), dp(48), dp(24))
-            addView(title)
-            addView(hint)
+            addView(header)
             addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(buttons)
         }

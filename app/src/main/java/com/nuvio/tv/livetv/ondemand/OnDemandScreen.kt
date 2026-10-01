@@ -84,7 +84,7 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun OnDemandScreen(
-    onOpenDetail: (itemId: String, itemType: String, addonBaseUrl: String) -> Unit,
+    onOpenDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit,
     onPlay: (url: String, title: String, type: String, poster: String?) -> Unit,
     viewModel: OnDemandViewModel = hiltViewModel()
 ) {
@@ -478,13 +478,13 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onFocused: (
                 .border(if (focused) 3.dp else 0.dp, if (focused) NuvioTheme.colors.FocusRing else Color.Transparent, shape),
             contentAlignment = Alignment.Center
         ) {
-            LiveText(item.name, color = NuvioTheme.colors.TextSecondary, size = 12.sp, maxLines = 3, modifier = Modifier.padding(8.dp))
+            LiveText(OnDemandDatabase.displayTitle(item.name), color = NuvioTheme.colors.TextSecondary, size = 12.sp, maxLines = 3, modifier = Modifier.padding(8.dp))
             if (!poster.isNullOrBlank()) {
                 AsyncImage(model = poster, contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
         }
         Spacer(Modifier.height(4.dp))
-        LiveText(item.name, size = 11.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
+        LiveText(OnDemandDatabase.displayTitle(item.name), size = 11.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
         item.year?.let { LiveText(it.toString(), size = 9.sp, color = NuvioTheme.colors.TextTertiary) }
     }
 }
@@ -530,7 +530,7 @@ private fun ProviderDetailDialog(
                 if (!img.isNullOrBlank()) AsyncImage(model = img, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
             Column(modifier = Modifier.weight(1f)) {
-                LiveText(item.name, size = 22.sp, weight = FontWeight.Bold, maxLines = 2)
+                LiveText(OnDemandDatabase.displayTitle(item.name), size = 22.sp, weight = FontWeight.Bold, maxLines = 2)
                 val meta = listOfNotNull(
                     item.year?.toString() ?: info?.releaseDate?.take(4),
                     info?.genre,

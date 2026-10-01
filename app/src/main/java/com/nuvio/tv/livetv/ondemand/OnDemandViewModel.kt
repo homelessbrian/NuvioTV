@@ -47,7 +47,7 @@ data class OnDemandUiState(
 /** Where selecting a title leads. */
 sealed interface OnDemandTarget {
     /** Found in one of your addon catalogs: open it on Nuvio's details page. */
-    data class Details(val itemId: String, val itemType: String, val addonBaseUrl: String) : OnDemandTarget
+    data class Details(val itemId: String, val itemType: String, val addonBaseUrl: String?) : OnDemandTarget
     /** Not in your catalogs: show the provider's own details. */
     data class Provider(val item: VodItem) : OnDemandTarget
 }
@@ -56,8 +56,23 @@ sealed interface OnDemandTarget {
 class OnDemandViewModel @Inject constructor(
     private val repository: OnDemandRepository,
     private val prefs: LiveTvPreferences,
-    private val resolver: LiveTvPosterResolver
+    private val resolver: LiveTvPosterResolver,
+    private val tmdb: com.nuvio.tv.core.tmdb.TmdbService
 ) : ViewModel() {
+
+    private val imdbIds = com.nuvio.tv.livetv.data.boundedCache<String, String>(2_000)
+
+    /** The provider's TMDB id as an IMDb id (what Nuvio and its addons use), if it has one. */
+    private suspend fun imdbFor(item: VodItem): String? {
+        imdbIds[item.uid]?.let { return it.ifBlank { null } }
+        val id = item.tmdbId?.toIntOrNull()?.let { t ->
+            runCatching { tmdb.tmdbToImdb(t, if (item.kind == VodKind.SERIES) "tv" else "movie") }.getOrNull()
+        }
+        imdbIds[item.uid] = id.orEmpty()
+        return id
+    }
+
+    private fun matchTitle(item: VodItem) = OnDemandDatabase.displayTitle(item.name)
 
     private val _ui = MutableStateFlow(OnDemandUiState())
     val ui: StateFlow<OnDemandUiState> = _ui.asStateFlow()
@@ -74,7 +89,7 @@ class OnDemandViewModel @Inject constructor(
     private var loadJob: Job? = null
     /** Hidden and locked categories as of the last reload (the settings flow can lag behind). */
     @Volatile private var excludedNow: Set<String> = emptySet()
-    private val posters = ConcurrentHashMap<String, String>()
+    private val posters = com.nuvio.tv.livetv.data.boundedCache<String, String>(3_000)
 
     init {
         repository.start()
@@ -156,7 +171,9 @@ class OnDemandViewModel @Inject constructor(
             if (cached.isNotBlank()) { posters[item.uid] = cached; return cached }
             if (fresh) return item.icon
         }
-        val hit = resolver.matchFor(item.name, item.kind == VodKind.SERIES, item.year)
+        // Posters only need the cleaned title (no TMDB call per poster); the id is looked up
+        // once, when you actually open a title.
+        val hit = resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year)
         repository.cachePoster(item, hit?.meta?.poster)
         val poster = hit?.meta?.poster ?: item.icon
         if (poster != null) posters[item.uid] = poster
@@ -164,10 +181,18 @@ class OnDemandViewModel @Inject constructor(
     }
 
     suspend fun targetFor(item: VodItem): OnDemandTarget {
-        val hit = resolver.matchFor(item.name, item.kind == VodKind.SERIES, item.year)
-        return if (hit != null) {
-            OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl)
-        } else OnDemandTarget.Provider(item)
+        val type = if (item.kind == VodKind.SERIES) "series" else "movie"
+        val hit = resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year)
+        // One TMDB call per title you open (remembered), to confirm the match or open by id.
+        val imdb = imdbFor(item)
+        return when {
+            hit != null && (imdb == null || hit.meta.imdbId == imdb || hit.meta.id == imdb) ->
+                OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl)
+            // Known by id: Nuvio opens it with your own metadata addons.
+            imdb != null -> OnDemandTarget.Details(imdb, type, null)
+            hit != null -> OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl)
+            else -> OnDemandTarget.Provider(item)
+        }
     }
 
     suspend fun info(item: VodItem): VodInfo? = repository.info(item)

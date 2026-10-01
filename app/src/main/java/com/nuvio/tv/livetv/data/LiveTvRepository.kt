@@ -261,8 +261,16 @@ class LiveTvRepository @Inject constructor(
                 now - file.lastModified() > settings.playlistRefreshHours.coerceAtLeast(1) * HOUR
             if (forcePlaylists || stale || pl.id in forceIds) {
                 setStatus(loading = true, message = "Updating playlist \"${pl.name}\"…")
+                val before = if (file.exists()) file.length() to file.lastModified() else null
                 val result = runCatching {
-                    if (pl.isXtream) downloadXtream(pl, file) else download(pl.resolvedUrl(), file, pl.userAgent)
+                    if (pl.isXtream) {
+                        val old = if (file.exists()) File(file.parentFile, file.name + ".prev").also { file.copyTo(it, overwrite = true) } else null
+                        downloadXtream(pl, file)
+                        // Xtream lists are rebuilt each time: unchanged if identical to before.
+                        val unchanged = old != null && old.length() == file.length() && sameContent(old, file)
+                        old?.delete()
+                        !unchanged
+                    } else download(pl.resolvedUrl(), file, pl.userAgent)
                 }
                 val err = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
                 prefs.updatePlaylists { list ->
@@ -271,7 +279,7 @@ class LiveTvRepository @Inject constructor(
                     }
                 }
                 if (err != null) Log.w(TAG, "Playlist ${pl.name} failed: $err")
-                changed = true
+                if (result.getOrNull() == true || (before == null && file.exists())) changed = true
             }
         }
 
@@ -289,6 +297,7 @@ class LiveTvRepository @Inject constructor(
             if (forceEpg || stale || target.sourceId in forceIds || (target.sourceId == null && changed && !file.exists())) {
                 setStatus(loading = true, message = "Downloading guide \"${target.name}\"…")
                 val result = runCatching { download(target.url, file, target.userAgent) }
+                if (result.getOrNull() == true) changed = true
                 val err = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
                 if (target.sourceId != null) {
                     prefs.updateEpgSources { list ->
@@ -296,7 +305,6 @@ class LiveTvRepository @Inject constructor(
                     }
                 }
                 if (err != null) Log.w(TAG, "EPG ${target.name} failed: $err")
-                changed = true
             }
         }
 
@@ -311,8 +319,126 @@ class LiveTvRepository @Inject constructor(
         setStatus(loading = true, message = "Loading channels…")
         buildChannels()
         val targets = collectEpgTargets()
-        buildPrograms(prefs.currentSettings(), targets)
+        val settings = prefs.currentSettings()
+        // The guide as it was last matched, if nothing it depends on has changed: the guide
+        // fills in straight away instead of re-reading every guide file at each start.
+        if (!loadSavedGuide(settings, targets)) buildPrograms(settings, targets)
         _status.value = LiveTvStatus(loading = false, loadedOnce = true)
+    }
+
+    // ---------------------------------------------------------------- saved guide
+
+    /** Assign EPG needs the full guide-channel lists, which the saved guide skips. */
+    @Volatile private var epgDetailsPending = false
+
+    /** Builds the full guide details (for Assign EPG) if the saved guide was used. */
+    fun ensureEpgDetails() {
+        if (!epgDetailsPending) return
+        epgDetailsPending = false
+        scope.launch {
+            mutex.withLock { buildPrograms(prefs.currentSettings(), collectEpgTargets()) }
+        }
+    }
+
+    private val savedGuideFile get() = File(baseDir, "guide_cache.bin")
+
+    /** Everything the matched guide depends on; a different value means the cache is stale. */
+    private suspend fun guideFingerprint(settings: LiveTvSettings, targets: List<EpgTarget>): String {
+        val overrides = prefs.userState.first().epgOverrides
+        val sb = StringBuilder()
+        sb.append(GUIDE_CACHE_VERSION).append('|')
+        sb.append(settings.epgPastHours).append('|').append(settings.epgFutureDays).append('|')
+        targets.forEach { t ->
+            val f = epgFile(t.fileId)
+            sb.append(t.fileId).append(':').append(f.length()).append(':').append(f.lastModified()).append(',')
+        }
+        sb.append('|').append(overrides.hashCode())
+        sb.append('|').append(_channels.value.size).append(':').append(_channels.value.sumOf { it.key.hashCode().toLong() })
+        return sb.toString()
+    }
+
+    private suspend fun loadSavedGuide(settings: LiveTvSettings, targets: List<EpgTarget>): Boolean = withContext(Dispatchers.IO) {
+        val file = savedGuideFile
+        if (!file.exists() || _channels.value.isEmpty()) return@withContext false
+        val expected = guideFingerprint(settings, targets)
+        runCatching {
+            java.io.DataInputStream(java.io.BufferedInputStream(java.util.zip.GZIPInputStream(file.inputStream()), 64 * 1024)).use { input ->
+                if (input.readUTF() != expected) return@withContext false
+                val programs = HashMap<String, List<EpgProgram>>()
+                repeat(input.readInt()) {
+                    val key = input.readUTF()
+                    val list = ArrayList<EpgProgram>()
+                    repeat(input.readInt()) {
+                        val start = input.readLong()
+                        val stop = input.readLong()
+                        val title = input.readUTF()
+                        val desc = readOpt(input)
+                        val category = readOpt(input)
+                        val episode = readOpt(input)
+                        val icon = readOpt(input)
+                        val year = input.readInt().takeIf { it > 0 }
+                        val people = List(input.readInt()) { input.readUTF() }
+                        list += EpgProgram(start, stop, title, desc, category, episode, icon, year, people)
+                    }
+                    programs[key] = list
+                }
+                val auto = HashMap<String, EpgAssignment>()
+                repeat(input.readInt()) {
+                    auto[input.readUTF()] = EpgAssignment(input.readUTF(), input.readUTF())
+                }
+                // Drop shows that have ended since the cache was saved (outside the window).
+                val windowStart = System.currentTimeMillis() - settings.epgPastHours.coerceAtLeast(1) * HOUR
+                _programs.value = programs.mapValues { (_, l) -> l.filter { it.stopMs > windowStart } }
+                _autoMatches.value = auto
+                epgDetailsPending = true
+                true
+            }
+        }.getOrElse {
+            Log.w(TAG, "Saved guide unreadable", it)
+            false
+        }
+    }
+
+    private fun saveGuide(fingerprint: String, programs: Map<String, List<EpgProgram>>, auto: Map<String, EpgAssignment>) {
+        // Huge guides (hundreds of thousands of listings) would make a very large file that's
+        // slow to write and read; those are simply re-matched at start as before.
+        if (programs.values.sumOf { it.size } > MAX_SAVED_LISTINGS) {
+            savedGuideFile.delete()
+            return
+        }
+        runCatching {
+            val tmp = File(baseDir, "guide_cache.tmp")
+            java.io.DataOutputStream(java.io.BufferedOutputStream(java.util.zip.GZIPOutputStream(tmp.outputStream()), 64 * 1024)).use { out ->
+                out.writeUTF(fingerprint)
+                out.writeInt(programs.size)
+                programs.forEach { (key, list) ->
+                    out.writeUTF(key)
+                    out.writeInt(list.size)
+                    list.forEach { p ->
+                        out.writeLong(p.startMs)
+                        out.writeLong(p.stopMs)
+                        out.writeUTF(p.title.take(500))
+                        writeOpt(out, p.description?.take(4000))
+                        writeOpt(out, p.category?.take(200))
+                        writeOpt(out, p.episode?.take(200))
+                        writeOpt(out, p.icon?.take(1000))
+                        out.writeInt(p.year ?: 0)
+                        out.writeInt(p.people.size.coerceAtMost(20))
+                        p.people.take(20).forEach { out.writeUTF(it.take(200)) }
+                    }
+                }
+                out.writeInt(auto.size)
+                auto.forEach { (key, a) -> out.writeUTF(key); out.writeUTF(a.sourceId); out.writeUTF(a.xmltvId) }
+            }
+            if (!tmp.renameTo(savedGuideFile)) { tmp.copyTo(savedGuideFile, overwrite = true); tmp.delete() }
+        }.onFailure { Log.w(TAG, "Couldn't save the guide", it) }
+    }
+
+    private fun readOpt(input: java.io.DataInputStream): String? = if (input.readBoolean()) input.readUTF() else null
+
+    private fun writeOpt(out: java.io.DataOutputStream, value: String?) {
+        out.writeBoolean(value != null)
+        if (value != null) out.writeUTF(value)
     }
 
     private fun setStatus(loading: Boolean, message: String?) {
@@ -507,6 +633,8 @@ class LiveTvRepository @Inject constructor(
         _autoMatches.value = auto
         _epgSources.value = sourceLists
         _programs.value = result
+        epgDetailsPending = false
+        saveGuide(guideFingerprint(settings, targets), result, auto)
     }
 
     /**
@@ -566,14 +694,31 @@ class LiveTvRepository @Inject constructor(
     private fun playlistFile(id: String) = File(playlistDir, "$id.m3u")
     private fun epgFile(id: String) = File(epgDir, "$id.xml")
 
-    private suspend fun download(url: String, target: File, userAgent: String) = withContext(Dispatchers.IO) {
+    /**
+     * Downloads [url] to [target]. Returns false when nothing changed: the server said "not
+     * modified" (we send the ETag / Last-Modified from last time), or the new file is identical.
+     * Unchanged files skip the re-reading and re-matching that follows a download.
+     */
+    private suspend fun download(url: String, target: File, userAgent: String): Boolean = withContext(Dispatchers.IO) {
         require(url.isNotBlank()) { "No URL set" }
         target.parentFile?.mkdirs()
+        val meta = File(target.parentFile, target.name + ".meta")
+        val (etag, lastModified) = if (target.exists() && meta.exists()) {
+            meta.readLines().let { it.getOrNull(0).orEmpty() to it.getOrNull(1).orEmpty() }
+        } else "" to ""
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", userAgent.ifBlank { DEFAULT_UA })
+            .apply {
+                if (etag.isNotBlank()) header("If-None-Match", etag)
+                if (lastModified.isNotBlank()) header("If-Modified-Since", lastModified)
+            }
             .build()
         http.newCall(request).execute().use { response ->
+            if (response.code == 304 && target.exists()) {
+                target.setLastModified(System.currentTimeMillis()) // checked again after the usual interval
+                return@withContext false
+            }
             if (!response.isSuccessful) error(httpError(response.code))
             val body = response.body ?: error("Empty response")
             val tmp = File(target.parentFile, target.name + ".tmp")
@@ -582,12 +727,38 @@ class LiveTvRepository @Inject constructor(
                 tmp.delete()
                 error("Empty response")
             }
+            runCatching {
+                meta.writeText(response.header("ETag").orEmpty() + "\n" + response.header("Last-Modified").orEmpty())
+            }
+            val same = target.exists() && target.length() == tmp.length() && sameContent(target, tmp)
+            if (same) {
+                tmp.delete()
+                target.setLastModified(System.currentTimeMillis())
+                return@withContext false
+            }
             if (!tmp.renameTo(target)) {
                 tmp.copyTo(target, overwrite = true)
                 tmp.delete()
             }
+            true
         }
     }
+
+    private fun sameContent(a: File, b: File): Boolean = runCatching {
+        fun digest(f: File): ByteArray {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            f.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            return md.digest()
+        }
+        digest(a).contentEquals(digest(b))
+    }.getOrDefault(false)
 
     // ---------------------------------------------------------------- Xtream Codes API
 
@@ -755,6 +926,8 @@ class LiveTvRepository @Inject constructor(
     companion object {
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
+        private const val GUIDE_CACHE_VERSION = 1
+        private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(
             """(programming|program|programme|no information|no info|no program information|no programme information|""" +
