@@ -78,6 +78,30 @@ private const val UPCOMING_WINDOW_MS = 6L * 60 * 60 * 1000
 @Composable
 fun rememberLiveTvSearchResults(
     query: String,
+    onOpened: () -> Unit
+): LiveTvSearchResults {
+    // Live TV turned off for search (or hidden from the menu): Nuvio's search stays exactly as
+    // it is without the fork — movies and series only. Live TV isn't even loaded here, so it
+    // can't slow Nuvio's own search down.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext, com.nuvio.tv.livetv.startup.LiveTvStartupEntryPoint::class.java
+        ).liveTvPreferences()
+    }
+    val liveSettings by prefs.settings.collectAsStateWithLifecycle(initialValue = null)
+    val s = liveSettings
+    val liveOnly by LiveTvSearchBridge.liveOnly.collectAsStateWithLifecycle()
+    // Opened from Live TV: always search Live TV, whatever the "Show in Nuvio search" setting.
+    if (s == null || (!liveOnly && (!s.showInSearch || !s.showInSidebar))) {
+        return remember { LiveTvSearchResults(emptyList(), false, {}, { null }) }
+    }
+    return rememberLiveTvSearchResultsEnabled(query, onOpened)
+}
+
+@Composable
+private fun rememberLiveTvSearchResultsEnabled(
+    query: String,
     onOpened: () -> Unit,
     viewModel: LiveTvViewModel = hiltViewModel()
 ): LiveTvSearchResults {
@@ -132,6 +156,7 @@ fun rememberLiveTvSearchResults(
         },
         posterFor = { hit ->
             hit.program?.takeIf { !LiveTvRepository.isPlaceholderTitle(it.title) }
+                ?.takeIf { viewModel.settings.value.showPosters }
                 ?.let { viewModel.posterFor(it.title, it, hit.channel) ?: it.icon }
         },
         viewModel = viewModel,
@@ -322,6 +347,13 @@ private fun startsInLabel(ms: Long): String {
  * runs the search. From there the normal detail page streams it through your addons / debrid.
  */
 object LiveTvSearchBridge {
+    /**
+     * True when search was opened from Live TV (its Search button, the Search key, or the
+     * channel menu): only Live TV results are shown. Search from Nuvio's menu shows everything.
+     * Cleared when the search screen closes.
+     */
+    val liveOnly = kotlinx.coroutines.flow.MutableStateFlow(false)
+
     /** The title waiting to be searched, or null. The search screen collects this. */
     val pending = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 

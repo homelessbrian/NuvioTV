@@ -32,7 +32,8 @@ fun onDemandRepository(context: Context): OnDemandRepository =
  * your IPTV providers has it. It shows up next to your addon and debrid streams.
  */
 object OnDemandStreams {
-    const val GROUP_NAME = "Watch On Demand"
+    /** The label for the provider's copies in Nuvio's stream list. */
+    const val GROUP_NAME = "📡 On Demand"
 
     fun withOnDemand(
         context: Context,

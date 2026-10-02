@@ -1,5 +1,6 @@
 package com.nuvio.tv.ui.navigation
 
+import kotlinx.coroutines.launch
 import com.nuvio.tv.ui.theme.NuvioMotion
 import com.nuvio.tv.ui.components.PlaybackAvailabilityProvider
 import com.nuvio.tv.ui.components.LocalPlaybackAvailability
@@ -325,6 +326,7 @@ private fun PlaybackNavHost(
             val heroBackdropUrl = detailArgs?.getString("heroBackdropUrl")?.takeIf { it.isNotBlank() }
             val playOnLoad = detailArgs?.getString("playOnLoad")?.toBooleanStrictOrNull() == true
             val manualSelection = detailArgs?.getString("manualSelection")?.toBooleanStrictOrNull() == true
+            val onDemandScope = androidx.compose.runtime.rememberCoroutineScope()
             DetailChildHost(parentNavController = navController) { childNav ->
             MetaDetailsScreen(
                 returnFocusSeason = returnFocusSeason,
@@ -366,6 +368,10 @@ private fun PlaybackNavHost(
                     childNav.navigateNestedDetail(itemId, itemType, addonBaseUrl)
                 },
                 onPlayClick = { videoId, contentType, contentId, title, poster, backdrop, logo, season, episode, episodeName, genres, year, runtime, contentLanguage ->
+                  // Live TV fork: opened from On Demand, Play goes straight to the provider's copy
+                  // (long-press Play / "Play manually" still shows every stream).
+                  val onDemandUid = savedState.get<String>(com.nuvio.tv.livetv.ondemand.OnDemandPlay.KEY)
+                  val openStreams = {
                     navController.navigate(
                         Screen.Stream.createRoute(
                             videoId = videoId,
@@ -386,6 +392,23 @@ private fun PlaybackNavHost(
                             contentLanguage = contentLanguage
                         )
                     )
+                  }
+                  if (onDemandUid == null) openStreams() else onDemandScope.launch {
+                      val resolved = runCatching {
+                          com.nuvio.tv.livetv.ondemand.OnDemandPlay.resolve(context, onDemandUid, season, episode)
+                      }.getOrNull()
+                      if (resolved == null) openStreams()
+                      else navController.navigate(
+                          Screen.Player.createRoute(
+                              streamUrl = resolved.url,
+                              title = resolved.title,
+                              contentType = contentType,
+                              contentName = title,
+                              poster = poster ?: resolved.poster,
+                              addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME
+                          )
+                      )
+                  }
                 },
                 onPlayManuallyClick = { videoId, contentType, contentId, title, poster, backdrop, logo, season, episode, episodeName, genres, year, runtime, contentLanguage ->
                     navController.navigate(
@@ -1223,8 +1246,12 @@ private fun PlaybackNavHost(
 
         composable(Screen.OnDemand.route) {
             com.nuvio.tv.livetv.ondemand.OnDemandScreen(
-                onOpenDetail = { itemId, itemType, addonBaseUrl ->
+                onOpenDetail = { itemId, itemType, addonBaseUrl, onDemandUid ->
                     navController.navigate(Screen.Detail.createRoute(itemId, itemType, addonBaseUrl))
+                    // Remember (on this details page only) that it was opened from On Demand.
+                    navController.currentBackStackEntry?.savedStateHandle?.set(
+                        com.nuvio.tv.livetv.ondemand.OnDemandPlay.KEY, onDemandUid
+                    )
                 },
                 onPlay = { url, title, type, poster ->
                     navController.navigate(

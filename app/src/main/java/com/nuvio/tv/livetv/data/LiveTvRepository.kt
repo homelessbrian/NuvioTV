@@ -489,6 +489,10 @@ class LiveTvRepository @Inject constructor(
                 .getOrNull() ?: continue
             embeddedEpgUrls[pl.id] = parsed.epgUrls
             for (e in parsed.entries) {
+                // Many providers' M3U links ("m3u_plus") also list every movie and episode,
+                // often 100,000+ entries. Those aren't TV channels, and loading them all into the
+                // guide used enough memory to crash Live TV on some devices.
+                if (isVodEntry(e.url)) continue
                 val groupTitle = e.group?.ifBlank { null } ?: "Uncategorized"
                 val baseKey = "${pl.id}|${e.tvgId ?: ""}|${e.name}"
                 var key = baseKey
@@ -934,6 +938,12 @@ class LiveTvRepository @Inject constructor(
                 """to be announced|tba|tbd|n/?a|off air|no data|no epg|not available|information not available|""" +
                 """regular programming|scheduled programming|paid programming|coming soon)\.?"""
         )
+        private val VOD_PATH = Regex("""/(movie|movies|series|vod)/""", RegexOption.IGNORE_CASE)
+        private val VOD_EXT = Regex("""\.(mp4|mkv|avi|mov|wmv|m4v|webm|flv)(\?|$)""", RegexOption.IGNORE_CASE)
+
+        /** A movie or episode in an M3U (by its link), not a live channel. */
+        fun isVodEntry(url: String): Boolean = VOD_PATH.containsMatchIn(url) || VOD_EXT.containsMatchIn(url)
+
         /** "Programming", "No information", "To Be Announced"… (no real show to show a poster for). */
         fun isPlaceholderTitle(title: String): Boolean = PLACEHOLDER_TITLES.matches(title.trim().lowercase())
 

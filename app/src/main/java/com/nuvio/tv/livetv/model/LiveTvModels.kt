@@ -214,7 +214,9 @@ data class LiveTvSettings(
     /** The vertical line marking the current time in the guide. */
     val showNowLine: Boolean = true,
     /** Send Dolby / DTS audio untouched to the TV or speaker (off: the app decodes it). */
-    val audioPassthrough: Boolean = true
+    val audioPassthrough: Boolean = true,
+    /** Show posters for what's on; off: just the channel logo (no poster lookups at all). */
+    val showPosters: Boolean = true
 )
 
 data class LiveUserState(

@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import android.util.Log
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
@@ -119,6 +120,7 @@ class LiveTvPlaybackController @Inject constructor(
     fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
         val url = overrideUrl ?: channel.url
         fallbackUrl = fallback
+        startStallWatch()
         val p = _player ?: attach().also { attachCount-- }
         if (currentChannel?.key == channel.key && currentUrl == url && _state.value.error == null &&
             p.playbackState != Player.STATE_IDLE
@@ -186,6 +188,62 @@ class LiveTvPlaybackController @Inject constructor(
         _state.value = LivePlaybackState()
     }
 
+    // ---------------------------------------------------------------- stall watchdog
+
+    /**
+     * Some streams stop sending pictures without ever reporting an error (the provider keeps
+     * the connection open, or a live HLS list stops updating), leaving "Loading…" on screen
+     * forever. If playback makes no progress for [STALL_MS], reload the stream, the same as
+     * switching away and back.
+     */
+    private var stallJob: Job? = null
+    private var lastPosition = -1L
+    private var lastProgressAt = 0L
+
+    private fun startStallWatch() {
+        lastProgressAt = android.os.SystemClock.elapsedRealtime()
+        lastPosition = -1L
+        if (stallJob?.isActive == true) return
+        stallJob = scope.launch {
+            while (true) {
+                delay(2_000)
+                checkStall()
+            }
+        }
+    }
+
+    private fun checkStall() {
+        val p = _player ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val ch = currentChannel
+        // Paused, in the background, nothing playing, or already showing an error: not a stall.
+        if (ch == null || !p.playWhenReady || pausedForBackground || _state.value.error != null ||
+            p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED
+        ) {
+            lastProgressAt = now
+            lastPosition = p.currentPosition
+            return
+        }
+        val pos = p.currentPosition
+        val moving = p.playbackState == Player.STATE_READY && p.isPlaying && pos != lastPosition
+        lastPosition = pos
+        if (moving) {
+            lastProgressAt = now
+            return
+        }
+        if (now - lastProgressAt < STALL_MS || !autoReconnect) return
+        lastProgressAt = now
+        Log.w(TAG, "Stream stalled on ${ch.name}; reloading")
+        val url = currentUrl ?: ch.url
+        val archive = _state.value.catchupTitle != null
+        val resumeAt = if (archive) pos else C_TIME_UNSET
+        p.stop()
+        p.setMediaSource(buildMediaSource(url, ch.headers, isLive = !archive))
+        p.prepare()
+        if (resumeAt > 0) p.seekTo(resumeAt)
+        p.playWhenReady = true
+    }
+
     fun retry() {
         val ch = currentChannel ?: return
         val url = currentUrl
@@ -247,10 +305,15 @@ class LiveTvPlaybackController @Inject constructor(
             for (ti in 0 until group.length) {
                 if (!group.isTrackSupported(ti)) continue
                 val f = group.getTrackFormat(ti)
+                val captions = when (f.sampleMimeType) {
+                    MimeTypes.APPLICATION_CEA608 -> "Closed captions"
+                    MimeTypes.APPLICATION_CEA708 -> "Closed captions (708)"
+                    else -> null
+                }
                 val parts = listOfNotNull(
-                    f.label,
+                    captions ?: f.label,
                     f.language?.let { java.util.Locale.forLanguageTag(it).displayLanguage.ifBlank { it } },
-                    f.sampleMimeType?.substringAfter('/')?.uppercase(),
+                    f.sampleMimeType?.takeIf { captions == null }?.substringAfter('/')?.uppercase(),
                     if (f.channelCount > 0) "${f.channelCount}ch" else null
                 )
                 out += LiveTrackOption(gi, ti, parts.distinct().joinToString(" · ").ifBlank { "Track ${out.size + 1}" }, group.isTrackSelected(ti))
@@ -350,15 +413,42 @@ class LiveTvPlaybackController @Inject constructor(
         }
     }
 
-    private fun buildMediaSource(url: String, headers: Map<String, String>, isLive: Boolean) =
-        DefaultMediaSourceFactory(
-            DefaultHttpDataSource.Factory()
-                .setUserAgent(headers["User-Agent"] ?: LiveTvRepository.DEFAULT_UA)
-                .setDefaultRequestProperties(headers.filterKeys { it != "User-Agent" })
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(15_000)
-                .setReadTimeoutMs(20_000)
-        ).createMediaSource(buildMediaItem(url, isLive))
+    private fun buildMediaSource(url: String, headers: Map<String, String>, isLive: Boolean): androidx.media3.exoplayer.source.MediaSource {
+        val http = DefaultHttpDataSource.Factory()
+            .setUserAgent(headers["User-Agent"] ?: LiveTvRepository.DEFAULT_UA)
+            .setDefaultRequestProperties(headers.filterKeys { it != "User-Agent" })
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+        val item = buildMediaItem(url, isLive)
+        // Closed captions: TV channels usually carry them inside the video (CEA-608/708) without
+        // announcing them, so the player never offered them and Subtitles only showed "Off".
+        // Look for them anyway, the way TV apps do.
+        if (item.localConfiguration?.mimeType == MimeTypes.APPLICATION_M3U8) {
+            return androidx.media3.exoplayer.hls.HlsMediaSource.Factory(http)
+                .setExtractorFactory(
+                    androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory(
+                        androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES,
+                        /* exposeCea608WhenMissingDeclarations = */ true
+                    )
+                )
+                .createMediaSource(item)
+        }
+        val extractors = androidx.media3.extractor.DefaultExtractorsFactory()
+            .setTsExtractorFlags(
+                androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
+                    androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory.FLAG_OVERRIDE_CAPTION_DESCRIPTORS
+            )
+            .setTsSubtitleFormats(
+                listOf(
+                    androidx.media3.common.Format.Builder()
+                        .setSampleMimeType(MimeTypes.APPLICATION_CEA608)
+                        .setAccessibilityChannel(1)
+                        .build()
+                )
+            )
+        return DefaultMediaSourceFactory(http, extractors).createMediaSource(item)
+    }
 
     private fun buildMediaItem(url: String, isLive: Boolean): MediaItem {
         val builder = MediaItem.Builder().setUri(Uri.parse(url))
@@ -386,6 +476,8 @@ class LiveTvPlaybackController @Inject constructor(
 
     private fun release() {
         reconnectJob?.cancel()
+        stallJob?.cancel()
+        stallJob = null
         _player?.removeListener(listener)
         _player?.release()
         _player = null
@@ -396,5 +488,9 @@ class LiveTvPlaybackController @Inject constructor(
 
     companion object {
         private const val MAX_RECONNECTS = 8
+        /** No progress for this long while it should be playing = stalled. */
+        private const val STALL_MS = 15_000L
+        private const val C_TIME_UNSET = Long.MIN_VALUE + 1
+        private const val TAG = "LiveTvPlayback"
     }
 }

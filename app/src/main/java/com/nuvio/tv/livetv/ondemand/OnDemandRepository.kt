@@ -131,6 +131,14 @@ class OnDemandRepository @Inject constructor(
         started = true
         scope.launch {
             _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
+            // Learn each provider's title tags (for catalogs imported before this existed).
+            runCatching {
+                db.loadPrefixes()
+                prefs.playlists.first().filter { it.isXtream && it.importVod }.forEach { pl ->
+                    if (!db.hasLearnedPrefixes(pl.id)) db.learnPrefixes(pl.id)
+                }
+                _version.value++
+            }
             refresh(force = false)
         }
     }
@@ -167,6 +175,7 @@ class OnDemandRepository @Inject constructor(
                 pl.id,
                 if (ok) System.currentTimeMillis() else System.currentTimeMillis() - REFRESH_MS + 60 * 60 * 1000L
             )
+            runCatching { db.learnPrefixes(pl.id) }
             _version.value++
         }
         _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
@@ -324,16 +333,24 @@ class OnDemandRepository @Inject constructor(
         runCatching { db.categories(kind) }.getOrDefault(emptyList())
     }
 
-    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int) =
+    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int, sort: VodSort = VodSort.DEFAULT) =
         withContext(Dispatchers.IO) {
-            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset) }.getOrDefault(emptyList())
+            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset, sort) }.getOrDefault(emptyList())
         }
 
-    suspend fun search(kind: VodKind, text: String, hidden: Set<String>) = withContext(Dispatchers.IO) {
-        runCatching { db.search(kind, text, hidden) }.getOrDefault(emptyList())
+    suspend fun search(kind: VodKind, text: String, hidden: Set<String>, sort: VodSort = VodSort.DEFAULT) = withContext(Dispatchers.IO) {
+        runCatching { db.search(kind, text, hidden, sort = sort) }.getOrDefault(emptyList())
     }
 
     private suspend fun playlist(id: String): PlaylistSource? = prefs.playlists.first().firstOrNull { it.id == id }
+
+    /** A title by its uid ("movie:<playlist>:<id>"). */
+    suspend fun itemByUid(uid: String): VodItem? = withContext(Dispatchers.IO) {
+        val parts = uid.split(':', limit = 3)
+        if (parts.size != 3) return@withContext null
+        val kind = if (parts[0] == VodKind.SERIES.key) VodKind.SERIES else VodKind.MOVIE
+        runCatching { db.item(parts[1], kind, parts[2]) }.getOrNull()
+    }
 
     /** Movie link: /movie/user/pass/<id>.<ext> */
     suspend fun movieUrl(item: VodItem): String? {

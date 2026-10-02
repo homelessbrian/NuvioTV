@@ -60,7 +60,7 @@ class LiveTvPosterResolver @Inject constructor(
      * On Demand: finds a provider title in your own addon catalogs, so it opens on Nuvio's
      * details page with your metadata and posters. Null if none of your catalogs has it.
      */
-    suspend fun matchFor(title: String, series: Boolean, year: Int?, imdbId: String? = null): Hit? {
+    suspend fun matchFor(title: String, series: Boolean, year: Int?, imdbId: String? = null, urgent: Boolean = false): Hit? {
         // If addons keep failing (rate limits, offline), pause lookups for a minute.
         if (System.currentTimeMillis() < pausedUntil) return null
         val query = LiveTvSearchBridge.cleanTitle(title).ifBlank { title.trim() }
@@ -69,7 +69,8 @@ class LiveTvPosterResolver @Inject constructor(
         matchCache[key]?.let { return it }
         if (key in noMatch) return null
         // On Demand has its own small queue, so browsing movies never holds up the guide's posters.
-        return vodPermits.withPermit {
+        // Opening a title ([urgent]) doesn't wait behind poster lookups in the queue.
+        return (if (urgent) urgentPermits else vodPermits).withPermit {
             val attempt = Attempt()
             val hit = runCatching {
                 lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(imdbId = imdbId, year = year), attempt)
@@ -141,6 +142,7 @@ class LiveTvPosterResolver @Inject constructor(
     private val permits = kotlinx.coroutines.sync.Semaphore(3)
     private val vodPermits = kotlinx.coroutines.sync.Semaphore(2)
     private val requestPermits = kotlinx.coroutines.sync.Semaphore(2)
+    private val urgentPermits = kotlinx.coroutines.sync.Semaphore(2)
 
     suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
         // "Programming" and the like aren't shows: the channel logo is the right picture.

@@ -11,6 +11,27 @@ import javax.inject.Singleton
 
 enum class VodKind(val key: String) { MOVIE("movie"), SERIES("series") }
 
+/** How On Demand lists are sorted (the bar above the posters). */
+enum class VodSort(val label: String) {
+    DEFAULT("Default"),
+    NAME_AZ("A–Z"),
+    NAME_ZA("Z–A"),
+    NEWEST("Newest"),
+    OLDEST("Oldest"),
+    RECENTLY_ADDED("Recently added"),
+    TOP_RATED("Top rated");
+
+    internal fun orderBy(fallback: String): String = when (this) {
+        DEFAULT -> fallback
+        NAME_AZ -> "norm ASC"
+        NAME_ZA -> "norm DESC"
+        NEWEST -> "year IS NULL, year DESC, added DESC"
+        OLDEST -> "year IS NULL, year ASC"
+        RECENTLY_ADDED -> "added DESC"
+        TOP_RATED -> "rating IS NULL, CAST(rating AS REAL) DESC"
+    }
+}
+
 /** One movie or series from a provider's On Demand catalog. */
 data class VodItem(
     val playlistId: String,
@@ -48,7 +69,7 @@ data class VodCategory(
  */
 @Singleton
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 3) {
+    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -63,6 +84,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         db.execSQL("CREATE INDEX items_tmdb ON items(kind, tmdb)")
         db.execSQL("CREATE INDEX items_added ON items(kind, added)")
         createPosterTable(db)
+        createPrefixTable(db)
         db.execSQL(
             """CREATE TABLE categories (
                 pl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
@@ -76,6 +98,62 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         // Version 3: titles are cleaned and matched by IMDb id now, so forget the old
         // "no poster found" answers (the catalogs themselves are kept).
         if (oldVersion < 3) db.execSQL("DELETE FROM posters")
+        // Version 4: each provider's own title tags ("4K-D+ - ", "4k-NF - ") are learned and
+        // removed, so look posters up again with the cleaner titles.
+        if (oldVersion < 4) {
+            createPrefixTable(db)
+            db.execSQL("DELETE FROM posters")
+        }
+    }
+
+    private fun createPrefixTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS prefixes (pl TEXT NOT NULL, prefix TEXT NOT NULL, PRIMARY KEY (pl, prefix))")
+    }
+
+    // ------------------------------------------------------------------ provider title tags
+
+    /**
+     * Works out a provider's own title tags from its catalog: a short bit before " - ", " | "
+     * or ": " that starts many titles ("4K-D+ - Toy Story 5", "4k-NF - Roommates", "EN - …")
+     * is a tag, not part of the name. Every provider labels things its own way, so this is
+     * learned rather than listed.
+     */
+    fun learnPrefixes(playlistId: String) {
+        val counts = HashMap<String, Int>()
+        var total = 0
+        readableDatabase.rawQuery("SELECT name FROM items WHERE pl = ?", arrayOf(playlistId)).use { c ->
+            while (c.moveToNext()) {
+                total++
+                leadingSegment(c.getString(0))?.let { counts[it] = (counts[it] ?: 0) + 1 }
+            }
+        }
+        val threshold = maxOf(15, total / 500)
+        val learned = counts.filter { (seg, n) -> n >= threshold && seg.split(' ').size <= 4 }.keys
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("prefixes", "pl = ?", arrayOf(playlistId))
+            learned.forEach { p ->
+                db.insertWithOnConflict("prefixes", null, ContentValues().apply { put("pl", playlistId); put("prefix", p) },
+                    SQLiteDatabase.CONFLICT_IGNORE)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        loadPrefixes()
+    }
+
+    fun hasLearnedPrefixes(playlistId: String): Boolean =
+        readableDatabase.rawQuery("SELECT 1 FROM prefixes WHERE pl = ? LIMIT 1", arrayOf(playlistId)).use { it.moveToFirst() }
+
+    /** Loads every provider's learned tags into memory (used by [displayTitle]). */
+    fun loadPrefixes() {
+        val set = HashSet<String>()
+        runCatching {
+            readableDatabase.rawQuery("SELECT prefix FROM prefixes", null).use { c -> while (c.moveToNext()) set += c.getString(0) }
+        }
+        knownPrefixes = set
     }
 
     private fun createPosterTable(db: SQLiteDatabase) {
@@ -193,7 +271,8 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         excludeCategories: Set<String>,
         newestFirst: Boolean,
         limit: Int,
-        offset: Int
+        offset: Int,
+        sort: VodSort = VodSort.DEFAULT
     ): List<VodItem> {
         val where = StringBuilder("kind = ?")
         val args = arrayListOf(kind.key)
@@ -208,17 +287,17 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
                 args += parts[1]; args += parts[2]
             }
         }
-        val order = if (newestFirst) "added DESC" else "rowid"
+        val order = sort.orderBy(if (newestFirst) "added DESC" else "rowid")
         return query("SELECT * FROM items WHERE $where ORDER BY $order LIMIT $limit OFFSET $offset", args)
     }
 
-    fun search(kind: VodKind, text: String, excludeCategories: Set<String>, limit: Int = 300): List<VodItem> {
+    fun search(kind: VodKind, text: String, excludeCategories: Set<String>, limit: Int = 300, sort: VodSort = VodSort.DEFAULT): List<VodItem> {
         val words = normalizeWords(text)
         if (words.isEmpty()) return emptyList()
         val where = StringBuilder("kind = ?")
         val args = arrayListOf(kind.key)
         words.forEach { w -> where.append(" AND norm LIKE ?"); args += "%$w%" }
-        return query("SELECT * FROM items WHERE $where ORDER BY length(name) LIMIT $limit", args)
+        return query("SELECT * FROM items WHERE $where ORDER BY ${sort.orderBy("length(name)")} LIMIT $limit", args)
             .filter { "${it.kind.key}:${it.playlistId}:${it.categoryId}" !in excludeCategories }
     }
 
@@ -266,8 +345,45 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
          * front ("EN - ", "|EN| ", "[US] ", "NF - "), a year in brackets, and quality tags.
          * "EN  - Coyote vs. Acme (2026) 4K" becomes "Coyote vs. Acme".
          */
+        /** Every provider's learned title tags, lower case. */
+        @Volatile var knownPrefixes: Set<String> = emptySet()
+
+        private val SEGMENT = Regex("""^\s*(.{1,30}?)\s*(?:\s[-–—|]\s|\s?\|\s?|:\s)""")
+
+        /** The bit before the first separator, lower case, or null. */
+        internal fun leadingSegment(name: String): String? =
+            SEGMENT.find(name)?.groupValues?.get(1)?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+
+        /**
+         * Looks like a provider tag even without learning it: one short "word" (no spaces),
+         * mostly capitals, digits or symbols, like "4K-D+", "4k-NF", "EN", "NF", "UHD-DV".
+         * Real titles ("Spider-Man", "Mission: Impossible") don't fit.
+         */
+        private fun looksLikeTag(segment: String): Boolean {
+            val t = segment.trim()
+            if (t.length !in 2..12 || t.any { it.isWhitespace() }) return false
+            if (t.all { it.isDigit() }) return false // "2001 - A Space Odyssey"
+            val upper = t.count { it.isUpperCase() }
+            val lower = t.count { it.isLowerCase() }
+            return upper >= lower && t.any { it.isLetterOrDigit() }
+        }
+
+        private fun stripTags(s: String): String {
+            var out = s.trim()
+            repeat(3) {
+                val m = SEGMENT.find(out) ?: return out
+                val seg = m.groupValues[1].trim()
+                if (seg.lowercase() in knownPrefixes || looksLikeTag(seg)) {
+                    val rest = out.substring(m.range.last + 1).trim()
+                    if (rest.isBlank()) return out
+                    out = rest
+                } else return out
+            }
+            return out
+        }
+
         fun displayTitle(s: String): String {
-            val t = s.replace(PREFIX, "")
+            val t = stripTags(s).replace(PREFIX, "")
                 .replace(Regex("""\s*\((19|20)\d{2}\)"""), "")
                 .replace(Regex("""\s*[-|]\s*(19|20)\d{2}\s*$"""), "")
                 .replace(Regex("""(?i)\s*[\[(]?\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|hdr|multi|multi-?sub|vostfr|dub|sub)\b[\])]?\s*$"""), "")

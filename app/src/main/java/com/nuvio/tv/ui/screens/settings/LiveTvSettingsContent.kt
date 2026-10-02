@@ -267,6 +267,12 @@ fun LiveTvSettingsContent(
                         { update { it.copy(showProgramDetails = !it.showProgramDetails) } }
                     )
                     SettingsToggleRow(
+                        "Show posters",
+                        "Posters for what's on, from your addons. Off: just the channel logo.",
+                        s.showPosters,
+                        { update { it.copy(showPosters = !it.showPosters) } }
+                    )
+                    SettingsToggleRow(
                         "Show playlist in info panel",
                         "Shows which playlist the highlighted channel comes from",
                         s.showPlaylistInInfo,
@@ -561,7 +567,7 @@ fun LiveTvSettingsContent(
                         )
                     }
                     SettingsToggleRow(
-                        "\"Watch On Demand\" in Nuvio",
+                        "On Demand in Nuvio's stream list",
                         "Adds your provider's copy to the end of Nuvio's stream list for movies and episodes. Auto-play never picks it.",
                         s.onDemandInStreams,
                         { update { it.copy(onDemandInStreams = !it.onDemandInStreams) } }
@@ -1202,7 +1208,7 @@ private fun SourceFormDialog(
         if (toggle2 != null) {
             SettingsToggleRow(
                 title = toggle2.first,
-                subtitle = "Adds the provider's movies and series to On Demand and to \"Watch On Demand\" in Nuvio",
+                subtitle = "Adds the provider's movies and series to On Demand and to Nuvio's stream list",
                 checked = toggle2Value,
                 onToggle = { toggle2Value = !toggle2Value }
             )

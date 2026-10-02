@@ -360,8 +360,13 @@ fun SearchScreen(
     }
     // Stable list of non-empty catalog rows — mirrors ClassicHomeContent's
     // visibleHomeRows pattern so the LazyColumn receives a remember'd list.
-    val visibleCatalogRows = remember(uiState.catalogRows) {
-        uiState.catalogRows.filter { it.items.isNotEmpty() }
+    // Live TV fork: opened from Live TV, only Live TV results show.
+    val liveTvOnly by com.nuvio.tv.livetv.ui.LiveTvSearchBridge.liveOnly.collectAsState()
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { com.nuvio.tv.livetv.ui.LiveTvSearchBridge.liveOnly.value = false }
+    }
+    val visibleCatalogRows = remember(uiState.catalogRows, liveTvOnly) {
+        if (liveTvOnly) emptyList() else uiState.catalogRows.filter { it.items.isNotEmpty() }
     }
     LaunchedEffect(visibleRowKeys) {
         searchRowStates.keys.retainAll(visibleRowKeys)

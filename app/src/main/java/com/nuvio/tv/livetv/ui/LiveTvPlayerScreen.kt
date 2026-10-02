@@ -341,6 +341,7 @@ fun LiveTvPlayerScreen(
                     description = if (playback.catchupTitle == null) nowProgram?.description else null,
                     nextLine = next?.let { "Next: ${formatClock(it.startMs, use24h)}  ${it.title}" },
                     poster = poster,
+                    showPosters = settings.showPosters,
                     isFavorite = ch.key in user.favorites,
                     clock = formatClock(now, use24h),
                     resolution = if (playback.videoHeight > 0) "${playback.videoHeight}p" else null,
@@ -495,6 +496,7 @@ private fun InfoBanner(
     description: String?,
     nextLine: String?,
     poster: String?,
+    showPosters: Boolean = true,
     isFavorite: Boolean,
     clock: String,
     resolution: String?,
@@ -508,6 +510,12 @@ private fun InfoBanner(
             .padding(start = 48.dp, end = 48.dp, top = 72.dp, bottom = 32.dp)
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
+            // Posters off: just the channel logo, beside the details (like a TV box).
+            if (!showPosters) {
+                Box(modifier = Modifier.width(124.dp).height(78.dp), contentAlignment = Alignment.Center) {
+                    ChannelLogo(channel.logo, 72.dp)
+                }
+            } else
             // Poster, as Nuvio would show it in a catalog. Falls back to the channel logo.
             Box(
                 modifier = Modifier

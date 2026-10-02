@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,7 +85,7 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun OnDemandScreen(
-    onOpenDetail: (itemId: String, itemType: String, addonBaseUrl: String?) -> Unit,
+    onOpenDetail: (itemId: String, itemType: String, addonBaseUrl: String?, onDemandUid: String) -> Unit,
     onPlay: (url: String, title: String, type: String, poster: String?) -> Unit,
     viewModel: OnDemandViewModel = hiltViewModel()
 ) {
@@ -103,6 +104,9 @@ fun OnDemandScreen(
     var pinError by remember { mutableStateOf(false) }
     var pinRemovesLock by remember { mutableStateOf(false) }
     var providerItem by remember { mutableStateOf<VodItem?>(null) }
+    // Opening a title: shows "Opening…" and ignores other presses until it's ready (Back cancels).
+    var opening by remember { mutableStateOf<VodItem?>(null) }
+    var openJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     // Manage visibility: every category (hidden ones too) and which are set to hidden.
     var visibilityList by remember { mutableStateOf<List<OnDemandSection.Category>?>(null) }
     var hiddenPending by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -150,6 +154,15 @@ fun OnDemandScreen(
             val sections: List<OnDemandSection> = visibilityList ?: ui.sections
             val listState = rememberLazyListState()
             var focusedKey by remember { mutableStateOf<String?>(null) }
+            // Like the Live TV groups: highlighting a category opens it (after a short pause,
+            // so scrolling past doesn't load every one). Locked ones still wait for OK and the PIN.
+            LaunchedEffect(focusedKey) {
+                val key = focusedKey ?: return@LaunchedEffect
+                if (visibilityList != null || key == ui.selectedKey) return@LaunchedEffect
+                delay(350)
+                val section = ui.sections.firstOrNull { it.key == key } ?: return@LaunchedEffect
+                if (!viewModel.isLocked(section)) viewModel.select(section)
+            }
             val panelWidth by androidx.compose.animation.core.animateDpAsState(
                 if (categoriesOpen || visibilityList != null) 250.dp else 0.dp,
                 androidx.compose.animation.core.tween(220), label = "categories"
@@ -249,7 +262,7 @@ fun OnDemandScreen(
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
                         .collect { last -> if (last >= ui.items.size - 24) viewModel.loadMore() }
                 }
-                LaunchedEffect(ui.selectedKey, ui.kind, ui.query) { runCatching { gridState.scrollToItem(0) } }
+                LaunchedEffect(ui.selectedKey, ui.kind, ui.query, ui.sort) { runCatching { gridState.scrollToItem(0) } }
                 when {
                     visibilityList != null -> VisibilityHelp(Modifier.align(Alignment.Center))
                     ui.items.isEmpty() && ui.loading -> LiveText("Loading…", color = NuvioTheme.colors.TextSecondary, modifier = Modifier.align(Alignment.Center))
@@ -263,7 +276,17 @@ fun OnDemandScreen(
                         modifier = Modifier.align(Alignment.Center),
                         maxLines = 3
                     )
-                    else -> LazyVerticalGrid(
+                    else -> Column(Modifier.fillMaxSize()) {
+                      // Sort bar for the list on screen.
+                      LazyRow(
+                          horizontalArrangement = Arrangement.spacedBy(8.dp),
+                          modifier = Modifier.padding(bottom = 10.dp)
+                      ) {
+                          items(VodSort.values().toList()) { option ->
+                              Pill(option.label, option == ui.sort) { viewModel.setSort(option) }
+                          }
+                      }
+                      LazyVerticalGrid(
                         state = gridState,
                         modifier = Modifier.focusRequester(gridFocus),
                         // Smaller posters, so more fit on screen.
@@ -277,14 +300,21 @@ fun OnDemandScreen(
                                 focusedPosterIndex = index
                                 categoriesOpen = false
                             }) {
-                                scope.launch {
-                                    when (val t = viewModel.targetFor(item)) {
-                                        is OnDemandTarget.Details -> onOpenDetail(t.itemId, t.itemType, t.addonBaseUrl)
-                                        is OnDemandTarget.Provider -> providerItem = t.item
+                                if (opening != null) return@PosterCard
+                                opening = item
+                                openJob = scope.launch {
+                                    try {
+                                        when (val t = viewModel.targetFor(item)) {
+                                            is OnDemandTarget.Details -> onOpenDetail(t.itemId, t.itemType, t.addonBaseUrl, t.uid)
+                                            is OnDemandTarget.Provider -> providerItem = t.item
+                                        }
+                                    } finally {
+                                        opening = null
                                     }
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -352,6 +382,37 @@ fun OnDemandScreen(
                 } else pinError = true
             }
         )
+    }
+
+    opening?.let { item ->
+        androidx.activity.compose.BackHandler { openJob?.cancel(); opening = null }
+        // Take focus so presses can't reach the posters underneath while opening.
+        val blockFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { runCatching { blockFocus.requestFocus() } }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .focusRequester(blockFocus)
+                .focusable()
+                .onPreviewKeyEvent { e ->
+                    // Swallow everything except Back while opening.
+                    e.key != Key.Back
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.8f))
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                com.nuvio.tv.livetv.ui.LoadingSpinner()
+                Spacer(Modifier.width(10.dp))
+                LiveText("Opening ${OnDemandDatabase.displayTitle(item.name)}…", color = Color.White, size = 14.sp)
+            }
+        }
     }
 
     providerItem?.let { item ->

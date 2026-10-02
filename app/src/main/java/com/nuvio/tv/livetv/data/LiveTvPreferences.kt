@@ -103,6 +103,7 @@ class LiveTvPreferences @Inject constructor(
         val showPlaylistInInfo = booleanPreferencesKey("show_playlist_in_info")
         val showNowLine = booleanPreferencesKey("show_now_line")
         val audioPassthrough = booleanPreferencesKey("audio_passthrough")
+        val showPosters = booleanPreferencesKey("show_posters")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -185,7 +186,8 @@ class LiveTvPreferences @Inject constructor(
             browseByChannelName = p[Keys.browseByChannelName] ?: d.browseByChannelName,
             showPlaylistInInfo = p[Keys.showPlaylistInInfo] ?: d.showPlaylistInInfo,
             showNowLine = p[Keys.showNowLine] ?: d.showNowLine,
-            audioPassthrough = p[Keys.audioPassthrough] ?: d.audioPassthrough
+            audioPassthrough = p[Keys.audioPassthrough] ?: d.audioPassthrough,
+            showPosters = p[Keys.showPosters] ?: d.showPosters
         )
     }.distinctUntilChanged()
 
@@ -287,6 +289,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.showPlaylistInInfo] = s.showPlaylistInInfo
         p[Keys.showNowLine] = s.showNowLine
         p[Keys.audioPassthrough] = s.audioPassthrough
+        p[Keys.showPosters] = s.showPosters
     }
 
     // ---------- channel management ----------

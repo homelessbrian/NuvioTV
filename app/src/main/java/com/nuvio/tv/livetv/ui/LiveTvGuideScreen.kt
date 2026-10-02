@@ -628,6 +628,7 @@ fun LiveTvGuideScreen(
                             pinGroup = g
                             pinWrong = false
                         } else if (g.id == ChannelGroup.SEARCH) {
+                            LiveTvSearchBridge.liveOnly.value = true
                             onOpenNuvioSearch()
                         } else {
                             if (g.id != ui.selectedGroupId) {
@@ -812,7 +813,7 @@ fun LiveTvGuideScreen(
                                         focusedChannel?.let { menuTarget = MenuTarget(it, focusedBlock) }
                                         true
                                     }
-                                            event.key == Key.Search -> { onOpenNuvioSearch(); true }
+                                            event.key == Key.Search -> { LiveTvSearchBridge.liveOnly.value = true; onOpenNuvioSearch(); true }
                                     code in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
                                         if (numberBuffer.length < 5) numberBuffer += (code - android.view.KeyEvent.KEYCODE_0).toString()
                                         true
@@ -1079,7 +1080,7 @@ fun LiveTvGuideScreen(
                 onProgramInfo = { menuTarget = null; infoTarget = target },
                 streamProgram = target.block?.program ?: viewModel.currentProgram(target.channel.key),
                 onFindInNuvio = { p -> menuTarget = null; findInNuvio(p) },
-                onSearch = { menuTarget = null; onOpenNuvioSearch() },
+                onSearch = { menuTarget = null; LiveTvSearchBridge.liveOnly.value = true; onOpenNuvioSearch() },
                 onRefresh = { menuTarget = null; viewModel.refresh() },
                 onSettings = { menuTarget = null; onOpenSettings() }
             )
@@ -1299,8 +1300,17 @@ private fun GuideHeader(
             .padding(start = 64.dp, end = 32.dp, top = if (small) 12.dp else 20.dp, bottom = if (small) 4.dp else 6.dp),
         horizontalArrangement = Arrangement.spacedBy(if (small) 16.dp else 20.dp)
     ) {
+        // Posters off: just the channel logo, in a logo-shaped space (not a poster box).
+        if (settings.showProgramDetails && channel != null && !settings.showPosters) {
+            Box(
+                modifier = Modifier.width(if (small) 96.dp else 130.dp).fillMaxHeight(),
+                contentAlignment = Alignment.Center
+            ) {
+                ChannelLogo(channel.logo, if (small) 46.dp else 64.dp)
+            }
+        }
         // Poster of the highlighted show (channel logo when there isn't one).
-        if (settings.showProgramDetails && channel != null) {
+        if (settings.showProgramDetails && channel != null && settings.showPosters) {
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
@@ -2048,7 +2058,6 @@ private fun ChannelContextMenu(
             item { MenuItem("Copy channel…", onClick = onCopy) }
             if (isCopyHere) item { MenuItem("Remove copy from this group", onClick = onRemoveCopy) }
             item { MenuItem("Hide group \"${ch.group}\"", onClick = onHideGroup) }
-            item { MenuItem("Search", onClick = onSearch) }
             item { MenuItem("Update playlists & EPG", onClick = onRefresh) }
             item { MenuItem("Live TV settings", onClick = onSettings) }
         }
@@ -2279,7 +2288,8 @@ private fun EpgSidePanel(
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(vertical = 4.dp)
         ) {
-            itemsIndexed(rows, key = { _, r -> r.source.sourceId + "|" + r.entry.id }) { index, r ->
+            // Some guides list the same channel id twice: index keeps the keys unique.
+            itemsIndexed(rows, key = { i, r -> r.source.sourceId + "|" + r.entry.id + "|" + i }) { index, r ->
                 val selected = current != null && current.sourceId == r.source.sourceId && current.xmltvId == r.entry.id
                 EpgPanelRow(
                     row = r,

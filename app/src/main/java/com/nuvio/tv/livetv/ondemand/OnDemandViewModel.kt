@@ -9,6 +9,7 @@ import com.nuvio.tv.livetv.model.LiveUserState
 import com.nuvio.tv.livetv.parental.ParentalControls
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -41,13 +42,14 @@ data class OnDemandUiState(
     val items: List<VodItem> = emptyList(),
     val loading: Boolean = true,
     val endReached: Boolean = false,
-    val query: String = ""
+    val query: String = "",
+    val sort: VodSort = VodSort.DEFAULT
 )
 
 /** Where selecting a title leads. */
 sealed interface OnDemandTarget {
     /** Found in one of your addon catalogs: open it on Nuvio's details page. */
-    data class Details(val itemId: String, val itemType: String, val addonBaseUrl: String?) : OnDemandTarget
+    data class Details(val itemId: String, val itemType: String, val addonBaseUrl: String?, val uid: String) : OnDemandTarget
     /** Not in your catalogs: show the provider's own details. */
     data class Provider(val item: VodItem) : OnDemandTarget
 }
@@ -74,7 +76,7 @@ class OnDemandViewModel @Inject constructor(
 
     private fun matchTitle(item: VodItem) = OnDemandDatabase.displayTitle(item.name)
 
-    private val _ui = MutableStateFlow(OnDemandUiState())
+    private val _ui = MutableStateFlow(OnDemandUiState(sort = lastSort))
     val ui: StateFlow<OnDemandUiState> = _ui.asStateFlow()
 
     val settings: StateFlow<LiveTvSettings> =
@@ -127,6 +129,13 @@ class OnDemandViewModel @Inject constructor(
     }
 
     fun refreshNow() = repository.refreshNow()
+
+    fun setSort(sort: VodSort) {
+        if (sort == _ui.value.sort) return
+        lastSort = sort
+        _ui.value = _ui.value.copy(sort = sort)
+        loadItems(reset = true)
+    }
 
     // ------------------------------------------------------------------ locks and hiding
 
@@ -182,15 +191,23 @@ class OnDemandViewModel @Inject constructor(
 
     suspend fun targetFor(item: VodItem): OnDemandTarget {
         val type = if (item.kind == VodKind.SERIES) "series" else "movie"
-        val hit = resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year)
-        // One TMDB call per title you open (remembered), to confirm the match or open by id.
-        val imdb = imdbFor(item)
+        // The catalog search and the TMDB id lookup run at the same time, and neither may hold
+        // the screen up for long: past a few seconds we open with whatever we have.
+        val (hit, imdb) = kotlinx.coroutines.coroutineScope {
+            val idJob = async { kotlinx.coroutines.withTimeoutOrNull(3_000) { imdbFor(item) } }
+            val hitJob = async {
+                kotlinx.coroutines.withTimeoutOrNull(4_000) {
+                    resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year, urgent = true)
+                }
+            }
+            hitJob.await() to idJob.await()
+        }
         return when {
             hit != null && (imdb == null || hit.meta.imdbId == imdb || hit.meta.id == imdb) ->
-                OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl)
+                OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl, item.uid)
             // Known by id: Nuvio opens it with your own metadata addons.
-            imdb != null -> OnDemandTarget.Details(imdb, type, null)
-            hit != null -> OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl)
+            imdb != null -> OnDemandTarget.Details(imdb, type, null, item.uid)
+            hit != null -> OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl, item.uid)
             else -> OnDemandTarget.Provider(item)
         }
     }
@@ -237,9 +254,9 @@ class OnDemandViewModel @Inject constructor(
         loadJob = viewModelScope.launch {
             val section = state.sections.firstOrNull { it.key == state.selectedKey } ?: OnDemandSection.All
             val page = when {
-                state.query.isNotBlank() -> repository.search(state.kind, state.query, excluded())
-                section is OnDemandSection.Category -> repository.items(state.kind, section.category, emptySet(), false, PAGE, offset)
-                else -> repository.items(state.kind, null, excluded(), section == OnDemandSection.Recent, PAGE, offset)
+                state.query.isNotBlank() -> repository.search(state.kind, state.query, excluded(), state.sort)
+                section is OnDemandSection.Category -> repository.items(state.kind, section.category, emptySet(), false, PAGE, offset, state.sort)
+                else -> repository.items(state.kind, null, excluded(), section == OnDemandSection.Recent, PAGE, offset, state.sort)
             }
             val cur = _ui.value
             _ui.value = cur.copy(
@@ -251,6 +268,8 @@ class OnDemandViewModel @Inject constructor(
     }
 
     private companion object {
+        /** The sort you picked, kept while the app is open. */
+        @Volatile var lastSort: VodSort = VodSort.DEFAULT
         const val PAGE = 120
         const val WEEK_MS = 7L * 24 * 60 * 60 * 1000
     }

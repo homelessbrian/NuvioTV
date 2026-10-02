@@ -260,7 +260,7 @@ class LiveTvViewModel @Inject constructor(
             groupId in lockedIds -> emptyList()
             groupId.startsWith(ChannelGroup.CUSTOM_PREFIX) ->
                 sorted(user.customGroups.firstOrNull { it.id == groupId }?.channelKeys?.mapNotNull { byKey[it] }.orEmpty())
-            else -> ordered(groupId, groupChannels(groupId))
+            else -> ordered(groupId, groupChannels(groupId)).distinctBy { it.key }
         }
         // TiviMate's number override: 1, 2, 3… in the order the group shows them.
         val list = if (s.sequentialNumbers && groupId != ChannelGroup.SEARCH) {
@@ -520,7 +520,8 @@ class LiveTvViewModel @Inject constructor(
         programTitle: String,
         program: EpgProgram? = null,
         channel: LiveChannel? = null
-    ): String? = posterResolver.posterFor(
+    ): String? = if (!settings.value.showPosters) null // "Show posters" off: logo only, no lookups
+    else posterResolver.posterFor(
         programTitle,
         com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(program, channel),
         com.nuvio.tv.livetv.data.LiveTvPosterResolver.Clues(

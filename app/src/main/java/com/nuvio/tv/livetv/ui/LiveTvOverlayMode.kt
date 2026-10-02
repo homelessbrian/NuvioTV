@@ -114,6 +114,13 @@ internal fun LiveTvOverlayMode(
     }
 
     val focusedChannel = channels.getOrNull(chIndex)
+    // The schedule preview and show details follow the highlight once it settles, not on
+    // every step while scrolling (that redrew both panels many times a second).
+    var settledChannel by remember { mutableStateOf(focusedChannel) }
+    LaunchedEffect(focusedChannel?.key) {
+        if (settledChannel != null) delay(200)
+        settledChannel = focusedChannel
+    }
 
     // ---- schedule of one channel, grouped by day
     val schedule: List<ScheduleRow> = remember(scheduleChannel, programs) {
@@ -253,7 +260,7 @@ internal fun LiveTvOverlayMode(
                 OverlayLevel.CHANNELS -> {
                     ChannelsPanel(ui.groups.firstOrNull { it.id == ui.selectedGroupId }?.title ?: "Channels",
                         channels, chIndex, focused = true, playback.channelKey, programs, now, user.favorites, settings.showChannelNumbers, settings.showChannelLogos)
-                    focusedChannel?.let { SchedulePreview(it, programs[it.key].orEmpty(), now, use24h) }
+                    settledChannel?.let { SchedulePreview(it, programs[it.key].orEmpty(), now, use24h) }
                 }
                 OverlayLevel.SCHEDULE, OverlayLevel.DATES -> scheduleChannel?.let { ch ->
                     SchedulePanel(ch, schedule, rowIndex, focused = level == OverlayLevel.SCHEDULE, playback.channelKey, now, use24h)
@@ -264,7 +271,7 @@ internal fun LiveTvOverlayMode(
 
         // Details of the highlighted show, top right.
         val card: EpgProgram? = when (level) {
-            OverlayLevel.CHANNELS -> focusedChannel?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } }
+            OverlayLevel.CHANNELS -> settledChannel?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } }
             OverlayLevel.SCHEDULE, OverlayLevel.DATES -> focusedShow?.program
             OverlayLevel.GROUPS -> null
         }
@@ -381,6 +388,12 @@ private fun ChannelsPanel(
 ) {
     val state = rememberLazyListState(initialFirstVisibleItemIndex = (index - 3).coerceAtLeast(0))
     keepVisible(state, index)
+    var restingIndex by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(index) {
+        restingIndex = -1
+        delay(900)
+        restingIndex = index
+    }
     Column(modifier = Modifier.width(300.dp).fillMaxHeight().background(PanelDark)) {
         PanelHeader { LiveText(title, size = 17.sp, weight = FontWeight.SemiBold) }
         LazyColumn(state = state, modifier = Modifier.fillMaxSize()) {
@@ -410,7 +423,7 @@ private fun ChannelsPanel(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            LiveText(ch.name, color = colors.text, size = 15.sp, modifier = Modifier.weight(1f, fill = false), marquee = isFocused)
+                            LiveText(ch.name, color = colors.text, size = 15.sp, modifier = Modifier.weight(1f, fill = false), marquee = isFocused && i == restingIndex)
                             if (ch.catchup != null) {
                                 Spacer(Modifier.width(4.dp))
                                 Icon(androidx.compose.material.icons.Icons.Default.History, contentDescription = "Catch-up", tint = if (onSolid) Color.White else NuvioTheme.colors.TextSecondary, modifier = Modifier.size(13.dp))
@@ -424,7 +437,7 @@ private fun ChannelsPanel(
                                 else -> accent
                             },
                             size = 13.sp,
-                            marquee = isFocused
+                            marquee = isFocused && i == restingIndex
                         )
                         if (p != null) {
                             Spacer(Modifier.height(3.dp))
