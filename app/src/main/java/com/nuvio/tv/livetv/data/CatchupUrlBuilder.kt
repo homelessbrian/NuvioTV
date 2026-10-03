@@ -26,7 +26,9 @@ object CatchupUrlBuilder {
         stopMs: Long,
         nowMs: Long = System.currentTimeMillis(),
         /** Xtream: ask for HLS (.m3u8) instead of TS. */
-        preferHls: Boolean = false
+        preferHls: Boolean = false,
+        /** Xtream: the server's time zone (catch-up times are in server time). */
+        serverTimezone: String? = null
     ): String? {
         val start = startMs / 1000
         val end = stopMs / 1000
@@ -44,7 +46,7 @@ object CatchupUrlBuilder {
             }
             "shift", "timeshift" -> shift(liveUrl, start, now)
             "flussonic", "flussonic-hls", "flussonic-ts", "fs" -> flussonic(liveUrl, start, duration)
-            "xc", "xtream" -> xtream(liveUrl, startMs, duration, preferHls)
+            "xc", "xtream" -> xtream(liveUrl, startMs, duration, preferHls, serverTimezone)
             else -> catchup.source?.let { fill(it, start, end, now, duration) }
         }
     }
@@ -68,7 +70,7 @@ object CatchupUrlBuilder {
         }
     }
 
-    private fun xtream(url: String, startMs: Long, duration: Long, preferHls: Boolean): String? {
+    private fun xtream(url: String, startMs: Long, duration: Long, preferHls: Boolean, serverTimezone: String?): String? {
         // http://host:port/(live/)?user/pass/id(.ext)
         val m = Regex("""^(https?://[^/]+)/(?:live/)?([^/]+)/([^/]+)/(\d+)(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
             .find(url) ?: return null
@@ -76,6 +78,7 @@ object CatchupUrlBuilder {
         // HLS (.m3u8) replays come with a length, so the seek bar and skipping work properly.
         val ext = if (preferHls) ".m3u8" else m.groupValues[5].ifEmpty { ".ts" }
         val fmt = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US)
+        serverTimezone?.takeIf { it.isNotBlank() }?.let { fmt.timeZone = java.util.TimeZone.getTimeZone(it) }
         val minutes = (duration / 60).coerceAtLeast(1)
         return "$host/timeshift/$user/$pass/$minutes/${fmt.format(Date(startMs))}/$id$ext"
     }

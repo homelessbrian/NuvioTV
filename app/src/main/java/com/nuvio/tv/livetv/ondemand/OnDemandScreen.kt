@@ -99,6 +99,8 @@ fun OnDemandScreen(
     val gridStateHolder = remember { androidx.compose.runtime.mutableStateOf<androidx.compose.foundation.lazy.grid.LazyGridState?>(null) }
 
     var searchOpen by remember { mutableStateOf(false) }
+    var sortOpen by remember { mutableStateOf(false) }
+    val sortButton = remember { FocusRequester() }
     var sectionMenu by remember { mutableStateOf<OnDemandSection?>(null) }
     var pinFor by remember { mutableStateOf<OnDemandSection?>(null) }
     var pinError by remember { mutableStateOf(false) }
@@ -144,6 +146,12 @@ fun OnDemandScreen(
             Pill("Movies${if (ui.movieCount > 0) " · ${ui.movieCount}" else ""}", ui.kind == VodKind.MOVIE) { viewModel.selectKind(VodKind.MOVIE) }
             Pill("Series${if (ui.seriesCount > 0) " · ${ui.seriesCount}" else ""}", ui.kind == VodKind.SERIES) { viewModel.selectKind(VodKind.SERIES) }
             Pill(if (ui.query.isNotBlank()) "Search: ${ui.query}" else "Search", ui.query.isNotBlank(), icon = true) { searchOpen = true }
+            // Categories or genres for the list on the left (when the provider sends genres).
+            if (ui.hasGenres) {
+                Pill(if (ui.byGenre) "By genre" else "By category", ui.byGenre) { viewModel.toggleGenres() }
+            }
+            // Sort by: one compact control; OK opens the list of orders.
+            Pill("Sort by: ${ui.sort.label}  ▾", ui.sort != VodSort.DEFAULT, focusRequester = sortButton) { sortOpen = true }
             Spacer(Modifier.weight(1f))
             status.message?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 12.sp) }
         }
@@ -208,9 +216,11 @@ fun OnDemandScreen(
                         OnDemandSection.All -> if (ui.kind == VodKind.MOVIE) "All movies" else "All series"
                         OnDemandSection.Recent -> "Recently added"
                         is OnDemandSection.Category -> section.category.name
+                        is OnDemandSection.Genre -> section.name
                     }
                     val sub = (section as? OnDemandSection.Category)?.playlistName
                     val count = (section as? OnDemandSection.Category)?.category?.count
+                        ?: (section as? OnDemandSection.Genre)?.count
                     // (reading [unlocked] here keeps the lock icons up to date after a PIN is entered)
                     val locked = visibilityList == null && unlocked.size >= 0 && viewModel.isLocked(section)
                     CategoryRow(
@@ -229,7 +239,7 @@ fun OnDemandScreen(
                         },
                         onFocused = { focusedKey = section.key },
                         onClick = { if (visibilityList == null) openSection(section) },
-                        onLongClick = { if (visibilityList == null) sectionMenu = section }
+                        onLongClick = { if (visibilityList == null && section !is OnDemandSection.Genre) sectionMenu = section }
                     )
                 }
             }
@@ -277,15 +287,6 @@ fun OnDemandScreen(
                         maxLines = 3
                     )
                     else -> Column(Modifier.fillMaxSize()) {
-                      // Sort bar for the list on screen.
-                      LazyRow(
-                          horizontalArrangement = Arrangement.spacedBy(8.dp),
-                          modifier = Modifier.padding(bottom = 10.dp)
-                      ) {
-                          items(VodSort.values().toList()) { option ->
-                              Pill(option.label, option == ui.sort) { viewModel.setSort(option) }
-                          }
-                      }
                       LazyVerticalGrid(
                         state = gridState,
                         modifier = Modifier.focusRequester(gridFocus),
@@ -384,6 +385,14 @@ fun OnDemandScreen(
         )
     }
 
+    if (sortOpen) {
+        SortMenu(
+            current = ui.sort,
+            onPick = { viewModel.setSort(it); sortOpen = false; scope.launch { delay(60); runCatching { sortButton.requestFocus() } } },
+            onDismiss = { sortOpen = false; scope.launch { delay(60); runCatching { sortButton.requestFocus() } } }
+        )
+    }
+
     opening?.let { item ->
         androidx.activity.compose.BackHandler { openJob?.cancel(); opening = null }
         // Take focus so presses can't reach the posters underneath while opening.
@@ -432,12 +441,12 @@ fun OnDemandScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Pill(label: String, selected: Boolean, icon: Boolean = false, onClick: () -> Unit) {
+private fun Pill(label: String, selected: Boolean, icon: Boolean = false, focusRequester: FocusRequester? = null, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val colors = liveCellColors(focused = focused, idle = if (selected) guideSurfaceVariant() else Color.Transparent)
     val shape = RoundedCornerShape(50)
     Row(
-        modifier = Modifier
+        modifier = (if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clip(shape)
             .background(colors.background)
             .border(1.dp, if (focused) colors.border else NuvioTheme.colors.Border, shape)
@@ -635,4 +644,49 @@ private fun ProviderDetailDialog(
         }
     }
     LaunchedEffect(info) { delay(80); runCatching { first.requestFocus() } }
+}
+
+/** "Sort by" drop-down: the orders, with a check by the current one. */
+@Composable
+private fun SortMenu(current: VodSort, onPick: (VodSort) -> Unit, onDismiss: () -> Unit) {
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
+    val currentFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { delay(40); runCatching { currentFocus.requestFocus() } }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.35f)),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(top = 64.dp, end = 24.dp)
+                .width(240.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(NuvioTheme.colors.BackgroundElevated)
+                .border(1.dp, NuvioTheme.colors.Border, RoundedCornerShape(12.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            LiveText("Sort by", color = NuvioTheme.colors.TextSecondary, size = 12.sp, modifier = Modifier.padding(start = 10.dp, top = 4.dp, bottom = 6.dp))
+            val options = VodSort.values()
+            options.forEachIndexed { i, option ->
+                // Keep the highlight inside the menu (no wandering onto the posters behind it).
+                Box(
+                    modifier = Modifier.onPreviewKeyEvent { e ->
+                        e.type == KeyEventType.KeyDown && (
+                            e.key == Key.DirectionLeft || e.key == Key.DirectionRight ||
+                                (e.key == Key.DirectionUp && i == 0) ||
+                                (e.key == Key.DirectionDown && i == options.lastIndex)
+                            )
+                    }
+                ) {
+                    MenuItem(
+                        (if (option == current) "✓  " else "     ") + option.label,
+                        if (option == current) Modifier.focusRequester(currentFocus) else Modifier
+                    ) { onPick(option) }
+                }
+            }
+        }
+    }
 }

@@ -244,6 +244,11 @@ class LiveTvPlaybackController @Inject constructor(
         p.playWhenReady = true
     }
 
+    /** Catch-up moved on to the next show: update the title shown. */
+    fun setCatchupTitle(title: String) {
+        if (_state.value.catchupTitle != null) _state.value = _state.value.copy(catchupTitle = title)
+    }
+
     fun retry() {
         val ch = currentChannel ?: return
         val url = currentUrl

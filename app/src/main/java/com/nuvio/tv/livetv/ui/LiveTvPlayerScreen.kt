@@ -152,6 +152,7 @@ fun LiveTvPlayerScreen(
     var positionMs by remember { mutableStateOf(0L) }
     LaunchedEffect(playback.catchupTitle, catchupSession) {
         while (playback.catchupTitle != null && catchupSession != null) {
+            viewModel.followCatchup()
             viewModel.catchupPositionMs()?.let { positionMs = it }
             delay(500)
         }

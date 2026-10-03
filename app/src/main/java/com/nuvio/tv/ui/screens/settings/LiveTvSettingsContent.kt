@@ -552,6 +552,8 @@ fun LiveTvSettingsContent(
                     subtitle = "Movies and series from Xtream logins with \"Include movies & series\" on. Change it per login under Playlists → Edit."
                 ) {
                     if (onDemandStatus.loading) LoadingLine(onDemandStatus.message ?: "Importing movies and series…")
+                    val genreProgress by viewModel.onDemand.genreProgress.collectAsStateWithLifecycle()
+                    genreProgress?.let { LoadingLine(it) }
                     SettingsActionRow(
                         "Update movies & series now",
                         onDemandStatus.message ?: if (onDemandHas) "Imported. Updates once a day by itself." else "Nothing imported yet",

@@ -785,6 +785,14 @@ class LiveTvRepository @Inject constructor(
             allowedFormats = info.optJSONObject("user_info")?.optJSONArray("allowed_output_formats")?.let { arr ->
                 (0 until arr.length()).map { arr.optString(it).lowercase() }.toSet()
             } ?: emptySet()
+            // Catch-up links are in the server's local time. When the server's time zone differs
+            // from the TV's (say the server runs on UTC and the TV is in London in summer),
+            // every replay started an hour off. Remember the server's zone for catch-up.
+            info.optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }?.let { tz ->
+                if (tz != pl.serverTimezone) {
+                    prefs.updatePlaylists { list -> list.map { if (it.id == pl.id) it.copy(serverTimezone = tz) else it } }
+                }
+            }
             info.optJSONObject("user_info")?.let { ui ->
                 if (ui.optString("auth") == "0") throw XtreamLoginError("Login failed: check the username and password")
                 val status = ui.optString("status")

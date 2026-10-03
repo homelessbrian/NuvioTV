@@ -434,13 +434,48 @@ class LiveTvViewModel @Inject constructor(
         if (!CatchupUrlBuilder.isAvailable(catchup, program.startMs, now)) return false
         val shift = settings.value.epgOffsetMinutes * 60_000L
         val start = program.startMs + offsetMs.coerceAtLeast(0)
+        // Ask for more than the show itself: up to 3 hours past its end (but not past what has
+        // aired). Shows that run over keep playing, and the next show follows on seamlessly.
+        val windowStop = maxOf(program.stopMs, minOf(now - 30_000, program.stopMs + CONTINUE_MS))
         val url = CatchupUrlBuilder.build(
-            channel.url, catchup, start - shift, program.stopMs - shift, now,
-            preferHls = settings.value.catchupPreferHls
+            channel.url, catchup, start - shift, windowStop - shift, now,
+            preferHls = settings.value.catchupPreferHls,
+            serverTimezone = playlistZones.value[channel.sourceId]
         ) ?: return false
         playback.play(channel, overrideUrl = url, catchupTitle = program.title, fallback = CatchupUrlBuilder.tsFallback(url))
         _catchup.value = CatchupSession(channel, program, offsetMs.coerceAtLeast(0))
         return true
+    }
+
+    /** Playlist id -> Xtream server time zone (catch-up links are in server time). */
+    private val playlistZones: StateFlow<Map<String, String>> = prefs.playlists
+        .map { l -> l.associate { it.id to it.serverTimezone } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * Catch-up carries on into the next show: when playback passes the end of the show it
+     * started on, the title, info and seek bar move to the next show; if the replay window
+     * ends, a new one starts from that point.
+     */
+    fun followCatchup() {
+        val s = _catchup.value ?: return
+        val pos = catchupPositionMs() ?: return
+        val absolute = s.program.startMs + pos
+        val list = programs.value[s.channel.key].orEmpty()
+        val p = playback.player
+        if (p?.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+            // The window we asked for ran out: start a new one right where we are.
+            val at = list.firstOrNull { absolute >= it.startMs && absolute < it.stopMs } ?: return
+            if (absolute < System.currentTimeMillis() - 60_000) playCatchup(s.channel, at, absolute - at.startMs)
+            return
+        }
+        if (absolute < s.program.stopMs) return
+        val next = list.firstOrNull { absolute >= it.startMs && absolute < it.stopMs }
+            ?: list.firstOrNull { it.startMs >= s.program.stopMs }
+            ?: return
+        if (next.startMs == s.program.startMs) return
+        _catchup.value = CatchupSession(s.channel, next, s.program.startMs + s.baseOffsetMs - next.startMs)
+        playback.setCatchupTitle(next.title)
     }
 
     /** True if the show on now can be restarted from its beginning (the channel has catch-up). */
@@ -674,3 +709,6 @@ class LiveTvViewModel @Inject constructor(
             ?.let { c -> displayChannels.value.firstOrNull { it.key == c.key } ?: c }
     }
 }
+
+/** How far past the end of a show a catch-up replay keeps going (into the next shows). */
+private const val CONTINUE_MS = 3L * 60 * 60 * 1000

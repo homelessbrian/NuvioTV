@@ -31,6 +31,10 @@ sealed interface OnDemandSection {
     data class Category(val category: VodCategory, val playlistName: String?) : OnDemandSection {
         override val key: String get() = category.uid
     }
+    /** Browsing by genre (from the provider's genre tags). */
+    data class Genre(val name: String, val count: Int) : OnDemandSection {
+        override val key: String get() = "genre:$name"
+    }
 }
 
 data class OnDemandUiState(
@@ -43,7 +47,11 @@ data class OnDemandUiState(
     val loading: Boolean = true,
     val endReached: Boolean = false,
     val query: String = "",
-    val sort: VodSort = VodSort.DEFAULT
+    val sort: VodSort = VodSort.DEFAULT,
+    /** Left list shows genres instead of the provider's categories. */
+    val byGenre: Boolean = false,
+    /** Whether this kind has genre information at all (shows the Genres switch). */
+    val hasGenres: Boolean = false
 )
 
 /** Where selecting a title leads. */
@@ -96,6 +104,8 @@ class OnDemandViewModel @Inject constructor(
     init {
         repository.start()
         viewModelScope.launch { repository.version.collect { reload() } }
+        // New genres from the background fill: refresh the lists, keep your place.
+        viewModelScope.launch { repository.genreUpdates.drop(1).collect { refreshGenres() } }
         // Only reload when hidden or locked categories actually change (not on every saved setting).
         viewModelScope.launch {
             prefs.userState.map { it.vodHiddenCategories to it.lockedGroups }
@@ -129,6 +139,28 @@ class OnDemandViewModel @Inject constructor(
     }
 
     fun refreshNow() = repository.refreshNow()
+
+    /** New genres arrived: update the genre list (and counts) without reloading the posters. */
+    private fun refreshGenres() {
+        viewModelScope.launch {
+            val genres = repository.genres(_ui.value.kind)
+            val cur = _ui.value
+            if (!cur.byGenre) {
+                _ui.value = cur.copy(hasGenres = genres.isNotEmpty())
+                return@launch
+            }
+            val head = cur.sections.filter { it !is OnDemandSection.Genre }
+            _ui.value = cur.copy(
+                hasGenres = genres.isNotEmpty(),
+                sections = head + genres.map { (g, n) -> OnDemandSection.Genre(g, n) }
+            )
+        }
+    }
+
+    fun toggleGenres() {
+        _ui.value = _ui.value.copy(byGenre = !_ui.value.byGenre, selectedKey = OnDemandSection.All.key)
+        reload()
+    }
 
     fun setSort(sort: VodSort) {
         if (sort == _ui.value.sort) return
@@ -184,6 +216,8 @@ class OnDemandViewModel @Inject constructor(
         // once, when you actually open a title.
         val hit = resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year)
         repository.cachePoster(item, hit?.meta?.poster)
+        // The same match carries the title's genres: keep them for "By genre".
+        hit?.meta?.genres?.takeIf { it.isNotEmpty() }?.let { repository.fillGenres(item, it) }
         val poster = hit?.meta?.poster ?: item.icon
         if (poster != null) posters[item.uid] = poster
         return poster
@@ -202,6 +236,7 @@ class OnDemandViewModel @Inject constructor(
             }
             hitJob.await() to idJob.await()
         }
+        hit?.meta?.genres?.takeIf { it.isNotEmpty() }?.let { repository.fillGenres(item, it) }
         return when {
             hit != null && (imdb == null || hit.meta.imdbId == imdb || hit.meta.id == imdb) ->
                 OnDemandTarget.Details(hit.meta.id, hit.meta.rawType.ifBlank { hit.type }, hit.addonBaseUrl, item.uid)
@@ -226,7 +261,10 @@ class OnDemandViewModel @Inject constructor(
             val multi = all.map { it.playlistId }.distinct().size > 1
             val visible = all.filter { it.uid !in user.vodHiddenCategories }
                 .map { OnDemandSection.Category(it, if (multi) names[it.playlistId] else null) }
-            val sections = listOf(OnDemandSection.All, OnDemandSection.Recent) + visible
+            val genres = repository.genres(kind)
+            val byGenre = _ui.value.byGenre && genres.isNotEmpty()
+            val sections = listOf(OnDemandSection.All, OnDemandSection.Recent) +
+                if (byGenre) genres.map { (g, n) -> OnDemandSection.Genre(g, n) } else visible
             val s = prefs.settings.first()
             excludedNow = user.vodHiddenCategories + all.filter { c ->
                 ParentalControls.isLocked("vod:${c.uid}", c.name, s, user.lockedGroups)
@@ -236,6 +274,8 @@ class OnDemandViewModel @Inject constructor(
             _ui.value = _ui.value.copy(
                 sections = sections,
                 selectedKey = selected,
+                byGenre = byGenre,
+                hasGenres = genres.isNotEmpty(),
                 movieCount = runCatching { repository.categories(VodKind.MOVIE).sumOf { it.count } }.getOrDefault(0),
                 seriesCount = runCatching { repository.categories(VodKind.SERIES).sumOf { it.count } }.getOrDefault(0)
             )
@@ -256,6 +296,7 @@ class OnDemandViewModel @Inject constructor(
             val page = when {
                 state.query.isNotBlank() -> repository.search(state.kind, state.query, excluded(), state.sort)
                 section is OnDemandSection.Category -> repository.items(state.kind, section.category, emptySet(), false, PAGE, offset, state.sort)
+                section is OnDemandSection.Genre -> repository.items(state.kind, null, excluded(), false, PAGE, offset, state.sort, genre = section.name)
                 else -> repository.items(state.kind, null, excluded(), section == OnDemandSection.Recent, PAGE, offset, state.sort)
             }
             val cur = _ui.value

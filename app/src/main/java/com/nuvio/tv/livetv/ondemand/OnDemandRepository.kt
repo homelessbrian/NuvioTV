@@ -9,6 +9,7 @@ import com.nuvio.tv.livetv.model.PlaylistSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -117,6 +118,16 @@ class OnDemandRepository @Inject constructor(
     /** Goes up after every import, so screens reload. */
     val version: StateFlow<Int> = _version.asStateFlow()
 
+    private val _genreUpdates = MutableStateFlow(0)
+    /** Goes up as background genre lookups add genres (the genre list refreshes, nothing else). */
+    val genreUpdates: StateFlow<Int> = _genreUpdates.asStateFlow()
+
+    private val _genreProgress = MutableStateFlow<String?>(null)
+    /** "Adding genres… 12,400 to go", shown in settings while it runs. */
+    val genreProgress: StateFlow<String?> = _genreProgress.asStateFlow()
+
+    private var genreJob: kotlinx.coroutines.Job? = null
+
     private val _status = MutableStateFlow(OnDemandStatus())
     val status: StateFlow<OnDemandStatus> = _status.asStateFlow()
 
@@ -140,6 +151,7 @@ class OnDemandRepository @Inject constructor(
                 _version.value++
             }
             refresh(force = false)
+            startGenreFill()
         }
     }
 
@@ -181,6 +193,58 @@ class OnDemandRepository @Inject constructor(
         _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
         // A problem stays visible in Settings → Live TV → On Demand (no more silent failures).
         _status.value = OnDemandStatus(false, lastProblem)
+        startGenreFill()
+    }
+
+    /**
+     * Fills in genres in the background, straight after an import, from TMDB, using the TMDB
+     * id most providers include for each title. Newest titles first, about 20 a second (well
+     * within TMDB's limits), and each title only once. Runs while the app is open; picks up
+     * where it left off next time.
+     */
+    fun startGenreFill() {
+        if (genreJob?.isActive == true) return
+        val key = com.nuvio.tv.BuildConfig.TMDB_API_KEY
+        if (key.isBlank()) return
+        genreJob = scope.launch {
+            var added = 0
+            while (true) {
+                val batch = runCatching { db.needingGenres(40) }.getOrDefault(emptyList())
+                if (batch.isEmpty()) break
+                kotlinx.coroutines.coroutineScope {
+                    batch.chunked(10).map { part ->
+                        async {
+                            for (item in part) {
+                                val genres = tmdbGenres(item, key)
+                                runCatching { db.setGenre(item, genres.orEmpty()) }
+                                if (!genres.isNullOrBlank()) added++
+                                kotlinx.coroutines.delay(200) // 4 at a time × 5/s ≈ 20 a second
+                            }
+                        }
+                    }.forEach { it.await() }
+                }
+                val left = runCatching { db.countNeedingGenres() }.getOrDefault(0)
+                _genreProgress.value = if (left > 0) "Adding genres… ${"%,d".format(left)} to go" else null
+                if (added >= 400) { _genreUpdates.value++; added = 0 }
+            }
+            _genreProgress.value = null
+            _genreUpdates.value++
+        }
+    }
+
+    /** "Action, Comedy" from TMDB for one title, "" if it has none, null if TMDB didn't answer. */
+    private fun tmdbGenres(item: VodItem, key: String): String? {
+        val id = item.tmdbId?.toIntOrNull() ?: return ""
+        val path = if (item.kind == VodKind.SERIES) "tv" else "movie"
+        return runCatching {
+            val text = getText("https://api.themoviedb.org/3/$path/$id?api_key=$key&language=en-US", "")
+            val arr = JSONObject(text).optJSONArray("genres") ?: return@runCatching ""
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("name")?.takeIf { n -> n.isNotBlank() } }
+                .joinToString(", ")
+        }.getOrElse { e ->
+            // 404: TMDB doesn't know this id, so don't try again. Anything else: try next time.
+            if (e.message?.contains("404") == true) "" else null
+        }
     }
 
     private fun importKind(pl: PlaylistSource, kind: VodKind) {
@@ -302,7 +366,8 @@ class OnDemandRepository @Inject constructor(
                             tmdbId = (f["tmdb"] ?: f["tmdb_id"])?.takeIf { it.isNotBlank() && it != "0" },
                             year = yearOf(f["year"] ?: f["releaseDate"] ?: f["release_date"] ?: name),
                             rating = f["rating"]?.takeIf { it.isNotBlank() && it != "0" },
-                            addedSec = (f["added"] ?: f["last_modified"])?.toLongOrNull() ?: 0L
+                            addedSec = (f["added"] ?: f["last_modified"])?.toLongOrNull() ?: 0L,
+                            genre = f["genre"]?.trim()?.takeIf { it.isNotBlank() }
                         )
                     )
                     onItem()
@@ -333,10 +398,21 @@ class OnDemandRepository @Inject constructor(
         runCatching { db.categories(kind) }.getOrDefault(emptyList())
     }
 
-    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int, sort: VodSort = VodSort.DEFAULT) =
+    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int, sort: VodSort = VodSort.DEFAULT, genre: String? = null) =
         withContext(Dispatchers.IO) {
-            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset, sort) }.getOrDefault(emptyList())
+            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset, sort, genre) }.getOrDefault(emptyList())
         }
+
+    /** Genres from your addons' metadata, saved for titles the provider sent none for. */
+    suspend fun fillGenres(item: VodItem, genres: List<String>) = withContext(Dispatchers.IO) {
+        val text = genres.map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString(", ")
+        if (text.isNotBlank() && item.genre.isNullOrBlank()) runCatching { db.fillGenre(item, text) }
+        Unit
+    }
+
+    suspend fun genres(kind: VodKind): List<Pair<String, Int>> = withContext(Dispatchers.IO) {
+        runCatching { db.genres(kind) }.getOrDefault(emptyList())
+    }
 
     suspend fun search(kind: VodKind, text: String, hidden: Set<String>, sort: VodSort = VodSort.DEFAULT) = withContext(Dispatchers.IO) {
         runCatching { db.search(kind, text, hidden, sort = sort) }.getOrDefault(emptyList())
@@ -456,6 +532,24 @@ class OnDemandRepository @Inject constructor(
                 .filter { year == null || it.year == null || kotlin.math.abs(it.year - year) <= 1 }
                 .forEach { candidates.putIfAbsent(it.uid, it) }
         }
+        // Titles without an IMDb / TMDB match on either side (like "Big Brother UK 2023"):
+        // a looser match on the core title, with the year deciding between versions.
+        if (candidates.isEmpty() && title.isNotBlank()) {
+            val core = OnDemandDatabase.coreKey(title)
+            if (core.length >= 3) {
+                val loose = runCatching { db.search(kind, OnDemandDatabase.displayTitle(title), emptySet(), limit = 80) }
+                    .getOrDefault(emptyList())
+                    .filter { OnDemandDatabase.coreKey(it.name) == core }
+                val withYears = loose.map { it to (it.year ?: OnDemandDatabase.yearInTitle(it.name)) }
+                val picked = when {
+                    year == null -> withYears.map { it.first }
+                    withYears.any { it.second != null && kotlin.math.abs(it.second!! - year) <= 1 } ->
+                        withYears.filter { it.second != null && kotlin.math.abs(it.second!! - year) <= 1 }.map { it.first }
+                    else -> withYears.filter { it.second == null }.map { it.first }
+                }
+                picked.forEach { candidates.putIfAbsent(it.uid, it) }
+            }
+        }
         // Titles in categories you hid (or that are locked) never show up in Nuvio.
         val user = prefs.userState.first()
         val settings = prefs.settings.first()
@@ -477,7 +571,13 @@ class OnDemandRepository @Inject constructor(
                     title = item.name, year = item.year, providerName = pl.name, ext = item.ext ?: "mp4", tech = tech
                 )
             } else if (season != null && episode != null) {
-                val ep = info(item)?.episodes?.firstOrNull { it.season == season && it.episode == episode } ?: continue
+                val episodes = info(item)?.episodes.orEmpty()
+                // Exact season and episode; if the provider lists the show as a single season
+                // (common for daily shows), match the episode number alone.
+                val ep = episodes.firstOrNull { it.season == season && it.episode == episode }
+                    ?: episodes.takeIf { list -> list.map { it.season }.distinct().size == 1 }
+                        ?.firstOrNull { it.episode == episode }
+                    ?: continue
                 out += OnDemandSource(
                     "${pl.name} · S${season}E${episode} · ${ep.ext.uppercase()}", ep.url, headers,
                     title = item.name, year = item.year, providerName = pl.name, ext = ep.ext, tech = ep.tech,

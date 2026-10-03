@@ -23,7 +23,9 @@ data class PlaylistSource(
     /** Xtream: import the live TV channels (off = On Demand only). */
     val importLive: Boolean = true,
     /** Xtream live stream format: "auto" (what the provider allows), "ts" or "m3u8". */
-    val streamFormat: String = "auto"
+    val streamFormat: String = "auto",
+    /** Xtream: the server's time zone (from its account info), used for catch-up times. */
+    val serverTimezone: String = ""
 ) {
     val isXtream: Boolean get() = xtreamServer.isNotBlank()
 

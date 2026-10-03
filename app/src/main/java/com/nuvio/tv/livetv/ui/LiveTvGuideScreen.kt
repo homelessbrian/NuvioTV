@@ -150,6 +150,7 @@ fun LiveTvGuideScreen(
     // you pick a group or go back to the channels, giving the guide the full width.
     var groupsOpen by remember { mutableStateOf(false) }
     var leftTapPending by remember { mutableStateOf(false) }
+    var lastHeldLeftAt by remember { mutableStateOf(0L) }
     // "Browse by channel name": the highlight is on the channel name itself (OK plays it,
     // Right steps into its shows, Left opens the groups).
     var nameFocus by remember { mutableStateOf(false) }
@@ -525,19 +526,55 @@ fun LiveTvGuideScreen(
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
             .onPreviewKeyEvent { e ->
+                val playingNow = playback.channelKey != null
+                fun returnToPlaying() {
+                    // Back to the group the playing channel was watched in (not the group you were
+                    // browsing), so Up/Down and overlay mode work from the channel you're on.
+                    scope.launch {
+                        viewModel.channelByKey(playback.channelKey)?.let { playing ->
+                            viewModel.groupToShow(playing)?.let { viewModel.selectGroup(it) }
+                        }
+                        goFullscreen()
+                    }
+                }
+                // Play/Pause on the remote: straight to full screen on what's playing. Works on
+                // every remote, including ones that can't report a held Back button.
+                if (e.type == KeyEventType.KeyDown && playingNow && e.nativeKeyEvent.repeatCount == 0 &&
+                    (e.key == Key.MediaPlayPause || e.key == Key.MediaPlay)
+                ) {
+                    returnToPlaying()
+                    return@onPreviewKeyEvent true
+                }
                 // Hold Back: straight back to full screen on what's playing.
                 if (e.key != Key.Back) return@onPreviewKeyEvent false
-                if (e.type == KeyEventType.KeyUp) { backPressStartedHere = false; return@onPreviewKeyEvent false }
-                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                val held = e.nativeKeyEvent.isLongPress || e.nativeKeyEvent.repeatCount >= 1
-                if (!held) { backPressStartedHere = true; return@onPreviewKeyEvent false }
-                if (!backPressStartedHere || playback.channelKey == null) return@onPreviewKeyEvent false
-                backPressStartedHere = false
-                // Nuvio then swallows the rest of this Back press (so letting go doesn't
-                // also count as a normal Back and leave full screen again).
-                hostActivity?.longPressBackHeld?.value = true
-                goFullscreen()
-                true
+                val native = e.nativeKeyEvent
+                when {
+                    e.type == KeyEventType.KeyDown && native.repeatCount == 0 && !native.isLongPress -> {
+                        backPressStartedHere = true
+                        false
+                    }
+                    // Remotes that repeat a held button: act while it's still held.
+                    e.type == KeyEventType.KeyDown -> {
+                        if (!backPressStartedHere || !playingNow) return@onPreviewKeyEvent false
+                        backPressStartedHere = false
+                        // Nuvio then swallows the rest of this Back press (so letting go doesn't
+                        // also count as a normal Back and leave full screen again).
+                        hostActivity?.longPressBackHeld?.value = true
+                        returnToPlaying()
+                        true
+                    }
+                    // Remotes that don't repeat (many Fire TV and Google TV remotes): a press
+                    // held for half a second or more counts as "hold", judged on release.
+                    e.type == KeyEventType.KeyUp -> {
+                        val started = backPressStartedHere
+                        backPressStartedHere = false
+                        if (started && playingNow && native.eventTime - native.downTime >= 500) {
+                            returnToPlaying()
+                            true
+                        } else false
+                    }
+                    else -> false
+                }
             }
     ) {
         Column(
@@ -789,7 +826,11 @@ fun LiveTvGuideScreen(
                                     if (event.type == KeyEventType.KeyDown) {
                                         if (!held && isAtNow()) {
                                             leftTapPending = true
+                                        } else if (held && event.nativeKeyEvent.eventTime - lastHeldLeftAt < HELD_STEP_MS) {
+                                            // Holding Left: step back at a readable pace (about 3
+                                            // shows a second), not every repeat the remote sends.
                                         } else {
+                                            if (held) lastHeldLeftAt = event.nativeKeyEvent.eventTime
                                             leftTapPending = false
                                             moveLeft(held)
                                         }
@@ -2665,3 +2706,6 @@ internal fun LiveTextField(
         )
     }
 }
+
+/** While Left is held in the guide, one step back through earlier shows per this many ms. */
+private const val HELD_STEP_MS = 320L

@@ -718,7 +718,8 @@ class LiveTvPreferences @Inject constructor(
                     // Logins from before On Demand existed stay off until you switch them on.
                     importVod = o.optBoolean("importVod", false),
                     importLive = o.optBoolean("importLive", true),
-                    streamFormat = o.optString("streamFormat").ifBlank { "auto" }
+                    streamFormat = o.optString("streamFormat").ifBlank { "auto" },
+                    serverTimezone = o.optString("serverTimezone")
                 )
             }
         }.getOrDefault(emptyList())
@@ -739,6 +740,7 @@ class LiveTvPreferences @Inject constructor(
                     .put("importVod", s.importVod)
                     .put("importLive", s.importLive)
                     .put("streamFormat", s.streamFormat)
+                    .put("serverTimezone", s.serverTimezone)
             )
         }
         return arr.toString()

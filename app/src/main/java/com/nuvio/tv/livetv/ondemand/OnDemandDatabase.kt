@@ -18,8 +18,7 @@ enum class VodSort(val label: String) {
     NAME_ZA("Z–A"),
     NEWEST("Newest"),
     OLDEST("Oldest"),
-    RECENTLY_ADDED("Recently added"),
-    TOP_RATED("Top rated");
+    RECENTLY_ADDED("Recently added");
 
     internal fun orderBy(fallback: String): String = when (this) {
         DEFAULT -> fallback
@@ -28,7 +27,6 @@ enum class VodSort(val label: String) {
         NEWEST -> "year IS NULL, year DESC, added DESC"
         OLDEST -> "year IS NULL, year ASC"
         RECENTLY_ADDED -> "added DESC"
-        TOP_RATED -> "rating IS NULL, CAST(rating AS REAL) DESC"
     }
 }
 
@@ -46,7 +44,9 @@ data class VodItem(
     val tmdbId: String?,
     val year: Int?,
     val rating: String?,
-    val addedSec: Long
+    val addedSec: Long,
+    /** The provider's genres, as sent ("Action, Comedy"). Not every provider includes them. */
+    val genre: String? = null
 ) {
     val uid: String get() = "${kind.key}:$playlistId:$id"
 }
@@ -69,7 +69,7 @@ data class VodCategory(
  */
 @Singleton
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 4) {
+    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -77,6 +77,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
                 pl TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL,
                 name TEXT NOT NULL, norm TEXT NOT NULL, icon TEXT, cat TEXT NOT NULL,
                 ext TEXT, tmdb TEXT, year INTEGER, rating TEXT, added INTEGER NOT NULL DEFAULT 0,
+                genre TEXT,
                 PRIMARY KEY (pl, kind, id))"""
         )
         db.execSQL("CREATE INDEX items_cat ON items(kind, pl, cat)")
@@ -104,6 +105,8 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
             createPrefixTable(db)
             db.execSQL("DELETE FROM posters")
         }
+        // Version 5: genres (filled in by the next import).
+        if (oldVersion < 5) runCatching { db.execSQL("ALTER TABLE items ADD COLUMN genre TEXT") }
     }
 
     private fun createPrefixTable(db: SQLiteDatabase) {
@@ -200,7 +203,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
                 }, SQLiteDatabase.CONFLICT_REPLACE)
             }
             val stmt = db.compileStatement(
-                "INSERT OR REPLACE INTO items (pl, kind, id, name, norm, icon, cat, ext, tmdb, year, rating, added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                "INSERT OR REPLACE INTO items (pl, kind, id, name, norm, icon, cat, ext, tmdb, year, rating, added, genre) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )
             items.forEach { it ->
                 stmt.clearBindings()
@@ -216,6 +219,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
                 it.year?.let { v -> stmt.bindLong(10, v.toLong()) } ?: stmt.bindNull(10)
                 it.rating?.let { v -> stmt.bindString(11, v) } ?: stmt.bindNull(11)
                 stmt.bindLong(12, it.addedSec)
+                it.genre?.let { v -> stmt.bindString(13, v) } ?: stmt.bindNull(13)
                 stmt.executeInsert()
                 count++
             }
@@ -240,6 +244,47 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
     }
 
     // ------------------------------------------------------------------ reading
+
+    /** Titles still waiting for genres that have a TMDB id, newest first. */
+    fun needingGenres(limit: Int): List<VodItem> =
+        query("SELECT * FROM items WHERE genre IS NULL AND tmdb IS NOT NULL ORDER BY added DESC LIMIT $limit", arrayListOf())
+
+    fun countNeedingGenres(): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM items WHERE genre IS NULL AND tmdb IS NOT NULL", null).use {
+            if (it.moveToFirst()) it.getInt(0) else 0
+        }
+
+    /** Marks a title as looked up even when no genres were found (so it isn't retried). */
+    fun setGenre(item: VodItem, genres: String) {
+        writableDatabase.execSQL(
+            "UPDATE items SET genre = ? WHERE pl = ? AND kind = ? AND id = ? AND genre IS NULL",
+            arrayOf(genres, item.playlistId, item.kind.key, item.id)
+        )
+    }
+
+    /** Fills in genres from your addons' match, when the provider didn't send any. */
+    fun fillGenre(item: VodItem, genres: String) {
+        writableDatabase.execSQL(
+            "UPDATE items SET genre = ? WHERE pl = ? AND kind = ? AND id = ? AND (genre IS NULL OR genre = '')",
+            arrayOf(genres, item.playlistId, item.kind.key, item.id)
+        )
+    }
+
+    /** Genres across a kind's catalog, most common first ("Action" 1,204…). */
+    fun genres(kind: VodKind): List<Pair<String, Int>> {
+        val counts = HashMap<String, Int>()
+        val display = HashMap<String, String>()
+        readableDatabase.rawQuery("SELECT genre FROM items WHERE kind = ? AND genre IS NOT NULL AND genre != ''", arrayOf(kind.key)).use { c ->
+            while (c.moveToNext()) {
+                c.getString(0).split(',', '/', '|', '&', ';').map { it.trim() }.filter { it.length in 2..30 }.distinct().forEach { g ->
+                    val k = g.lowercase()
+                    counts[k] = (counts[k] ?: 0) + 1
+                    display.putIfAbsent(k, g.replaceFirstChar { ch -> ch.uppercase() })
+                }
+            }
+        }
+        return counts.entries.filter { it.value >= 3 }.sortedByDescending { it.value }.map { display[it.key]!! to it.value }
+    }
 
     fun hasAny(): Boolean =
         readableDatabase.rawQuery("SELECT 1 FROM items LIMIT 1", null).use { it.moveToFirst() }
@@ -272,10 +317,15 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         newestFirst: Boolean,
         limit: Int,
         offset: Int,
-        sort: VodSort = VodSort.DEFAULT
+        sort: VodSort = VodSort.DEFAULT,
+        genre: String? = null
     ): List<VodItem> {
         val where = StringBuilder("kind = ?")
         val args = arrayListOf(kind.key)
+        if (genre != null) {
+            where.append(" AND genre LIKE ?")
+            args += "%$genre%"
+        }
         if (category != null) {
             where.append(" AND pl = ? AND cat = ?")
             args += category.playlistId; args += category.id
@@ -327,7 +377,8 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         tmdbId = getStringOrNull("tmdb"),
         year = getColumnIndexOrThrow("year").let { i -> if (isNull(i)) null else getInt(i) },
         rating = getStringOrNull("rating"),
-        addedSec = getLong(getColumnIndexOrThrow("added"))
+        addedSec = getLong(getColumnIndexOrThrow("added")),
+        genre = getColumnIndex("genre").takeIf { it >= 0 }?.let { i -> if (isNull(i)) null else getString(i) }
     )
 
     private fun Cursor.getStringOrNull(col: String): String? =
@@ -390,6 +441,25 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
                 .trim()
             return t.ifBlank { s.trim() }
         }
+
+        private val TRAILING_EXTRA = setOf("uk", "us", "usa", "au", "aus", "ca", "nz", "ie", "gb", "de", "fr", "es", "it", "nl")
+
+        /**
+         * The core of a title for loose matching: cleaned of provider tags, with a trailing year
+         * or country tag dropped. "EN - Big Brother UK 2023" and "Big Brother (2023)" both
+         * become "bigbrother" (the year is then compared separately).
+         */
+        fun coreKey(name: String): String {
+            val words = normalizeWords(displayTitle(name)).toMutableList()
+            while (words.size > 1) {
+                val last = words.last()
+                if (last in TRAILING_EXTRA || Regex("""(19|20)\d{2}""").matches(last)) words.removeAt(words.lastIndex) else break
+            }
+            return words.joinToString("")
+        }
+
+        /** A year in a provider title ("Big Brother UK 2023"), if any. */
+        fun yearInTitle(name: String): Int? = Regex("""\b(19|20)\d{2}\b""").findAll(name).lastOrNull()?.value?.toIntOrNull()
 
         fun normalizeWords(s: String): List<String> =
             s.replace(PREFIX, "")
