@@ -144,6 +144,8 @@ internal fun LiveTvOverlayMode(
         level = OverlayLevel.SCHEDULE
     }
     // Land on what's on now when a schedule opens.
+    // The full schedule (all days) for the channel being browsed, from the guide database.
+    LaunchedEffect(scheduleChannel?.key) { scheduleChannel?.let { viewModel.ensureChannelSchedule(it.key) } }
     LaunchedEffect(scheduleChannel, schedule.size) {
         if (schedule.isEmpty()) return@LaunchedEffect
         val live = schedule.indexOfFirst { it is ScheduleRow.Show && now >= it.program.startMs && now < it.program.stopMs }

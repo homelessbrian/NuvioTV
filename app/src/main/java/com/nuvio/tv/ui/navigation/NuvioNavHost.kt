@@ -16,6 +16,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -221,6 +222,23 @@ private fun PlaybackNavHost(
             androidx.compose.runtime.LaunchedEffect(Unit) {
                 com.nuvio.tv.livetv.startup.LiveTvStartup.maybeOpenLiveTv(context, navController)
             }
+            // Live TV fork: what the home screen's Live TV row opens.
+            val openLiveTv = {
+                navController.navigate(Screen.LiveTv.route) {
+                    popUpTo(navController.graph.startDestinationId) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+            androidx.compose.runtime.CompositionLocalProvider(
+                com.nuvio.tv.livetv.home.LocalLiveTvHomeActions provides com.nuvio.tv.livetv.home.LiveTvHomeActions(
+                    openFullscreen = {
+                        openLiveTv()
+                        navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }
+                    },
+                    openGuide = { openLiveTv() }
+                )
+            ) {
             HomeScreen(
                 onNavigateToDetail = { itemId, itemType, addonBaseUrl ->
                     val heroBackdrop = HeroBackdropState.consumeAndClear()
@@ -265,6 +283,7 @@ private fun PlaybackNavHost(
                     navController.navigate(Screen.FolderDetail.createRoute(collectionId, folderId))
                 }
             )
+            }
         }
 
         composable(
@@ -327,6 +346,17 @@ private fun PlaybackNavHost(
             val playOnLoad = detailArgs?.getString("playOnLoad")?.toBooleanStrictOrNull() == true
             val manualSelection = detailArgs?.getString("manualSelection")?.toBooleanStrictOrNull() == true
             val onDemandScope = androidx.compose.runtime.rememberCoroutineScope()
+            var onDemandVersions by androidx.compose.runtime.remember {
+                androidx.compose.runtime.mutableStateOf<List<com.nuvio.tv.livetv.ondemand.OnDemandRepository.Version>?>(null)
+            }
+            var onDemandPlayVersion by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<(String) -> Unit>({}) }
+            onDemandVersions?.let { versions ->
+                com.nuvio.tv.livetv.ondemand.OnDemandVersionPicker(
+                    versions = versions,
+                    onPick = { v -> onDemandVersions = null; onDemandPlayVersion(v.item.uid) },
+                    onDismiss = { onDemandVersions = null }
+                )
+            }
             DetailChildHost(parentNavController = navController) { childNav ->
             MetaDetailsScreen(
                 returnFocusSeason = returnFocusSeason,
@@ -393,9 +423,9 @@ private fun PlaybackNavHost(
                         )
                     )
                   }
-                  if (onDemandUid == null) openStreams() else onDemandScope.launch {
+                  fun playVersion(uid: String) = onDemandScope.launch {
                       val resolved = runCatching {
-                          com.nuvio.tv.livetv.ondemand.OnDemandPlay.resolve(context, onDemandUid, season, episode)
+                          com.nuvio.tv.livetv.ondemand.OnDemandPlay.resolve(context, uid, season, episode)
                       }.getOrNull()
                       if (resolved == null) openStreams()
                       else navController.navigate(
@@ -408,6 +438,16 @@ private fun PlaybackNavHost(
                               addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME
                           )
                       )
+                  }
+                  if (onDemandUid == null) openStreams() else onDemandScope.launch {
+                      // Several copies (4K / HD, other providers): ask which one.
+                      val versions = runCatching {
+                          com.nuvio.tv.livetv.ondemand.OnDemandPlay.versions(context, onDemandUid)
+                      }.getOrDefault(emptyList())
+                      if (versions.size > 1) {
+                          onDemandVersions = versions
+                          onDemandPlayVersion = { uid -> playVersion(uid) }
+                      } else playVersion(onDemandUid)
                   }
                 },
                 onPlayManuallyClick = { videoId, contentType, contentId, title, poster, backdrop, logo, season, episode, episodeName, genres, year, runtime, contentLanguage ->

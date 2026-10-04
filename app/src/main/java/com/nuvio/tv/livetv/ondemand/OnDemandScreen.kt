@@ -524,9 +524,11 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onFocused: (
     var focused by remember { mutableStateOf(false) }
     // The provider's image straight away; your addon's poster once the card has been on
     // screen for a moment (scrolling past doesn't trigger lookups).
+    var title by remember(item.uid) { mutableStateOf(OnDemandDatabase.displayTitle(item.name)) }
     val poster by produceState<String?>(initialValue = item.icon, item.uid) {
         delay(600)
         viewModel.posterFor(item)?.let { value = it }
+        title = viewModel.nameFor(item)
     }
     val shape = RoundedCornerShape(8.dp)
     Column(
@@ -554,8 +556,9 @@ private fun PosterCard(item: VodItem, viewModel: OnDemandViewModel, onFocused: (
             }
         }
         Spacer(Modifier.height(4.dp))
-        LiveText(OnDemandDatabase.displayTitle(item.name), size = 11.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
-        item.year?.let { LiveText(it.toString(), size = 9.sp, color = NuvioTheme.colors.TextTertiary) }
+        LiveText(title, size = 11.sp, color = if (focused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary, marquee = focused)
+        val meta = listOfNotNull(item.year?.toString(), if (item.copies > 1) "${item.copies} versions" else null).joinToString(" · ")
+        if (meta.isNotBlank()) LiveText(meta, size = 9.sp, color = NuvioTheme.colors.TextTertiary)
     }
 }
 
@@ -612,7 +615,24 @@ private fun ProviderDetailDialog(
                 LiveText(info?.plot ?: if (info == null) "Loading details…" else "", color = NuvioTheme.colors.TextSecondary, size = 13.sp, maxLines = 6)
                 Spacer(Modifier.height(12.dp))
                 if (item.kind == VodKind.MOVIE) {
-                    MenuItem("Play", Modifier.focusRequester(first)) {
+                    val versions by produceState<List<OnDemandRepository.Version>>(initialValue = emptyList(), item.uid) {
+                        value = viewModel.versions(item)
+                    }
+                    if (versions.size > 1) {
+                        // Several copies: pick one (best quality first).
+                        LiveText("Choose a version", color = NuvioTheme.colors.TextSecondary, size = 13.sp)
+                        Spacer(Modifier.height(4.dp))
+                        LazyColumn(modifier = Modifier.heightIn(max = 220.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            items(versions, key = { it.item.uid }) { v ->
+                                MenuItem(
+                                    "Play · ${v.label}" + if (v.detail.isNotBlank()) "  —  ${v.detail}" else "",
+                                    if (v == versions.first()) Modifier.focusRequester(first) else Modifier
+                                ) {
+                                    scope.launch { viewModel.movieUrl(v.item)?.let { onPlay(it, item.name, poster) } }
+                                }
+                            }
+                        }
+                    } else MenuItem("Play", Modifier.focusRequester(first)) {
                         scope.launch { viewModel.movieUrl(item)?.let { onPlay(it, item.name, poster) } }
                     }
                 } else {

@@ -104,6 +104,17 @@ class LiveTvPreferences @Inject constructor(
         val showNowLine = booleanPreferencesKey("show_now_line")
         val audioPassthrough = booleanPreferencesKey("audio_passthrough")
         val showPosters = booleanPreferencesKey("show_posters")
+        val vodMergeDuplicates = booleanPreferencesKey("vod_merge_duplicates")
+        val homeRowEnabled = booleanPreferencesKey("home_row_enabled")
+        val homeRowAboveContinueWatching = booleanPreferencesKey("home_row_above_cw")
+        val homeRowSource = stringPreferencesKey("home_row_source")
+        val homeRowTitle = stringPreferencesKey("home_row_title")
+        val homeRowSort = stringPreferencesKey("home_row_sort")
+        val homeRowLimit = intPreferencesKey("home_row_limit")
+        val homeRowHidePlaceholders = booleanPreferencesKey("home_row_hide_placeholders")
+        val homeRowOpensGuide = booleanPreferencesKey("home_row_opens_guide")
+        val homeRowShowNext = booleanPreferencesKey("home_row_show_next")
+        val homeRowCompact = booleanPreferencesKey("home_row_compact")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -187,7 +198,18 @@ class LiveTvPreferences @Inject constructor(
             showPlaylistInInfo = p[Keys.showPlaylistInInfo] ?: d.showPlaylistInInfo,
             showNowLine = p[Keys.showNowLine] ?: d.showNowLine,
             audioPassthrough = p[Keys.audioPassthrough] ?: d.audioPassthrough,
-            showPosters = p[Keys.showPosters] ?: d.showPosters
+            showPosters = p[Keys.showPosters] ?: d.showPosters,
+            vodMergeDuplicates = p[Keys.vodMergeDuplicates] ?: d.vodMergeDuplicates,
+            homeRowEnabled = p[Keys.homeRowEnabled] ?: d.homeRowEnabled,
+            homeRowAboveContinueWatching = p[Keys.homeRowAboveContinueWatching] ?: d.homeRowAboveContinueWatching,
+            homeRowSource = p[Keys.homeRowSource] ?: d.homeRowSource,
+            homeRowTitle = p[Keys.homeRowTitle] ?: d.homeRowTitle,
+            homeRowSort = p[Keys.homeRowSort] ?: d.homeRowSort,
+            homeRowLimit = p[Keys.homeRowLimit] ?: d.homeRowLimit,
+            homeRowHidePlaceholders = p[Keys.homeRowHidePlaceholders] ?: d.homeRowHidePlaceholders,
+            homeRowOpensGuide = p[Keys.homeRowOpensGuide] ?: d.homeRowOpensGuide,
+            homeRowShowNext = p[Keys.homeRowShowNext] ?: d.homeRowShowNext,
+            homeRowCompact = p[Keys.homeRowCompact] ?: d.homeRowCompact
         )
     }.distinctUntilChanged()
 
@@ -290,6 +312,17 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.showNowLine] = s.showNowLine
         p[Keys.audioPassthrough] = s.audioPassthrough
         p[Keys.showPosters] = s.showPosters
+        p[Keys.vodMergeDuplicates] = s.vodMergeDuplicates
+        p[Keys.homeRowEnabled] = s.homeRowEnabled
+        p[Keys.homeRowAboveContinueWatching] = s.homeRowAboveContinueWatching
+        p[Keys.homeRowSource] = s.homeRowSource
+        p[Keys.homeRowTitle] = s.homeRowTitle
+        p[Keys.homeRowSort] = s.homeRowSort
+        p[Keys.homeRowLimit] = s.homeRowLimit
+        p[Keys.homeRowHidePlaceholders] = s.homeRowHidePlaceholders
+        p[Keys.homeRowOpensGuide] = s.homeRowOpensGuide
+        p[Keys.homeRowShowNext] = s.homeRowShowNext
+        p[Keys.homeRowCompact] = s.homeRowCompact
     }
 
     // ---------- channel management ----------

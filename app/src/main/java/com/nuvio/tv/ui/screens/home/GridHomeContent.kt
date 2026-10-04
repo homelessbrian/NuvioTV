@@ -117,6 +117,8 @@ fun GridHomeContent(
     onFocusedRowKeyChanged: (String?) -> Unit = {},
     scrollToTopTrigger: Int = 0
 ) {
+    // Live TV fork: where the Live TV row goes (null = hidden).
+    val liveTvRowAbove = com.nuvio.tv.livetv.home.rememberLiveTvHomeRowPosition()
     val gridState = rememberLazyGridState(
         initialFirstVisibleItemIndex = gridFocusState.verticalScrollIndex,
         initialFirstVisibleItemScrollOffset = gridFocusState.verticalScrollOffset
@@ -509,6 +511,10 @@ fun GridHomeContent(
             }
 
             // Emit Continue Watching as a dedicated item
+            // Live TV fork: the Live TV row, above Continue watching (when set so).
+            if (liveTvRowAbove == true) item(key = "live_tv_home_above", span = { GridItemSpan(maxLineSpan) }, contentType = "live_tv_home") {
+                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true)
+            }
             if (continueWatchingItems.isNotEmpty()) {
                 item(
                     key = "continue_watching",
@@ -574,6 +580,10 @@ fun GridHomeContent(
             }
 
             // Emit Upcoming section if SPLIT_UPCOMING mode has upcoming items
+            // Live TV fork: the Live TV row, below Continue watching (the default).
+            if (liveTvRowAbove == false) item(key = "live_tv_home_below", span = { GridItemSpan(maxLineSpan) }, contentType = "live_tv_home") {
+                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+            }
             if (uiState.continueWatchingEnabled && uiState.upcomingItems.isNotEmpty()) {
                 item(
                     key = "upcoming_section",

@@ -92,6 +92,8 @@ private sealed interface LiveDialog {
     data object StartPage : LiveDialog
     data object NameEditor : LiveDialog
     data object PosterTest : LiveDialog
+    data object HomeRowSource : LiveDialog
+    data object HomeRowTitle : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
     data class ConfirmDeleteEpg(val source: EpgSource) : LiveDialog
 }
@@ -524,6 +526,77 @@ fun LiveTvSettingsContent(
             // ------------------------------------------------------------ Nuvio
             item(key = "nuvio") {
                 SettingsGroupCard(title = "In the rest of Nuvio") {
+                    // ---- Live TV row on the home screen
+                    SettingsToggleRow(
+                        "Live TV row on the home screen",
+                        "Your favorite channels with what's on now, near Continue watching",
+                        s.homeRowEnabled,
+                        { update { it.copy(homeRowEnabled = !it.homeRowEnabled) } }
+                    )
+                    if (s.homeRowEnabled) {
+                        SettingsActionRow(
+                            title = "Home row position",
+                            subtitle = "Where it sits on the home screen",
+                            value = if (s.homeRowAboveContinueWatching) "Above Continue watching" else "Below Continue watching",
+                            onClick = { update { it.copy(homeRowAboveContinueWatching = !it.homeRowAboveContinueWatching) } }
+                        )
+                        SettingsActionRow(
+                            title = "Home row shows",
+                            subtitle = "Favorites, Recently watched, or one of your own groups",
+                            value = when (s.homeRowSource) {
+                                "favorites", "" -> "Favorites"
+                                "recent" -> "Recently watched"
+                                else -> user.customGroups.firstOrNull { it.id == s.homeRowSource }?.name ?: "Favorites"
+                            },
+                            onClick = { dialog = LiveDialog.HomeRowSource }
+                        )
+                        SettingsActionRow(
+                            title = "Home row title",
+                            subtitle = "The name shown above the row",
+                            value = s.homeRowTitle.ifBlank { "Live TV" },
+                            onClick = { dialog = LiveDialog.HomeRowTitle }
+                        )
+                        SettingsActionRow(
+                            title = "Home row order",
+                            subtitle = "Your order, channel number, or the shows ending soonest first",
+                            value = when (s.homeRowSort) { "number" -> "Channel number"; "ending" -> "Ending soonest"; else -> "Your order" },
+                            onClick = {
+                                update { st -> st.copy(homeRowSort = when (st.homeRowSort) { "yours" -> "number"; "number" -> "ending"; else -> "yours" }) }
+                            }
+                        )
+                        SettingsActionRow(
+                            title = "Home row channels",
+                            subtitle = "How many channels the row shows",
+                            value = if (s.homeRowLimit == 0) "All" else "${s.homeRowLimit}",
+                            onClick = {
+                                update { st -> st.copy(homeRowLimit = when (st.homeRowLimit) { 10 -> 20; 20 -> 40; 40 -> 0; else -> 10 }) }
+                            }
+                        )
+                        SettingsToggleRow(
+                            "Hide channels with no listings",
+                            "Leaves out channels showing only \"Programming\" or no information",
+                            s.homeRowHidePlaceholders,
+                            { update { it.copy(homeRowHidePlaceholders = !it.homeRowHidePlaceholders) } }
+                        )
+                        SettingsToggleRow(
+                            "OK opens the guide",
+                            "Off: OK plays the channel full screen. On: opens the Live TV guide with the channel playing.",
+                            s.homeRowOpensGuide,
+                            { update { it.copy(homeRowOpensGuide = !it.homeRowOpensGuide) } }
+                        )
+                        SettingsToggleRow(
+                            "Show what's next",
+                            "A \"Next: 9:00 The News\" line on each card",
+                            s.homeRowShowNext,
+                            { update { it.copy(homeRowShowNext = !it.homeRowShowNext) } }
+                        )
+                        SettingsToggleRow(
+                            "Compact cards",
+                            "Just the logo and the show name",
+                            s.homeRowCompact,
+                            { update { it.copy(homeRowCompact = !it.homeRowCompact) } }
+                        )
+                    }
                     SettingsActionRow(
                         title = "Start page",
                         subtitle = "The page Nuvio opens on. Back still takes you to the menu.",
@@ -573,6 +646,12 @@ fun LiveTvSettingsContent(
                         "Adds your provider's copy to the end of Nuvio's stream list for movies and episodes. Auto-play never picks it.",
                         s.onDemandInStreams,
                         { update { it.copy(onDemandInStreams = !it.onDemandInStreams) } }
+                    )
+                    SettingsToggleRow(
+                        "Merge duplicates",
+                        "Shows each movie or series once, even when your provider lists several copies (other qualities, categories or providers). Play lets you pick the version.",
+                        s.vodMergeDuplicates,
+                        { update { it.copy(vodMergeDuplicates = !it.vodMergeDuplicates) } }
                     )
                     SettingsToggleRow(
                         "Use posters from my addons",
@@ -807,6 +886,25 @@ fun LiveTvSettingsContent(
             initial = "", hint = "PIN", confirmLabel = "Turn off", numeric = true,
             onDismiss = close,
             onConfirm = { if (it.trim() == s.parentalPin) { update { st -> st.copy(parentalPin = "") }; close() } else pinWrong = true }
+        )
+        LiveDialog.HomeRowSource -> SettingsSingleChoiceDialog(
+            title = "Home row shows",
+            options = buildList {
+                add(SettingsPickerOption("favorites", "Favorites"))
+                add(SettingsPickerOption("recent", "Recently watched"))
+                user.customGroups.forEach { add(SettingsPickerOption(it.id, it.name)) }
+            },
+            selectedValue = s.homeRowSource.ifBlank { "favorites" },
+            onOptionSelected = { v -> update { it.copy(homeRowSource = v) }; close() },
+            onDismiss = close
+        )
+        LiveDialog.HomeRowTitle -> TextInputDialog(
+            title = "Home row title",
+            initial = s.homeRowTitle,
+            hint = "Live TV",
+            confirmLabel = "Save",
+            onDismiss = close,
+            onConfirm = { t -> update { it.copy(homeRowTitle = t.trim()) }; close() }
         )
         LiveDialog.PosterTest -> {
             val result by viewModel.posterTest.collectAsStateWithLifecycle()

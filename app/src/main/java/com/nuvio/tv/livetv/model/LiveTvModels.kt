@@ -218,7 +218,30 @@ data class LiveTvSettings(
     /** Send Dolby / DTS audio untouched to the TV or speaker (off: the app decodes it). */
     val audioPassthrough: Boolean = true,
     /** Show posters for what's on; off: just the channel logo (no poster lookups at all). */
-    val showPosters: Boolean = true
+    val showPosters: Boolean = true,
+    /** On Demand: show each title once, even when the provider lists several copies. */
+    val vodMergeDuplicates: Boolean = true,
+    // ---- Live TV row on Nuvio's home screen
+    /** Show the Live TV row on the home screen at all. */
+    val homeRowEnabled: Boolean = true,
+    /** Above (true) or below (false) Continue watching. */
+    val homeRowAboveContinueWatching: Boolean = false,
+    /** What it shows: "favorites", "recent", or a group id (e.g. one of your own groups). */
+    val homeRowSource: String = "favorites",
+    /** Row title; empty = "Live TV". */
+    val homeRowTitle: String = "",
+    /** "yours" (as in the guide), "number" or "ending" (ending soonest first). */
+    val homeRowSort: String = "yours",
+    /** How many channels (0 = all). */
+    val homeRowLimit: Int = 20,
+    /** Leave out channels showing only "Programming" / no information. */
+    val homeRowHidePlaceholders: Boolean = true,
+    /** OK opens the guide on the channel instead of playing it full screen. */
+    val homeRowOpensGuide: Boolean = false,
+    /** A "Next: 9:00 The News" line on each card. */
+    val homeRowShowNext: Boolean = false,
+    /** Compact cards: logo and show name only. */
+    val homeRowCompact: Boolean = false
 )
 
 data class LiveUserState(

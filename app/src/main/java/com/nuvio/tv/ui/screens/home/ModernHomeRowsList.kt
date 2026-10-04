@@ -148,6 +148,8 @@ internal fun ModernHomeRowsList(
     blockLeftOnFirstExpandedItem: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    // Live TV fork: where the Live TV row goes (null = hidden).
+    val liveTvRowAbove = com.nuvio.tv.livetv.home.rememberLiveTvHomeRowPosition()
     // Unwrap StableRef wrappers for internal use (not passed to child composables)
     val focusedItemByRowMap = focusedItemByRow.value
     val rowListStatesMap = rowListStates.value
@@ -370,7 +372,12 @@ internal fun ModernHomeRowsList(
                 items = carouselRows.list,
                 key = { index, row -> "${row.key}_$index" },
                 contentType = { _, row -> row.apiType ?: "modern_home_row" }
-            ) { _, row ->
+            ) { rowIndex, row ->
+                // Live TV fork: the Live TV row sits with Continue watching (above or below it),
+                // or above the first row when there's no Continue watching.
+                val hasContinueWatching = carouselRows.list.any { it.key == MODERN_CONTINUE_WATCHING_ROW_KEY }
+                val liveTvHere = liveTvRowAbove != null &&
+                    (if (hasContinueWatching) row.key == MODERN_CONTINUE_WATCHING_ROW_KEY else rowIndex == 0)
                 val stableOnContinueWatchingOptions = remember(onContinueWatchingOptions) {
                     { item: ContinueWatchingItem -> onContinueWatchingOptions(item) }
                 }
@@ -422,6 +429,10 @@ internal fun ModernHomeRowsList(
                             }
                         }
                     }
+                }
+                androidx.compose.foundation.layout.Column {
+                if (liveTvHere && (liveTvRowAbove == true || !hasContinueWatching)) {
+                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = liveTvRowAbove == true)
                 }
                 ModernRowSection(
                     row = row,
@@ -479,6 +490,10 @@ internal fun ModernHomeRowsList(
                         StableRef(mutableMapOf())
                     }
                 )
+                if (liveTvHere && liveTvRowAbove == false && hasContinueWatching) {
+                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+                }
+                }
             }
         }
     }

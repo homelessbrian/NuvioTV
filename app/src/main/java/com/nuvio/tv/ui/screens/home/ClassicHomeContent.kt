@@ -110,6 +110,8 @@ fun ClassicHomeContent(
     scrollToTopTrigger: Int = 0,
     onRequestLazyCatalogLoad: (String) -> Unit = {}
 ) {
+    // Live TV fork: where the Live TV row goes (null = hidden).
+    val liveTvRowAbove = com.nuvio.tv.livetv.home.rememberLiveTvHomeRowPosition()
     val defaultBringIntoViewSpec = LocalBringIntoViewSpec.current
     val density = LocalDensity.current
     val classicCatalogPosterCardStyle = remember(posterCardStyle) {
@@ -618,6 +620,10 @@ fun ClassicHomeContent(
             }
         }
 
+        // Live TV fork: the Live TV row, above Continue watching (when set so).
+        if (liveTvRowAbove == true) item(key = "live_tv_home_above", contentType = "live_tv_home") {
+            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true)
+        }
         if (uiState.continueWatchingEnabled && uiState.continueWatchingItems.isNotEmpty()) {
             item(key = "continue_watching", contentType = "continue_watching") {
                 LaunchedEffect(cwPendingScrollToStart.intValue) {
@@ -698,6 +704,10 @@ fun ClassicHomeContent(
             }
         }
 
+        // Live TV fork: the Live TV row, below Continue watching (the default).
+        if (liveTvRowAbove == false) item(key = "live_tv_home_below", contentType = "live_tv_home") {
+            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+        }
         if (uiState.continueWatchingEnabled && uiState.upcomingItems.isNotEmpty()) {
             item(key = "upcoming_section", contentType = "upcoming_section") {
                 LaunchedEffect(upcomingPendingScrollToStart.intValue) {

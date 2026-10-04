@@ -8,6 +8,7 @@ import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.EpgSourceChannels
 import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveChannel
+import com.nuvio.tv.livetv.model.CatchupInfo
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.PlaylistSource
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -45,7 +46,8 @@ data class LiveTvStatus(
 @Singleton
 class LiveTvRepository @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val prefs: LiveTvPreferences
+    private val prefs: LiveTvPreferences,
+    private val guideDb: EpgDatabase
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
@@ -317,13 +319,98 @@ class LiveTvRepository @Inject constructor(
 
     private suspend fun rebuildLocked() {
         setStatus(loading = true, message = "Loading channels…")
-        buildChannels()
+        // The channel list as it was last read, when no playlist has changed since: Live TV
+        // (Favorites included) appears straight away instead of re-reading every playlist file.
+        if (!loadSavedChannels()) {
+            buildChannels()
+            saveChannels()
+        }
         val targets = collectEpgTargets()
         val settings = prefs.currentSettings()
         // The guide as it was last matched, if nothing it depends on has changed: the guide
         // fills in straight away instead of re-reading every guide file at each start.
-        if (!loadSavedGuide(settings, targets)) buildPrograms(settings, targets)
+        if (!loadGuideFromDb(settings, targets)) buildPrograms(settings, targets)
         _status.value = LiveTvStatus(loading = false, loadedOnce = true)
+    }
+
+    // ---------------------------------------------------------------- saved channel list
+
+    private val savedChannelsFile get() = File(baseDir, "channels_cache.bin")
+
+    /** Everything the channel list is built from; a different value means it must be re-read. */
+    private suspend fun channelsFingerprint(): String {
+        val sb = StringBuilder().append(CHANNELS_CACHE_VERSION).append('|')
+        prefs.currentPlaylists().filter { it.liveEnabled }.forEach { pl ->
+            val f = playlistFile(pl.id)
+            sb.append(pl.id).append(':').append(pl.name.hashCode()).append(':').append(pl.userAgent.hashCode())
+                .append(':').append(f.length()).append(':').append(f.lastModified()).append(',')
+        }
+        return sb.toString()
+    }
+
+    private suspend fun loadSavedChannels(): Boolean = withContext(Dispatchers.IO) {
+        val file = savedChannelsFile
+        if (!file.exists()) return@withContext false
+        val expected = channelsFingerprint()
+        runCatching {
+            java.io.DataInputStream(java.io.BufferedInputStream(java.util.zip.GZIPInputStream(file.inputStream()), 64 * 1024)).use { input ->
+                if (input.readUTF() != expected) return@withContext false
+                val epg = HashMap<String, List<String>>()
+                repeat(input.readInt()) {
+                    val id = input.readUTF()
+                    epg[id] = List(input.readInt()) { input.readUTF() }
+                }
+                val list = ArrayList<LiveChannel>(input.readInt().coerceAtLeast(0))
+                val count = list.let { input.readInt() }
+                repeat(count) {
+                    val key = input.readUTF()
+                    val sourceId = input.readUTF()
+                    val sourceName = input.readUTF()
+                    val name = input.readUTF()
+                    val tvgId = readOpt(input)
+                    val tvgName = readOpt(input)
+                    val logo = readOpt(input)
+                    val groupId = input.readUTF()
+                    val group = input.readUTF()
+                    val number = input.readInt()
+                    val url = input.readUTF()
+                    val headers = HashMap<String, String>().apply { repeat(input.readInt()) { put(input.readUTF(), input.readUTF()) } }
+                    val catchup = if (input.readBoolean()) CatchupInfo(input.readUTF(), readOpt(input), input.readInt()) else null
+                    list += LiveChannel(key, sourceId, sourceName, name, tvgId, tvgName, logo, groupId, group, number, url, headers, catchup)
+                }
+                embeddedEpgUrls.clear()
+                embeddedEpgUrls.putAll(epg)
+                _channels.value = list
+                true
+            }
+        }.getOrElse {
+            Log.w(TAG, "Saved channel list unreadable", it)
+            false
+        }
+    }
+
+    private suspend fun saveChannels() = withContext(Dispatchers.IO) {
+        val fingerprint = channelsFingerprint()
+        runCatching {
+            val tmp = File(baseDir, "channels_cache.tmp")
+            java.io.DataOutputStream(java.io.BufferedOutputStream(java.util.zip.GZIPOutputStream(tmp.outputStream()), 64 * 1024)).use { out ->
+                out.writeUTF(fingerprint)
+                out.writeInt(embeddedEpgUrls.size)
+                embeddedEpgUrls.forEach { (id, urls) -> out.writeUTF(id); out.writeInt(urls.size); urls.forEach { out.writeUTF(it) } }
+                val list = _channels.value
+                out.writeInt(list.size) // capacity hint
+                out.writeInt(list.size)
+                list.forEach { c ->
+                    out.writeUTF(c.key); out.writeUTF(c.sourceId); out.writeUTF(c.sourceName); out.writeUTF(c.name)
+                    writeOpt(out, c.tvgId); writeOpt(out, c.tvgName); writeOpt(out, c.logo)
+                    out.writeUTF(c.groupId); out.writeUTF(c.group); out.writeInt(c.number); out.writeUTF(c.url)
+                    out.writeInt(c.headers.size); c.headers.forEach { (k, v) -> out.writeUTF(k); out.writeUTF(v) }
+                    out.writeBoolean(c.catchup != null)
+                    c.catchup?.let { cu -> out.writeUTF(cu.type); writeOpt(out, cu.source); out.writeInt(cu.days) }
+                }
+            }
+            if (!tmp.renameTo(savedChannelsFile)) { tmp.copyTo(savedChannelsFile, overwrite = true); tmp.delete() }
+        }.onFailure { Log.w(TAG, "Couldn't save the channel list", it) }
     }
 
     // ---------------------------------------------------------------- saved guide
@@ -341,6 +428,78 @@ class LiveTvRepository @Inject constructor(
     }
 
     private val savedGuideFile get() = File(baseDir, "guide_cache.bin")
+
+    // ---------------------------------------------------------------- guide database
+
+    /** The time span currently loaded from the guide database (all of it if the database isn't used). */
+    @Volatile private var loadedFrom = Long.MAX_VALUE
+    @Volatile private var loadedTo = Long.MIN_VALUE
+    @Volatile private var guideInDb = false
+    private val rangeMutex = Mutex()
+
+    private fun defaultWindow(now: Long = System.currentTimeMillis()) = (now - 3 * HOUR) to (now + 12 * HOUR)
+
+    /**
+     * Opening Live TV: if the guide database matches the current guide and channels, read just
+     * the hours around now. Instant, however big the guide is.
+     */
+    private suspend fun loadGuideFromDb(settings: LiveTvSettings, targets: List<EpgTarget>): Boolean = withContext(Dispatchers.IO) {
+        if (_channels.value.isEmpty()) return@withContext false
+        runCatching { savedGuideFile.delete() } // the old single-file copy isn't used any more
+        val expected = guideFingerprint(settings, targets)
+        val stored = runCatching { guideDb.fingerprint() }.getOrNull()
+        if (stored != expected) return@withContext false
+        val (from, to) = defaultWindow()
+        val window = runCatching { guideDb.range(from, to) }.getOrNull() ?: return@withContext false
+        _programs.value = window
+        _autoMatches.value = runCatching { guideDb.autoMatches() }.getOrDefault(emptyMap())
+        loadedFrom = from
+        loadedTo = to
+        guideInDb = true
+        epgDetailsPending = true
+        true
+    }
+
+    /**
+     * Makes sure listings for [fromMs]..[toMs] are loaded (scrolling the guide ahead or back,
+     * catch-up). Reads only what's missing; does nothing when the database isn't in use.
+     */
+    fun ensureRange(fromMs: Long, toMs: Long) {
+        if (!guideInDb || (fromMs >= loadedFrom && toMs <= loadedTo)) return
+        scope.launch {
+            rangeMutex.withLock {
+                if (fromMs >= loadedFrom && toMs <= loadedTo) return@withLock
+                val from = minOf(fromMs, loadedFrom)
+                val to = maxOf(toMs, loadedTo)
+                val loaded = runCatching { guideDb.range(from, to) }.getOrNull() ?: return@withLock
+                // Keep any full single-channel schedules already loaded (overlay mode, catch-up).
+                val merged = HashMap<String, List<EpgProgram>>(loaded)
+                _programs.value.forEach { (ch, list) ->
+                    val fromDb = merged[ch]
+                    if (fromDb == null || list.size > fromDb.size) merged[ch] = list
+                }
+                _programs.value = merged
+                loadedFrom = from
+                loadedTo = to
+            }
+        }
+    }
+
+    /** One channel's whole schedule (overlay mode's days, catch-up following into later shows). */
+    fun ensureChannelSchedule(channelKey: String) {
+        if (!guideInDb) return
+        scope.launch {
+            val now = System.currentTimeMillis()
+            val settings = prefs.currentSettings()
+            val list = runCatching {
+                guideDb.channelRange(channelKey, now - settings.epgPastHours.coerceAtLeast(1) * HOUR,
+                    now + settings.epgFutureDays.coerceAtLeast(1) * 24 * HOUR)
+            }.getOrNull() ?: return@launch
+            val cur = _programs.value
+            if ((cur[channelKey]?.size ?: 0) >= list.size) return@launch
+            _programs.value = cur + (channelKey to list)
+        }
+    }
 
     /** Everything the matched guide depends on; a different value means the cache is stale. */
     private suspend fun guideFingerprint(settings: LiveTvSettings, targets: List<EpgTarget>): String {
@@ -638,7 +797,20 @@ class LiveTvRepository @Inject constructor(
         _epgSources.value = sourceLists
         _programs.value = result
         epgDetailsPending = false
-        saveGuide(guideFingerprint(settings, targets), result, auto)
+        // Store the whole guide in the database and keep only the hours around now in memory.
+        val stored = runCatching { guideDb.replaceAll(guideFingerprint(settings, targets), result, auto) }
+            .onFailure { Log.w(TAG, "Couldn't store the guide", it) }.isSuccess
+        if (stored) {
+            val (from, to) = defaultWindow()
+            _programs.value = result.mapValues { (_, l) -> l.filter { it.stopMs > from && it.startMs < to } }.filterValues { it.isNotEmpty() }
+            loadedFrom = from
+            loadedTo = to
+            guideInDb = true
+        } else {
+            guideInDb = false
+            loadedFrom = Long.MIN_VALUE
+            loadedTo = Long.MAX_VALUE
+        }
     }
 
     /**
@@ -939,6 +1111,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
+        private const val CHANNELS_CACHE_VERSION = 1
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(

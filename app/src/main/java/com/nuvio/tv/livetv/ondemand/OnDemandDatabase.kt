@@ -11,6 +11,12 @@ import javax.inject.Singleton
 
 enum class VodKind(val key: String) { MOVIE("movie"), SERIES("series") }
 
+/**
+ * What makes two catalog entries the same title: the TMDB id when there is one, otherwise the
+ * name and year. Used to show each title once ("Merge duplicates").
+ */
+private const val DUP_KEY = "CASE WHEN tmdb IS NOT NULL AND tmdb != '' THEN 't' || tmdb ELSE 'n' || norm || '|' || IFNULL(year, '') END"
+
 /** How On Demand lists are sorted (the bar above the posters). */
 enum class VodSort(val label: String) {
     DEFAULT("Default"),
@@ -46,7 +52,9 @@ data class VodItem(
     val rating: String?,
     val addedSec: Long,
     /** The provider's genres, as sent ("Action, Comedy"). Not every provider includes them. */
-    val genre: String? = null
+    val genre: String? = null,
+    /** With duplicates merged: how many copies of this title there are (qualities, providers). */
+    val copies: Int = 1
 ) {
     val uid: String get() = "${kind.key}:$playlistId:$id"
 }
@@ -69,7 +77,7 @@ data class VodCategory(
  */
 @Singleton
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 5) {
+    SQLiteOpenHelper(context, "livetv_on_demand.db", null, 6) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -107,6 +115,12 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         }
         // Version 5: genres (filled in by the next import).
         if (oldVersion < 5) runCatching { db.execSQL("ALTER TABLE items ADD COLUMN genre TEXT") }
+        // Version 6: the matched title's proper name; titles like "007 - A View to a Kill" are
+        // looked up again with the improved matching.
+        if (oldVersion < 6) {
+            runCatching { db.execSQL("ALTER TABLE posters ADD COLUMN title TEXT") }
+            db.execSQL("DELETE FROM posters WHERE poster = ''")
+        }
     }
 
     private fun createPrefixTable(db: SQLiteDatabase) {
@@ -160,7 +174,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
     }
 
     private fun createPosterTable(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS posters (uid TEXT PRIMARY KEY, poster TEXT, checked INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS posters (uid TEXT PRIMARY KEY, poster TEXT, checked INTEGER NOT NULL, title TEXT)")
     }
 
     // ------------------------------------------------------------------ poster cache
@@ -175,11 +189,18 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
             if (c.moveToFirst()) (c.getString(0) ?: "") to c.getLong(1) else null
         }
 
-    fun cachePoster(uid: String, poster: String?) {
+    fun cachePoster(uid: String, poster: String?, title: String? = null) {
         writableDatabase.insertWithOnConflict("posters", null, ContentValues().apply {
             put("uid", uid); put("poster", poster ?: ""); put("checked", System.currentTimeMillis())
+            if (title != null) put("title", title)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
+
+    /** The proper name from your addons' match ("A View to a Kill"), if one was found. */
+    fun cachedTitle(uid: String): String? =
+        readableDatabase.rawQuery("SELECT title FROM posters WHERE uid = ?", arrayOf(uid)).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+        }
 
     /** Category names, for parental locks on "Watch On Demand" results. */
     fun categoryName(playlistId: String, kind: VodKind, id: String): String? =
@@ -318,7 +339,8 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         limit: Int,
         offset: Int,
         sort: VodSort = VodSort.DEFAULT,
-        genre: String? = null
+        genre: String? = null,
+        merge: Boolean = true
     ): List<VodItem> {
         val where = StringBuilder("kind = ?")
         val args = arrayListOf(kind.key)
@@ -338,17 +360,38 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
             }
         }
         val order = sort.orderBy(if (newestFirst) "added DESC" else "rowid")
-        return query("SELECT * FROM items WHERE $where ORDER BY $order LIMIT $limit OFFSET $offset", args)
+        val group = if (merge) " GROUP BY $DUP_KEY" else ""
+        val copies = if (merge) ", COUNT(*) AS copies" else ""
+        return query("SELECT *$copies FROM items WHERE $where$group ORDER BY $order LIMIT $limit OFFSET $offset", args)
     }
 
-    fun search(kind: VodKind, text: String, excludeCategories: Set<String>, limit: Int = 300, sort: VodSort = VodSort.DEFAULT): List<VodItem> {
+    fun search(kind: VodKind, text: String, excludeCategories: Set<String>, limit: Int = 300, sort: VodSort = VodSort.DEFAULT, merge: Boolean = true): List<VodItem> {
         val words = normalizeWords(text)
         if (words.isEmpty()) return emptyList()
         val where = StringBuilder("kind = ?")
         val args = arrayListOf(kind.key)
         words.forEach { w -> where.append(" AND norm LIKE ?"); args += "%$w%" }
-        return query("SELECT * FROM items WHERE $where ORDER BY ${sort.orderBy("length(name)")} LIMIT $limit", args)
+        val group = if (merge) " GROUP BY $DUP_KEY" else ""
+        val copies = if (merge) ", COUNT(*) AS copies" else ""
+        return query("SELECT *$copies FROM items WHERE $where$group ORDER BY ${sort.orderBy("length(name)")} LIMIT $limit", args)
             .filter { "${it.kind.key}:${it.playlistId}:${it.categoryId}" !in excludeCategories }
+    }
+
+    /** Every copy of a title: same TMDB id, or same name and year (other quality, other provider). */
+    fun versions(item: VodItem): List<VodItem> =
+        if (!item.tmdbId.isNullOrBlank()) query("SELECT * FROM items WHERE kind = ? AND tmdb = ?", arrayListOf(item.kind.key, item.tmdbId))
+        else query(
+            "SELECT * FROM items WHERE kind = ? AND (tmdb IS NULL OR tmdb = '') AND norm = ? AND IFNULL(year, 0) = ?",
+            arrayListOf(item.kind.key, normalize(item.name), (item.year ?: 0).toString())
+        )
+
+    /** Category names by id, for describing versions. */
+    fun categoryNames(playlistId: String, kind: VodKind): Map<String, String> {
+        val out = HashMap<String, String>()
+        readableDatabase.rawQuery("SELECT id, name FROM categories WHERE pl = ? AND kind = ?", arrayOf(playlistId, kind.key)).use { c ->
+            while (c.moveToNext()) out[c.getString(0)] = c.getString(1)
+        }
+        return out
     }
 
     fun byTmdb(kind: VodKind, tmdbId: String): List<VodItem> =
@@ -378,7 +421,8 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         year = getColumnIndexOrThrow("year").let { i -> if (isNull(i)) null else getInt(i) },
         rating = getStringOrNull("rating"),
         addedSec = getLong(getColumnIndexOrThrow("added")),
-        genre = getColumnIndex("genre").takeIf { it >= 0 }?.let { i -> if (isNull(i)) null else getString(i) }
+        genre = getColumnIndex("genre").takeIf { it >= 0 }?.let { i -> if (isNull(i)) null else getString(i) },
+        copies = getColumnIndex("copies").takeIf { it >= 0 }?.let { i -> getInt(i) } ?: 1
     )
 
     private fun Cursor.getStringOrNull(col: String): String? =

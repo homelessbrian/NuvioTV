@@ -146,6 +146,8 @@ class LiveTvViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 _now.value = System.currentTimeMillis()
+                // Keep the hours around now loaded from the guide database as time passes.
+                repository.ensureRange(_now.value - 3 * 3_600_000L, _now.value + 12 * 3_600_000L)
                 delay(30_000)
             }
         }
@@ -444,6 +446,8 @@ class LiveTvViewModel @Inject constructor(
         ) ?: return false
         playback.play(channel, overrideUrl = url, catchupTitle = program.title, fallback = CatchupUrlBuilder.tsFallback(url))
         _catchup.value = CatchupSession(channel, program, offsetMs.coerceAtLeast(0))
+        // Load this channel's full schedule, so catch-up can follow on into later shows.
+        repository.ensureChannelSchedule(channel.key)
         return true
     }
 
@@ -532,6 +536,65 @@ class LiveTvViewModel @Inject constructor(
     // ------------------------------------------------------------ per-channel EPG
 
     val epgSources: StateFlow<List<com.nuvio.tv.livetv.model.EpgSourceChannels>> = repository.epgSources
+
+    // ------------------------------------------------------------ home screen row
+
+    /** One card in the home screen row: the channel, what's on now and what's next. */
+    data class HomeRowEntry(val channel: LiveChannel, val now: EpgProgram?, val next: EpgProgram?)
+
+    /**
+     * The home screen row's channels (Favorites, Recently watched or a group), worked out off
+     * the main thread and kept up to date as shows change.
+     */
+    val homeRow: StateFlow<List<HomeRowEntry>> = combine(
+        combine(displayChannels, userState, settings) { a, b, c -> Triple(a, b, c) },
+        programs,
+        now
+    ) { (channels, user, s), progs, nowMs ->
+        if (!s.homeRowEnabled || channels.isEmpty()) return@combine emptyList()
+        val groupId = when (s.homeRowSource) {
+            "favorites", "" -> ChannelGroup.FAVORITES
+            "recent" -> ChannelGroup.RECENT
+            else -> s.homeRowSource
+        }
+        val list = buildUi(channels, user, s, groupId, "", true).channels
+        var entries = list.map { ch ->
+            val l = progs[ch.key].orEmpty()
+            val cur = l.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs }
+            val nxt = l.firstOrNull { it.startMs >= (cur?.stopMs ?: nowMs) }
+            HomeRowEntry(ch, cur, nxt)
+        }
+        if (s.homeRowHidePlaceholders) {
+            entries = entries.filter { e ->
+                e.now != null && !com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(e.now.title)
+            }
+        }
+        entries = when (s.homeRowSort) {
+            "number" -> entries.sortedBy { it.channel.number }
+            "ending" -> entries.sortedBy { it.now?.stopMs ?: Long.MAX_VALUE }
+            else -> entries
+        }
+        if (s.homeRowLimit > 0) entries.take(s.homeRowLimit) else entries
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Home screen: play [channel] (the guide then opens on the row's group behind it). */
+    fun playFromHome(channel: LiveChannel) {
+        val s = settings.value
+        selectGroup(
+            when (s.homeRowSource) {
+                "favorites", "" -> ChannelGroup.FAVORITES
+                "recent" -> ChannelGroup.RECENT
+                else -> s.homeRowSource
+            }
+        )
+        preview(channel)
+    }
+
+    /** Guide scrolled ahead or back: load those hours from the guide database if needed. */
+    fun ensureGuideRange(fromMs: Long, toMs: Long) = repository.ensureRange(fromMs, toMs)
+
+    /** A channel's full schedule (overlay mode's days, catch-up). */
+    fun ensureChannelSchedule(channelKey: String) = repository.ensureChannelSchedule(channelKey)
 
     /** Assign EPG: make sure the full guide-channel lists are loaded (the saved guide skips them). */
     fun ensureEpgDetails() = repository.ensureEpgDetails()

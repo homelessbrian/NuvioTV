@@ -398,10 +398,50 @@ class OnDemandRepository @Inject constructor(
         runCatching { db.categories(kind) }.getOrDefault(emptyList())
     }
 
-    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int, sort: VodSort = VodSort.DEFAULT, genre: String? = null) =
+    suspend fun items(kind: VodKind, category: VodCategory?, hidden: Set<String>, newestFirst: Boolean, limit: Int, offset: Int, sort: VodSort = VodSort.DEFAULT, genre: String? = null, merge: Boolean = true) =
         withContext(Dispatchers.IO) {
-            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset, sort, genre) }.getOrDefault(emptyList())
+            runCatching { db.items(kind, category, hidden, newestFirst, limit, offset, sort, genre, merge) }.getOrDefault(emptyList())
         }
+
+    /** One version of a title you can pick: where it's from and what it is. */
+    data class Version(val item: VodItem, val label: String, val detail: String)
+
+    /** Every copy of [item] (other qualities, other categories, other providers). */
+    suspend fun versions(item: VodItem): List<Version> = withContext(Dispatchers.IO) {
+        val all = runCatching { db.versions(item) }.getOrDefault(listOf(item)).ifEmpty { listOf(item) }
+        val playlists = prefs.playlists.first().associateBy { it.id }
+        val catNames = HashMap<String, Map<String, String>>()
+        all.map { v ->
+            val cats = catNames.getOrPut(v.playlistId) { runCatching { db.categoryNames(v.playlistId, v.kind) }.getOrDefault(emptyMap()) }
+            val quality = qualityOf(v.name)
+            val label = listOfNotNull(quality, v.ext?.uppercase()).joinToString(" · ").ifBlank { "Standard" }
+            val detail = listOfNotNull(
+                playlists[v.playlistId]?.name.takeIf { playlists.size > 1 },
+                cats[v.categoryId],
+                v.year?.toString()
+            ).joinToString(" · ")
+            Version(v, label, detail)
+        }.sortedByDescending { qualityRank(it.label) }
+    }
+
+    private fun qualityOf(name: String): String? {
+        val n = name.lowercase()
+        return when {
+            Regex("""\b(4k|uhd|2160p)\b""").containsMatchIn(n) -> "4K"
+            Regex("""\b(fhd|1080p)\b""").containsMatchIn(n) -> "Full HD"
+            Regex("""\b(hd|720p)\b""").containsMatchIn(n) -> "HD"
+            Regex("""\b(sd|480p)\b""").containsMatchIn(n) -> "SD"
+            else -> null
+        }?.let { q -> if (Regex("""\b(hevc|x265|h265)\b""").containsMatchIn(n)) "$q HEVC" else q }
+    }
+
+    private fun qualityRank(label: String) = when {
+        label.startsWith("4K") -> 4
+        label.startsWith("Full HD") -> 3
+        label.startsWith("HD") -> 2
+        label.startsWith("SD") -> 1
+        else -> 0
+    }
 
     /** Genres from your addons' metadata, saved for titles the provider sent none for. */
     suspend fun fillGenres(item: VodItem, genres: List<String>) = withContext(Dispatchers.IO) {
@@ -414,8 +454,8 @@ class OnDemandRepository @Inject constructor(
         runCatching { db.genres(kind) }.getOrDefault(emptyList())
     }
 
-    suspend fun search(kind: VodKind, text: String, hidden: Set<String>, sort: VodSort = VodSort.DEFAULT) = withContext(Dispatchers.IO) {
-        runCatching { db.search(kind, text, hidden, sort = sort) }.getOrDefault(emptyList())
+    suspend fun search(kind: VodKind, text: String, hidden: Set<String>, sort: VodSort = VodSort.DEFAULT, merge: Boolean = true) = withContext(Dispatchers.IO) {
+        runCatching { db.search(kind, text, hidden, sort = sort, merge = merge) }.getOrDefault(emptyList())
     }
 
     private suspend fun playlist(id: String): PlaylistSource? = prefs.playlists.first().firstOrNull { it.id == id }
@@ -487,9 +527,13 @@ class OnDemandRepository @Inject constructor(
         runCatching { db.cachedPoster(item.uid) }.getOrNull()
     }
 
-    suspend fun cachePoster(item: VodItem, poster: String?) = withContext(Dispatchers.IO) {
-        runCatching { db.cachePoster(item.uid, poster) }
+    suspend fun cachePoster(item: VodItem, poster: String?, title: String? = null) = withContext(Dispatchers.IO) {
+        runCatching { db.cachePoster(item.uid, poster, title) }
         Unit
+    }
+
+    suspend fun cachedTitle(item: VodItem): String? = withContext(Dispatchers.IO) {
+        runCatching { db.cachedTitle(item.uid) }.getOrNull()
     }
 
     // ------------------------------------------------------------------ "Watch On Demand"

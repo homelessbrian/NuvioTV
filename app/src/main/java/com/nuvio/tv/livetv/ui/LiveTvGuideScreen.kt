@@ -145,6 +145,10 @@ fun LiveTvGuideScreen(
     var row by remember { mutableIntStateOf(0) }
     var cursorMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var windowStart by remember { mutableLongStateOf(floorSlot(System.currentTimeMillis())) }
+    // Load listings for the hours being looked at (scrolling ahead, or back for catch-up).
+    LaunchedEffect(windowStart) {
+        viewModel.ensureGuideRange(windowStart - 2 * 3_600_000L, windowStart + WINDOW_MS + 6 * 3_600_000L)
+    }
     var pendingGroupId by remember { mutableStateOf<String?>(null) }
     // The group list slides in from the left when you press Left, and slides away again when
     // you pick a group or go back to the channels, giving the guide the full width.

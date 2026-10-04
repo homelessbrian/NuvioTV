@@ -84,6 +84,33 @@ class OnDemandViewModel @Inject constructor(
 
     private fun matchTitle(item: VodItem) = OnDemandDatabase.displayTitle(item.name)
 
+    /**
+     * Titles to try in your addons: the cleaned title, then the part after a " - " or ": " when
+     * there is one ("007 - A View to a Kill" -> "A View to a Kill", "Marvel - Iron Man" ->
+     * "Iron Man"), for series-style names the provider puts in front.
+     */
+    private fun matchTitles(item: VodItem): List<String> {
+        val clean = matchTitle(item)
+        val after = Regex("""^.{1,40}?\s(?:-|–|—|:)\s+(.+)$""").find(clean)?.groupValues?.get(1)?.trim()
+        return listOfNotNull(clean, after?.takeIf { it.length >= 2 }).distinct()
+    }
+
+    private suspend fun matchAny(item: VodItem, urgent: Boolean): LiveTvPosterResolver.Hit? {
+        for (t in matchTitles(item)) {
+            resolver.matchFor(t, item.kind == VodKind.SERIES, item.year, urgent = urgent)?.let { return it }
+        }
+        return null
+    }
+
+    private val names = com.nuvio.tv.livetv.data.boundedCache<String, String>(3_000)
+
+    /** The proper name from your addons once matched ("A View to a Kill"), else the cleaned title. */
+    suspend fun nameFor(item: VodItem): String =
+        names[item.uid] ?: repository.cachedTitle(item)?.also { names[item.uid] = it } ?: OnDemandDatabase.displayTitle(item.name)
+
+    /** Every version of a title (qualities, categories, providers), best quality first. */
+    suspend fun versions(item: VodItem) = repository.versions(item)
+
     private val _ui = MutableStateFlow(OnDemandUiState(sort = lastSort))
     val ui: StateFlow<OnDemandUiState> = _ui.asStateFlow()
 
@@ -214,8 +241,9 @@ class OnDemandViewModel @Inject constructor(
         }
         // Posters only need the cleaned title (no TMDB call per poster); the id is looked up
         // once, when you actually open a title.
-        val hit = resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year)
-        repository.cachePoster(item, hit?.meta?.poster)
+        val hit = matchAny(item, urgent = false)
+        repository.cachePoster(item, hit?.meta?.poster, hit?.meta?.name)
+        hit?.meta?.name?.let { names[item.uid] = it }
         // The same match carries the title's genres: keep them for "By genre".
         hit?.meta?.genres?.takeIf { it.isNotEmpty() }?.let { repository.fillGenres(item, it) }
         val poster = hit?.meta?.poster ?: item.icon
@@ -230,9 +258,7 @@ class OnDemandViewModel @Inject constructor(
         val (hit, imdb) = kotlinx.coroutines.coroutineScope {
             val idJob = async { kotlinx.coroutines.withTimeoutOrNull(3_000) { imdbFor(item) } }
             val hitJob = async {
-                kotlinx.coroutines.withTimeoutOrNull(4_000) {
-                    resolver.matchFor(matchTitle(item), item.kind == VodKind.SERIES, item.year, urgent = true)
-                }
+                kotlinx.coroutines.withTimeoutOrNull(4_000) { matchAny(item, urgent = true) }
             }
             hitJob.await() to idJob.await()
         }
@@ -293,11 +319,12 @@ class OnDemandViewModel @Inject constructor(
         _ui.value = state.copy(loading = true, items = if (reset) emptyList() else state.items, endReached = if (reset) false else state.endReached)
         loadJob = viewModelScope.launch {
             val section = state.sections.firstOrNull { it.key == state.selectedKey } ?: OnDemandSection.All
+            val merge = settings.value.vodMergeDuplicates
             val page = when {
-                state.query.isNotBlank() -> repository.search(state.kind, state.query, excluded(), state.sort)
-                section is OnDemandSection.Category -> repository.items(state.kind, section.category, emptySet(), false, PAGE, offset, state.sort)
-                section is OnDemandSection.Genre -> repository.items(state.kind, null, excluded(), false, PAGE, offset, state.sort, genre = section.name)
-                else -> repository.items(state.kind, null, excluded(), section == OnDemandSection.Recent, PAGE, offset, state.sort)
+                state.query.isNotBlank() -> repository.search(state.kind, state.query, excluded(), state.sort, merge = merge)
+                section is OnDemandSection.Category -> repository.items(state.kind, section.category, emptySet(), false, PAGE, offset, state.sort, merge = merge)
+                section is OnDemandSection.Genre -> repository.items(state.kind, null, excluded(), false, PAGE, offset, state.sort, genre = section.name, merge = merge)
+                else -> repository.items(state.kind, null, excluded(), section == OnDemandSection.Recent, PAGE, offset, state.sort, merge = merge)
             }
             val cur = _ui.value
             _ui.value = cur.copy(
