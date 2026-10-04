@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Live TV fork: the launcher name. Overrides Nuvio's app_name for the "full" build. -->
 <resources>
-    <string name="app_name">Nuvio w/ Live TV</string>
+    <string name="app_name">Nuvio + IPTV</string>
 </resources>

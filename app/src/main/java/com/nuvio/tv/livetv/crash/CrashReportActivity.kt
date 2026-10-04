@@ -30,7 +30,7 @@ class CrashReportActivity : Activity() {
         fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
         val title = TextView(this).apply {
-            text = "Nuvio w/ Live TV stopped"
+            text = "Nuvio + IPTV stopped"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             typeface = Typeface.DEFAULT_BOLD
