@@ -2359,6 +2359,8 @@ private fun navigateToDrawerRoute(
     currentRoute: String?,
     targetRoute: String
 ) {
+    // Live TV fork: Home from the menu starts on the Live TV row when it's on top.
+    if (targetRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     if (currentRoute == targetRoute) {
         if (targetRoute == Screen.Home.route) {
             // Scroll Home to top by clearing saved focus/scroll state on the ViewModel.

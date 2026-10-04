@@ -97,6 +97,19 @@ fun LiveTvHomeRow(above: Boolean) {
 /** The home screen opens on the Live TV row (when it's on top) once per app start. */
 private object HomeRowFocus { @Volatile var done = false }
 
+/**
+ * Picking Home in Nuvio's side menu asks the Live TV row (when it's on top) to take the
+ * highlight, instead of Nuvio jumping to Continue watching.
+ */
+object LiveTvHomeFocus {
+    val requests = kotlinx.coroutines.flow.MutableStateFlow(0)
+    @Volatile var pending = false
+    fun request() {
+        pending = true
+        requests.value++
+    }
+}
+
 @Composable
 private fun LiveTvHomeRowContent(
     settings: com.nuvio.tv.livetv.model.LiveTvSettings,
@@ -117,6 +130,17 @@ private fun LiveTvHomeRowContent(
         if (!takeInitialFocus || HomeRowFocus.done) return@LaunchedEffect
         HomeRowFocus.done = true
         kotlinx.coroutines.delay(450)
+        runCatching { listState.scrollToItem(0) }
+        runCatching { firstCard.requestFocus() }
+    }
+    // Home chosen from Nuvio's side menu: the row takes the highlight (after Nuvio's own).
+    val focusRequests by LiveTvHomeFocus.requests.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(focusRequests) {
+        if (!LiveTvHomeFocus.pending) return@LaunchedEffect
+        LiveTvHomeFocus.pending = false
+        if (!takeInitialFocus) return@LaunchedEffect
+        kotlinx.coroutines.delay(400)
+        runCatching { listState.scrollToItem(0) }
         runCatching { firstCard.requestFocus() }
     }
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
@@ -131,8 +155,23 @@ private fun LiveTvHomeRowContent(
             itemsIndexed(entries, key = { _, it -> it.channel.key }) { index, e ->
                 HomeCard(
                     modifier = if (index == 0) Modifier.focusRequester(firstCard) else Modifier,
-                    // Back at the first card: show the very start of the row again.
-                    onFocused = { if (index == 0) scope.launch { listState.animateScrollToItem(0) } },
+                    // Keep the highlighted card fully on screen, and the very start of the row
+                    // in view at the first card.
+                    onFocused = {
+                        scope.launch {
+                            val info = listState.layoutInfo
+                            val visible = info.visibleItemsInfo
+                            val fullyVisible = visible.filter {
+                                it.offset >= 0 && it.offset + it.size <= info.viewportEndOffset - info.afterContentPadding
+                            }.map { it.index }
+                            when {
+                                index == 0 -> listState.animateScrollToItem(0)
+                                fullyVisible.isEmpty() || index < fullyVisible.first() -> listState.animateScrollToItem(index)
+                                index > fullyVisible.last() ->
+                                    listState.animateScrollToItem((index - (fullyVisible.size - 1).coerceAtLeast(0)).coerceAtLeast(0))
+                            }
+                        }
+                    },
                     entry = e,
                     now = now,
                     playing = e.channel.key == playback.channelKey,
