@@ -63,6 +63,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -116,9 +118,16 @@ fun LiveTvGuideScreen(
     onOpenNuvioSearch: () -> Unit = onFindInNuvio,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
+    // Full screen happens right here, TiviMate style: the same video view grows from the
+    // preview window to the whole screen and back. The picture never moves to a different
+    // view, which is what froze it (or left it loading) on some TVs.
+    var fullscreen by remember { mutableStateOf(false) }
+    // Where you were browsing when you held Back / pressed Play to go full screen; restored
+    // when you come back, so you return to the channel you had selected.
+    var savedSpot by remember { mutableStateOf<Pair<String, String?>?>(null) }
+    var exitFullscreenTick by remember { mutableIntStateOf(0) }
     fun goFullscreen() {
-        viewModel.markFullscreenOpened()
-        onOpenFullscreen()
+        fullscreen = true
     }
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -157,6 +166,8 @@ fun LiveTvGuideScreen(
     // you pick a group or go back to the channels, giving the guide the full width.
     var groupsOpen by remember { mutableStateOf(false) }
     var leftTapPending by remember { mutableStateOf(false) }
+    var lastVerticalAt by remember { mutableStateOf(0L) }
+    var okDuringScroll by remember { mutableStateOf(false) }
     var lastHeldLeftAt by remember { mutableStateOf(0L) }
     // "Browse by channel name": the highlight is on the channel name itself (OK plays it,
     // Right steps into its shows, Left opens the groups).
@@ -198,6 +209,7 @@ fun LiveTvGuideScreen(
     var groupMenu by remember { mutableStateOf<ChannelGroup?>(null) }
     var epgPickerFor by remember { mutableStateOf<LiveChannel?>(null) }
     LaunchedEffect(epgPickerFor) { if (epgPickerFor != null) viewModel.ensureEpgDetails() }
+    var epgPanelFocusTick by remember { mutableIntStateOf(0) }
     val epgSources by viewModel.epgSources.collectAsStateWithLifecycle()
     val epgAutoMatches by viewModel.epgAutoMatches.collectAsStateWithLifecycle()
     val menuStyle by viewModel.menuStyle.collectAsStateWithLifecycle()
@@ -283,6 +295,32 @@ fun LiveTvGuideScreen(
             repeat(3) { androidx.compose.runtime.withFrameNanos { } }
             runCatching { groupsFocus.requestFocus() }
         }
+    }
+
+    // Leaving full screen: back to where you were browsing (or the playing channel).
+    LaunchedEffect(exitFullscreenTick) {
+        if (exitFullscreenTick == 0) return@LaunchedEffect
+        val spot = savedSpot
+        savedSpot = null
+        if (spot != null) {
+            viewModel.selectGroup(spot.first)
+            spot.second?.let { highlightKey = it }
+        } else {
+            playback.channelKey?.let { highlightKey = it }
+        }
+        groupsOpen = false
+        delay(80)
+        runCatching { gridFocus.requestFocus() }
+    }
+    LaunchedEffect(fullscreen) { LiveTvFullscreen.active.value = fullscreen }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { LiveTvFullscreen.active.value = false } }
+    // Full screen asked for from elsewhere (home screen row, reminders, search…).
+    val fullscreenRequests by LiveTvFullscreen.requests.collectAsStateWithLifecycle()
+    LaunchedEffect(fullscreenRequests) {
+        if (!LiveTvFullscreen.pending) return@LaunchedEffect
+        LiveTvFullscreen.pending = false
+        delay(150)
+        fullscreen = true
     }
     LaunchedEffect(focusGroupsOnOpen) {
         if (focusGroupsOnOpen) {
@@ -526,15 +564,23 @@ fun LiveTvGuideScreen(
 
     CompositionLocalProvider(LocalLiveSolidHighlight provides settings.solidHighlight) {
     val hostActivity = androidx.compose.ui.platform.LocalContext.current as? com.nuvio.tv.MainActivity
+    // Where the preview window is (the video view sits there when not full screen).
+    var rootBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var previewBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     // Only a Back press that *started* in the guide counts as "hold Back" here.
     var backPressStartedHere by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NuvioTheme.colors.Background)
+            .onGloballyPositioned { rootBounds = it.boundsInRoot() }
             .onPreviewKeyEvent { e ->
+                // Full screen handles its own keys.
+                if (fullscreen) return@onPreviewKeyEvent false
                 val playingNow = playback.channelKey != null
                 fun returnToPlaying() {
+                    // Remember where you were browsing, to come back to it afterwards.
+                    savedSpot = ui.selectedGroupId to focusedChannel?.key
                     // Back to the group the playing channel was watched in (not the group you were
                     // browsing), so Up/Down and overlay mode work from the channel you're on.
                     scope.launch {
@@ -598,6 +644,7 @@ fun LiveTvGuideScreen(
                 block = headerBlock,
                 poster = headerPoster,
                 onSurfaceAttached = { viewModel.playback.onSurfaceAttached() },
+                onPreviewBounds = { previewBounds = it },
                 playlistName = if (settings.showPlaylistInInfo) headerChannel?.sourceId?.let { playlistNames[it] } else null,
                 settings = settings,
                 now = now,
@@ -802,6 +849,28 @@ fun LiveTvGuideScreen(
                                             current?.takeIf { it.key !in pendingHidden }?.let { highlightKey = it.key }
                                         }
                                     }
+                                    return@onPreviewKeyEvent true
+                                }
+                                // Assign EPG open: Right goes into the panel for the highlighted channel.
+                                if (epgPickerFor != null && event.key == Key.DirectionRight) {
+                                    if (event.type == KeyEventType.KeyDown) {
+                                        focusedChannel?.let { epgPickerFor = it }
+                                        epgPanelFocusTick++
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
+                                // Remember Up/Down presses: some remotes (clickable rings, e.g. on some
+                                // JVC Google TVs) also send OK with them, which would play the
+                                // highlighted channel while just scrolling.
+                                if (event.type == KeyEventType.KeyDown &&
+                                    (event.key == Key.DirectionUp || event.key == Key.DirectionDown)
+                                ) lastVerticalAt = event.nativeKeyEvent.eventTime
+                                if (isOk && event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+                                    okDuringScroll = event.nativeKeyEvent.eventTime - lastVerticalAt < OK_WITH_ARROW_MS
+                                }
+                                if (isOk && okDuringScroll) {
+                                    // Part of an Up/Down press: ignore this OK entirely.
+                                    if (event.type == KeyEventType.KeyUp) okDuringScroll = false
                                     return@onPreviewKeyEvent true
                                 }
                                 if (isOk) {
@@ -1027,10 +1096,16 @@ fun LiveTvGuideScreen(
         epgPickerFor?.let { ch ->
             val closePanel = {
                 epgPickerFor = null
+                viewModel.commitEpgChanges() // the guide updates once, with all your changes
                 scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                 Unit
             }
             BackHandler { closePanel() }
+            // Moving through the channels with the panel open: the panel follows.
+            val fc = focusedChannel
+            LaunchedEffect(fc?.key, gridFocused) {
+                if (gridFocused && fc != null && fc.key != ch.key) epgPickerFor = fc
+            }
             EpgSidePanel(
                 channel = ch,
                 sources = epgSources,
@@ -1044,8 +1119,18 @@ fun LiveTvGuideScreen(
                 style = menuStyle,
                 hazeState = panelHaze,
                 modifier = Modifier.align(Alignment.CenterEnd),
-                onPick = { src, entry -> viewModel.setChannelEpg(ch, src.sourceId, entry.id); closePanel() },
-                onUnassign = { viewModel.resetChannelEpg(ch); closePanel() }
+                // Assign, then back to the channel list with the panel still open: move to the
+                // next channel and press Right to assign it too. Back closes the panel.
+                onPick = { src, entry ->
+                    viewModel.setChannelEpg(ch, src.sourceId, entry.id)
+                    scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+                },
+                onUnassign = {
+                    viewModel.resetChannelEpg(ch)
+                    scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
+                },
+                onLeft = { runCatching { gridFocus.requestFocus() } },
+                focusTick = epgPanelFocusTick
             )
         }
 
@@ -1306,6 +1391,68 @@ fun LiveTvGuideScreen(
                 LiveText(numberBuffer, size = 34.sp, weight = FontWeight.Bold)
             }
         }
+    
+        // ---------------------------------------------------------------- the video
+        // One video view for the preview window and full screen: it just changes size.
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val pb = previewBounds
+        val rb = rootBounds
+        val videoModifier = when {
+            fullscreen -> Modifier.fillMaxSize()
+            pb != null && rb != null && pb.width > 1f -> with(density) {
+                Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
+                    .size(pb.width.toDp(), pb.height.toDp())
+            }
+            // Preview hidden: keep the view (so nothing has to be rebuilt), out of sight.
+            else -> Modifier.size(1.dp)
+        }
+        LivePlayerSurface(
+            player = viewModel.playback.player,
+            useSurfaceView = true,
+            modifier = videoModifier,
+            onAttached = { viewModel.playback.onSurfaceAttached() },
+            aspectMode = if (fullscreen) aspectModeOf(settings.aspectMode) else null
+        )
+        // The preview's own messages, drawn over the video.
+        if (!fullscreen && pb != null && rb != null && pb.width > 1f) {
+            val showLoading = rememberDelayedTrue(playback.isBuffering && playback.error == null, 1_200)
+            val text = when {
+                playback.channelKey == null -> "Press OK on a channel to preview"
+                playback.error != null -> "Reconnecting… (${playback.error})"
+                showLoading -> "Loading…"
+                else -> null
+            }
+            with(density) {
+                Box(
+                    modifier = Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
+                        .size(pb.width.toDp(), pb.height.toDp()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    text?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp) }
+                    playback.catchupTitle?.let {
+                        LiveText(
+                            "ARCHIVE · $it",
+                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = Color.White, size = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+        // ---------------------------------------------------------------- full screen
+        if (fullscreen) {
+            LiveTvPlayerScreen(
+                onBack = { fullscreen = false; exitFullscreenTick++ },
+                onFindInNuvio = { fullscreen = false; exitFullscreenTick++; onFindInNuvio() },
+                onBackToGroups = { fullscreen = false; savedSpot = null; exitFullscreenTick++; focusGroups() },
+                embedded = true,
+                viewModel = viewModel
+            )
+        }
     }
     }
 }
@@ -1337,7 +1484,9 @@ private fun GuideHeader(
     catchupTitle: String?,
     status: String?,
     /** The preview took over the picture (the player checks the picture actually starts). */
-    onSurfaceAttached: () -> Unit = {}
+    onSurfaceAttached: () -> Unit = {},
+    /** Where the preview window is on screen (null when it isn't shown). */
+    onPreviewBounds: (androidx.compose.ui.geometry.Rect?) -> Unit = {}
 ) {
     if (!settings.showProgramDetails && !showPreview) {
         Row(
@@ -1455,16 +1604,10 @@ private fun GuideHeader(
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color.Black)
             ) {
-                if (playingKey != null) {
-                    LivePlayerSurface(
-                        player = player,
-                        // Same kind of surface as full screen: switching between two different
-                        // kinds is what made some TVs freeze the picture when going full screen.
-                        useSurfaceView = true,
-                        modifier = Modifier.fillMaxSize(),
-                        onAttached = onSurfaceAttached
-                    )
-                }
+                // The video itself is drawn by the guide, over this spot (one view for the
+                // preview and full screen); this just reports where the preview window is.
+                Box(Modifier.fillMaxSize().onGloballyPositioned { onPreviewBounds(it.boundsInRoot()) })
+                androidx.compose.runtime.DisposableEffect(Unit) { onDispose { onPreviewBounds(null) } }
                 val overlay = when {
                     playingKey == null -> "Press OK on a channel to preview"
                     playbackError != null -> "Reconnecting… ($playbackError)"
@@ -2166,7 +2309,11 @@ private fun EpgSidePanel(
     hazeState: dev.chrisbanes.haze.HazeState,
     modifier: Modifier,
     onPick: (com.nuvio.tv.livetv.model.EpgSourceChannels, com.nuvio.tv.livetv.model.EpgChannelEntry) -> Unit,
-    onUnassign: () -> Unit
+    onUnassign: () -> Unit,
+    /** Left from the list: back to the guide's channels (the panel stays open). */
+    onLeft: () -> Unit = {},
+    /** Goes up when the guide asks the panel to take the highlight (Right from the channels). */
+    focusTick: Int = 0
 ) {
     var query by remember { mutableStateOf("") }
     var sourceFilter by remember { mutableStateOf<String?>(null) }
@@ -2210,6 +2357,11 @@ private fun EpgSidePanel(
     var focusIndex by remember { mutableIntStateOf(-1) }
     val itemFocus = remember { FocusRequester() }
     val buttonsFocus = remember { FocusRequester() }
+    LaunchedEffect(focusTick) {
+        if (focusTick == 0) return@LaunchedEffect
+        delay(40)
+        runCatching { itemFocus.requestFocus() }.onFailure { runCatching { buttonsFocus.requestFocus() } }
+    }
     var jumpToken by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(rows, jumpToken) {
@@ -2387,9 +2539,10 @@ private fun EpgSidePanel(
                 .onPreviewKeyEvent { e ->
                     if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     when (e.key) {
-                        // Left: straight to Search (OK there opens the search box).
-                        Key.DirectionLeft -> { runCatching { buttonsFocus.requestFocus() }; true }
-                        Key.DirectionRight -> true
+                        // Left: back to the guide's channels, to pick the next one.
+                        Key.DirectionLeft -> { onLeft(); true }
+                        // Right: up to the buttons (Search first).
+                        Key.DirectionRight -> { runCatching { buttonsFocus.requestFocus() }; true }
                         else -> false
                     }
                 },
@@ -2782,3 +2935,18 @@ internal fun LiveTextField(
 
 /** While Left is held in the guide, one step back through earlier shows per this many ms. */
 private const val HELD_STEP_MS = 320L
+
+/** Asks the Live TV guide to go full screen (from the home row, reminders, search…). */
+object LiveTvFullscreen {
+    /** True while Live TV is full screen (the loading bubble stays out of the way). */
+    val active = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val requests = kotlinx.coroutines.flow.MutableStateFlow(0)
+    @Volatile var pending = false
+    fun request() {
+        pending = true
+        requests.value++
+    }
+}
+
+/** An OK arriving this soon after Up/Down is treated as part of that press and ignored. */
+private const val OK_WITH_ARROW_MS = 250L

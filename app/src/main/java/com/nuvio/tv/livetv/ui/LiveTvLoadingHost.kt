@@ -57,7 +57,8 @@ fun LiveTvLoadingHost(navController: NavController) {
     val live by entry.liveTvRepository().status.collectAsState()
     val vod by entry.onDemandRepository().status.collectAsState()
     val route = navController.currentBackStackEntryAsState().value?.destination?.route.orEmpty()
-    val playing = route == Screen.LiveTvPlayer.route || route.startsWith("player/")
+    val liveFullscreen by LiveTvFullscreen.active.collectAsState()
+    val playing = route == Screen.LiveTvPlayer.route || route.startsWith("player/") || liveFullscreen
     // Nuvio's own player is opening (a movie, an episode, Watch On Demand): make sure the
     // Live TV player has let go of the audio first, so the two never hold it at once.
     androidx.compose.runtime.LaunchedEffect(route) {

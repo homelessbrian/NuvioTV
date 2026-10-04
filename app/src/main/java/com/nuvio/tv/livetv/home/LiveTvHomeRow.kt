@@ -80,7 +80,13 @@ fun rememberLiveTvHomeRowPosition(): Boolean? {
  * Placed above or below Continue watching; hidden entirely when turned off.
  */
 @Composable
-fun LiveTvHomeRow(above: Boolean) {
+fun LiveTvHomeRow(
+    above: Boolean,
+    /** Line up with the home layout's own rows (Classic 48, Modern 52, Grid 0 as the grid pads). */
+    startPadding: androidx.compose.ui.unit.Dp = 48.dp,
+    /** The home layout's row-title style, so the title matches the other rows. */
+    titleStyle: androidx.compose.ui.text.TextStyle? = null
+) {
     val context = LocalContext.current
     val prefs = remember {
         dagger.hilt.android.EntryPointAccessors.fromApplication(
@@ -91,7 +97,7 @@ fun LiveTvHomeRow(above: Boolean) {
     val settings = s ?: return
     // Off, or not this spot: draw nothing (and don't load Live TV at all).
     if (!settings.homeRowEnabled || !settings.showInSidebar || settings.homeRowAboveContinueWatching != above) return
-    LiveTvHomeRowContent(settings, takeInitialFocus = above)
+    LiveTvHomeRowContent(settings, takeInitialFocus = above, startPadding = startPadding, titleStyle = titleStyle)
 }
 
 /** The home screen opens on the Live TV row (when it's on top) once per app start. */
@@ -114,6 +120,8 @@ object LiveTvHomeFocus {
 private fun LiveTvHomeRowContent(
     settings: com.nuvio.tv.livetv.model.LiveTvSettings,
     takeInitialFocus: Boolean,
+    startPadding: androidx.compose.ui.unit.Dp,
+    titleStyle: androidx.compose.ui.text.TextStyle?,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -144,12 +152,17 @@ private fun LiveTvHomeRowContent(
         runCatching { firstCard.requestFocus() }
     }
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Row(modifier = Modifier.padding(start = 48.dp, end = 48.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            LiveText(settings.homeRowTitle.ifBlank { "Live TV" }, size = 16.sp, weight = FontWeight.SemiBold)
+        Row(modifier = Modifier.padding(start = startPadding, end = startPadding, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            val title = settings.homeRowTitle.ifBlank { "Live TV" }
+            if (titleStyle != null) {
+                androidx.tv.material3.Text(text = title, style = titleStyle, color = NuvioTheme.colors.TextPrimary)
+            } else {
+                LiveText(title, size = 16.sp, weight = FontWeight.SemiBold)
+            }
         }
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 48.dp),
+            contentPadding = PaddingValues(start = startPadding, end = maxOf(startPadding, 24.dp)),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             itemsIndexed(entries, key = { _, it -> it.channel.key }) { index, e ->

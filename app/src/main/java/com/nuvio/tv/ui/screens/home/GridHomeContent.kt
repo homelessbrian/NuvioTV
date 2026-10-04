@@ -519,7 +519,7 @@ fun GridHomeContent(
             // Emit Continue Watching as a dedicated item
             // Live TV fork: the Live TV row, above Continue watching (when set so).
             if (liveTvRowAbove == true) item(key = "live_tv_home_above", span = { GridItemSpan(maxLineSpan) }, contentType = "live_tv_home") {
-                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true)
+                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true, startPadding = 0.dp, titleStyle = MaterialTheme.typography.headlineMedium)
             }
             if (continueWatchingItems.isNotEmpty()) {
                 item(
@@ -588,7 +588,7 @@ fun GridHomeContent(
             // Emit Upcoming section if SPLIT_UPCOMING mode has upcoming items
             // Live TV fork: the Live TV row, below Continue watching (the default).
             if (liveTvRowAbove == false) item(key = "live_tv_home_below", span = { GridItemSpan(maxLineSpan) }, contentType = "live_tv_home") {
-                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+                com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false, startPadding = 0.dp, titleStyle = MaterialTheme.typography.headlineMedium)
             }
             if (uiState.continueWatchingEnabled && uiState.upcomingItems.isNotEmpty()) {
                 item(

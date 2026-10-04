@@ -13,7 +13,8 @@ data class M3uEntry(
     val chno: Int?,
     val url: String,
     val headers: Map<String, String>,
-    val catchup: CatchupInfo?
+    val catchup: CatchupInfo?,
+    val drm: com.nuvio.tv.livetv.model.DrmInfo? = null
 )
 
 data class M3uPlaylist(
@@ -38,6 +39,8 @@ object M3uParser {
         var pendingInfo: String? = null
         var pendingGroup: String? = null
         val pendingHeaders = mutableMapOf<String, String>()
+        // Kodi / TiviMate DRM lines ("#KODIPROP:inputstream.adaptive.license_type=…").
+        val pendingProps = mutableMapOf<String, String>()
 
         reader.lineSequence().forEach { rawLine ->
             val line = rawLine.trim().removePrefix("\uFEFF")
@@ -68,19 +71,67 @@ object M3uParser {
                         "http-origin" -> pendingHeaders["Origin"] = value
                     }
                 }
+                line.startsWith("#KODIPROP:", ignoreCase = true) -> {
+                    val prop = line.substringAfter(':')
+                    val key = prop.substringBefore('=').trim().lowercase()
+                        .removePrefix("inputstream.adaptive.").removePrefix("inputstream.")
+                    pendingProps[key] = prop.substringAfter('=', "").trim()
+                }
+                // TiviMate-style request headers: #EXTHTTP:{"User-Agent":"…","Referer":"…"}
+                line.startsWith("#EXTHTTP:", ignoreCase = true) -> runCatching {
+                    val o = org.json.JSONObject(line.substringAfter(':'))
+                    o.keys().forEach { k -> pendingHeaders[normalizeHeader(k)] = o.optString(k) }
+                }
                 line.startsWith("#") -> Unit
                 else -> {
                     val info = pendingInfo
                     if (info != null) {
-                        entries.add(buildEntry(info, pendingGroup, line, pendingHeaders.toMap()))
+                        val stream = pendingProps["stream_headers"]
+                        if (!stream.isNullOrBlank()) stream.split('&').forEach { part ->
+                            val k = part.substringBefore('=').trim()
+                            if (k.isNotEmpty()) pendingHeaders[normalizeHeader(k)] = java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+                        }
+                        entries.add(buildEntry(info, pendingGroup, line, pendingHeaders.toMap()).copy(drm = drmFrom(pendingProps)))
                     }
                     pendingInfo = null
                     pendingGroup = null
                     pendingHeaders.clear()
+                    pendingProps.clear()
                 }
             }
         }
         return M3uPlaylist(epgUrls.distinct(), entries)
+    }
+
+    /**
+     * DRM from "#KODIPROP" lines: license_type (clearkey / com.widevine.alpha /
+     * com.microsoft.playready), license_key (URL, possibly "url|Header=…", or ClearKey
+     * "kid:key" pairs / JSON), manifest_type.
+     */
+    private fun drmFrom(props: Map<String, String>): com.nuvio.tv.livetv.model.DrmInfo? {
+        val type = (props["license_type"] ?: props["drm"])?.lowercase() ?: return null
+        val scheme = when {
+            "clearkey" in type || "org.w3" in type -> "clearkey"
+            "widevine" in type -> "widevine"
+            "playready" in type -> "playready"
+            else -> return null
+        }
+        val raw = props["license_key"].orEmpty()
+        // "url|Header=value&Header2=value|R{SSM}|" (Kodi): the URL, then optional headers.
+        val parts = raw.split('|')
+        val license = parts.firstOrNull().orEmpty().trim()
+        val headers = LinkedHashMap<String, String>()
+        parts.getOrNull(1)?.takeIf { it.contains('=') }?.split('&')?.forEach { h ->
+            val k = h.substringBefore('=').trim()
+            if (k.isNotEmpty()) headers[normalizeHeader(k)] = java.net.URLDecoder.decode(h.substringAfter('=', ""), "UTF-8")
+        }
+        if (license.isBlank() && scheme != "clearkey") return null
+        return com.nuvio.tv.livetv.model.DrmInfo(
+            scheme = scheme,
+            license = if (scheme == "clearkey") raw.trim() else license,
+            licenseHeaders = headers,
+            manifestType = props["manifest_type"]?.lowercase()
+        )
     }
 
     private fun buildEntry(

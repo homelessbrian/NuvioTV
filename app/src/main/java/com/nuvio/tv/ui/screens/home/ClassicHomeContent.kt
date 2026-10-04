@@ -626,7 +626,7 @@ fun ClassicHomeContent(
 
         // Live TV fork: the Live TV row, above Continue watching (when set so).
         if (liveTvRowAbove == true) item(key = "live_tv_home_above", contentType = "live_tv_home") {
-            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true)
+            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = true, startPadding = NuvioTheme.spacing.xxxl, titleStyle = MaterialTheme.typography.headlineMedium)
         }
         if (uiState.continueWatchingEnabled && uiState.continueWatchingItems.isNotEmpty()) {
             item(key = "continue_watching", contentType = "continue_watching") {
@@ -710,7 +710,7 @@ fun ClassicHomeContent(
 
         // Live TV fork: the Live TV row, below Continue watching (the default).
         if (liveTvRowAbove == false) item(key = "live_tv_home_below", contentType = "live_tv_home") {
-            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+            com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false, startPadding = NuvioTheme.spacing.xxxl, titleStyle = MaterialTheme.typography.headlineMedium)
         }
         if (uiState.continueWatchingEnabled && uiState.upcomingItems.isNotEmpty()) {
             item(key = "upcoming_section", contentType = "upcoming_section") {

@@ -69,7 +69,7 @@ import kotlinx.coroutines.launch
 private enum class PlayerDialog { NONE, OPTIONS, AUDIO, SUBTITLES, SCREEN_SIZE, STREAM_INFO, SLEEP }
 
 /** The picture size saved in settings, as one of Nuvio's own player modes. */
-private fun aspectModeOf(name: String): com.nuvio.tv.ui.screens.player.AspectMode =
+internal fun aspectModeOf(name: String): com.nuvio.tv.ui.screens.player.AspectMode =
     com.nuvio.tv.ui.screens.player.AspectMode.entries.firstOrNull { it.name == name }
         ?: com.nuvio.tv.ui.screens.player.AspectMode.ORIGINAL
 
@@ -79,6 +79,11 @@ fun LiveTvPlayerScreen(
     onFindInNuvio: () -> Unit = {},
     /** Overlay mode off: Left goes back to the guide with the group list open. */
     onBackToGroups: () -> Unit = onBack,
+    /**
+     * Shown inside the guide (the guide draws the video, the same view as its preview, so the
+     * picture never has to move to another view). This screen then only draws the controls.
+     */
+    embedded: Boolean = false,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -90,7 +95,7 @@ fun LiveTvPlayerScreen(
     val scope = rememberCoroutineScope()
     val view = LocalView.current
 
-    PauseLiveTvInBackground(viewModel.playback)
+    if (!embedded) PauseLiveTvInBackground(viewModel.playback)
 
     DisposableEffect(Unit) {
         viewModel.playback.attach()
@@ -218,7 +223,7 @@ fun LiveTvPlayerScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(if (embedded) Color.Transparent else Color.Black)
             .focusRequester(rootFocus)
             .onPreviewKeyEvent { e ->
                 if (listVisible || dialog != PlayerDialog.NONE) return@onPreviewKeyEvent false
@@ -290,7 +295,7 @@ fun LiveTvPlayerScreen(
             }
             .focusable()
     ) {
-        LivePlayerSurface(
+        if (!embedded) LivePlayerSurface(
             player = viewModel.playback.player,
             modifier = Modifier.fillMaxSize(),
             useSurfaceView = true,
@@ -298,12 +303,14 @@ fun LiveTvPlayerScreen(
             aspectMode = aspectModeOf(settings.aspectMode)
         )
 
-        // Status in the middle of the screen
+        // Status in the middle of the screen. "Loading…" only for channels that are actually
+        // slow to start (not the moment every channel change takes).
+        val slowLoading = rememberDelayedTrue(playback.isBuffering, 1_200)
         val centerMessage = when {
             current == null -> "Nothing playing"
             playback.error != null && playback.reconnectAttempt > 8 -> "Stream unavailable · press OK to retry"
             playback.error != null -> "Reconnecting… (${playback.reconnectAttempt})"
-            playback.isBuffering -> "Loading…"
+            slowLoading -> "Loading…"
             else -> null
         }
         centerMessage?.let {

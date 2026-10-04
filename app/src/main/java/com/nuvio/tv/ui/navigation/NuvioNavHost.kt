@@ -1310,14 +1310,17 @@ private fun PlaybackNavHost(
         }
 
         composable(Screen.LiveTvPlayer.route) {
-            com.nuvio.tv.livetv.ui.LiveTvPlayerScreen(
-                onBack = { navController.popBackStack() },
-                onFindInNuvio = {
-                    // Leave full screen first so back from search lands on the guide.
-                    navController.popBackStack()
-                    navController.navigate(Screen.Search.route) { launchSingleTop = true }
+            // Live TV fork: full screen now happens inside the guide (one video view that just
+            // grows), so this route hands over to the guide in full screen.
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                com.nuvio.tv.livetv.ui.LiveTvFullscreen.request()
+                if (!navController.popBackStack(Screen.LiveTv.route, inclusive = false)) {
+                    navController.navigate(Screen.LiveTv.route) {
+                        popUpTo(Screen.LiveTvPlayer.route) { inclusive = true }
+                        launchSingleTop = true
+                    }
                 }
-            )
+            }
         }
 
         composable(Screen.LiveTvSettings.route) {

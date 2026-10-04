@@ -1466,6 +1466,13 @@ private fun LegacySidebarScaffold(
         onExitApp()
     }
 
+    // Live TV fork: the menu closing over Home hands the highlight to the Live TV row (when on top).
+    LaunchedEffect(drawerState.currentValue) {
+        if (drawerState.currentValue == DrawerValue.Closed && currentRoute == Screen.Home.route) {
+            com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
+        }
+    }
+
     LaunchedEffect(drawerState.currentValue, pendingContentFocusTransfer) {
         if (!pendingContentFocusTransfer || drawerState.currentValue != DrawerValue.Closed) {
             return@LaunchedEffect
@@ -1473,6 +1480,8 @@ private fun LegacySidebarScaffold(
         repeat(2) { withFrameNanos { } }
         runCatching { contentFocusRequester.requestFocus() }
         pendingContentFocusTransfer = false
+        // Live TV fork: back from the menu onto Home starts on the Live TV row when it's on top.
+        if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     }
 
     LaunchedEffect(drawerState.currentValue, selectedDrawerRoute, showSidebar, pendingSidebarFocusRequest) {
@@ -1972,6 +1981,11 @@ private fun ModernSidebarScaffold(
     val sidebarDeflateOffsetX = NuvioTheme.spacing.none
     val sidebarDeflateOffsetY = NuvioTheme.spacing.none
 
+    // Live TV fork: the sidebar closing over Home hands the highlight to the Live TV row (when on top).
+    LaunchedEffect(isSidebarExpanded) {
+        if (!isSidebarExpanded && currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
+    }
+
     LaunchedEffect(isSidebarExpanded, sidebarCollapsePending, pendingContentFocusTransfer, showSidebar) {
         if (!showSidebar || !pendingContentFocusTransfer || isSidebarExpanded || sidebarCollapsePending) {
             return@LaunchedEffect
@@ -1979,6 +1993,8 @@ private fun ModernSidebarScaffold(
         repeat(2) { withFrameNanos { } }
         runCatching { contentFocusRequester.requestFocus() }
         pendingContentFocusTransfer = false
+        // Live TV fork: back from the menu onto Home starts on the Live TV row when it's on top.
+        if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     }
 
     LaunchedEffect(isSidebarExpanded, pendingSidebarFocusRequest, showSidebar, selectedDrawerRoute) {

@@ -309,3 +309,18 @@ internal fun minutesLeftLabel(stopMs: Long, now: Long): String {
     val min = ((stopMs - now) / 60_000L).coerceAtLeast(0)
     return if (min >= 60) "${min / 60}h ${min % 60}m left" else "${min}m left"
 }
+
+/**
+ * True only once [value] has stayed true for [delayMs]: "Loading…" then shows only for channels
+ * that are actually slow, not for the second or so every channel change takes.
+ */
+@Composable
+internal fun rememberDelayedTrue(value: Boolean, delayMs: Long): Boolean {
+    var shown by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(value) {
+        if (!value) { shown = false; return@LaunchedEffect }
+        kotlinx.coroutines.delay(delayMs)
+        shown = true
+    }
+    return value && shown
+}

@@ -462,6 +462,8 @@ class LiveTvPlaybackController @Inject constructor(
     }
 
     private fun buildMediaSource(url: String, headers: Map<String, String>, isLive: Boolean): androidx.media3.exoplayer.source.MediaSource {
+        // Protected (DRM) streams, e.g. MPEG-DASH with a ClearKey or Widevine license.
+        currentChannel?.drm?.let { drm -> buildDrmMediaSource(url, headers, isLive, drm)?.let { return it } }
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(headers["User-Agent"] ?: LiveTvRepository.DEFAULT_UA)
             .setDefaultRequestProperties(headers.filterKeys { it != "User-Agent" })
@@ -496,6 +498,83 @@ class LiveTvPlaybackController @Inject constructor(
                 )
             )
         return DefaultMediaSourceFactory(http, extractors).createMediaSource(item)
+    }
+
+    /**
+     * DRM playback, as TiviMate and Kodi do it from "#KODIPROP" playlist lines:
+     *  - Widevine / PlayReady: the license server URL (with any headers the playlist gives).
+     *  - ClearKey: keys given in the playlist ("kid:key" pairs or a JSON key set), or a ClearKey
+     *    license URL. Widevine needs a device that supports it (most Android TV devices do).
+     */
+    private fun buildDrmMediaSource(
+        url: String,
+        headers: Map<String, String>,
+        isLive: Boolean,
+        drm: com.nuvio.tv.livetv.model.DrmInfo
+    ): androidx.media3.exoplayer.source.MediaSource? = runCatching {
+        val http = DefaultHttpDataSource.Factory()
+            .setUserAgent(headers["User-Agent"] ?: LiveTvRepository.DEFAULT_UA)
+            .setDefaultRequestProperties(headers.filterKeys { it != "User-Agent" })
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+        val itemBuilder = buildMediaItem(url, isLive).buildUpon()
+        if (drm.manifestType == "mpd" || url.lowercase().contains(".mpd")) itemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
+        if (drm.manifestType == "hls") itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        val uuid = when (drm.scheme) {
+            "widevine" -> androidx.media3.common.C.WIDEVINE_UUID
+            "playready" -> androidx.media3.common.C.PLAYREADY_UUID
+            else -> androidx.media3.common.C.CLEARKEY_UUID
+        }
+        val factory = DefaultMediaSourceFactory(http)
+        val license = drm.license.trim()
+        if (drm.scheme == "clearkey" && !license.startsWith("http", ignoreCase = true)) {
+            // Keys in the playlist: answer license requests locally with them.
+            val keySet = clearKeyJson(license) ?: return@runCatching null
+            factory.setDrmSessionManagerProvider {
+                androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
+                    .setUuidAndExoMediaDrmProvider(androidx.media3.common.C.CLEARKEY_UUID, androidx.media3.exoplayer.drm.FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setMultiSession(false)
+                    .build(androidx.media3.exoplayer.drm.LocalMediaDrmCallback(keySet.toByteArray(Charsets.UTF_8)))
+            }
+            itemBuilder.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(androidx.media3.common.C.CLEARKEY_UUID).build())
+        } else {
+            itemBuilder.setDrmConfiguration(
+                MediaItem.DrmConfiguration.Builder(uuid)
+                    .setLicenseUri(license)
+                    .setLicenseRequestHeaders(drm.licenseHeaders)
+                    .setMultiSession(true)
+                    .build()
+            )
+        }
+        factory.createMediaSource(itemBuilder.build())
+    }.onFailure { Log.w(TAG, "Couldn't set up DRM for this stream", it) }.getOrNull()
+
+    /**
+     * A ClearKey key set (JSON) from what playlists give: "kid:key" pairs (hex or base64,
+     * comma-separated), or a JSON key set as is.
+     */
+    private fun clearKeyJson(raw: String): String? {
+        val t = raw.trim()
+        if (t.startsWith("{")) return t
+        fun b64url(v: String): String {
+            val s = v.trim()
+            val bytes = if (Regex("^[0-9a-fA-F]+$").matches(s) && s.length % 2 == 0) {
+                ByteArray(s.length / 2) { i -> s.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+            } else {
+                runCatching { android.util.Base64.decode(s.replace('-', '+').replace('_', '/'), android.util.Base64.DEFAULT) }
+                    .getOrElse { return "" }
+            }
+            return android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
+        }
+        val keys = t.split(',').mapNotNull { pair ->
+            val kid = pair.substringBefore(':').trim()
+            val key = pair.substringAfter(':', "").trim()
+            if (kid.isEmpty() || key.isEmpty()) null
+            else org.json.JSONObject().put("kty", "oct").put("kid", b64url(kid)).put("k", b64url(key))
+        }
+        if (keys.isEmpty()) return null
+        return org.json.JSONObject().put("keys", org.json.JSONArray(keys)).put("type", "temporary").toString()
     }
 
     private fun buildMediaItem(url: String, isLive: Boolean): MediaItem {

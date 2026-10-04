@@ -109,7 +109,22 @@ data class LiveChannel(
     val number: Int,
     val url: String,
     val headers: Map<String, String> = emptyMap(),
-    val catchup: CatchupInfo? = null
+    val catchup: CatchupInfo? = null,
+    /** Protected (DRM) stream details from the playlist, e.g. MPEG-DASH with a license. */
+    val drm: DrmInfo? = null
+)
+
+/**
+ * DRM for a protected stream, as playlists describe it (Kodi / TiviMate "#KODIPROP" lines):
+ * [scheme] is "clearkey", "widevine" or "playready"; [license] is a license-server URL, or for
+ * ClearKey the keys themselves ("kid:key" pairs or a JSON key set).
+ */
+data class DrmInfo(
+    val scheme: String,
+    val license: String,
+    val licenseHeaders: Map<String, String> = emptyMap(),
+    /** "mpd", "hls"… when the playlist says what kind of stream it is. */
+    val manifestType: String? = null
 )
 
 data class EpgProgram(
@@ -395,4 +410,14 @@ object ChannelNameEditor {
 
     /** Common ones, for "Add common prefixes and suffixes". */
     const val COMMON = "USA, US, UK, CA, AU, 24/7, FHD, HD, SD, UHD, 4K, HEVC, RAW, VIP, ᴴᴰ, ᵁᴴᴰ, ᶠᴴᴰ"
+}
+
+
+/**
+ * Hidden developer tools (Test poster lookup, Remote button tester). Turned on with the secret
+ * word and kept only in memory, so they switch off again the next time the app starts.
+ */
+object DeveloperTools {
+    val enabled = kotlinx.coroutines.flow.MutableStateFlow(false)
+    fun toggle() { enabled.value = !enabled.value }
 }

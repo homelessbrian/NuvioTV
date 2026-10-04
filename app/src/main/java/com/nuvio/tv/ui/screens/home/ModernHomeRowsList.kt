@@ -432,7 +432,7 @@ internal fun ModernHomeRowsList(
                 }
                 androidx.compose.foundation.layout.Column {
                 if (liveTvHere && (liveTvRowAbove == true || !hasContinueWatching)) {
-                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = liveTvRowAbove == true)
+                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = liveTvRowAbove == true, startPadding = 52.dp, titleStyle = androidx.tv.material3.MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
                 }
                 ModernRowSection(
                     row = row,
@@ -491,7 +491,7 @@ internal fun ModernHomeRowsList(
                     }
                 )
                 if (liveTvHere && liveTvRowAbove == false && hasContinueWatching) {
-                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false)
+                    com.nuvio.tv.livetv.home.LiveTvHomeRow(above = false, startPadding = 52.dp, titleStyle = androidx.tv.material3.MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
                 }
                 }
             }

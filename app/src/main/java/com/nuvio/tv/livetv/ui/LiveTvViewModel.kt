@@ -600,9 +600,27 @@ class LiveTvViewModel @Inject constructor(
     fun ensureEpgDetails() = repository.ensureEpgDetails()
     val epgAutoMatches: StateFlow<Map<String, com.nuvio.tv.livetv.model.EpgAssignment>> = repository.autoMatches
 
+    /** Assign EPG changes waiting to be applied (all at once, when the panel closes). */
+    @Volatile private var epgChangesPending = false
+
     fun setChannelEpg(channel: LiveChannel, sourceId: String, xmltvId: String) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, com.nuvio.tv.livetv.model.EpgAssignment(sourceId, xmltvId))
+        epgChangesPending = true
+    }
+
+    /**
+     * Applies the Assign EPG changes in one go. Rebuilding the guide after every single change
+     * made assigning many channels slow; now it happens once, when you close the panel.
+     */
+    fun commitEpgChanges() {
+        if (!epgChangesPending) return
+        epgChangesPending = false
         repository.rematchEpg()
+    }
+
+    override fun onCleared() {
+        commitEpgChanges()
+        super.onCleared()
     }
 
     /** Re-downloads every guide and rebuilds the assignable channel lists. */
@@ -610,7 +628,7 @@ class LiveTvViewModel @Inject constructor(
 
     fun resetChannelEpg(channel: LiveChannel) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, null)
-        repository.rematchEpg()
+        epgChangesPending = true
     }
 
     /** The poster Nuvio's catalogs would show for this program, or null if there's no good match. */

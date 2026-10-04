@@ -92,6 +92,7 @@ private sealed interface LiveDialog {
     data object StartPage : LiveDialog
     data object NameEditor : LiveDialog
     data object PosterTest : LiveDialog
+    data object ButtonTester : LiveDialog
     data object HomeRowSource : LiveDialog
     data object HomeRowTitle : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
@@ -153,6 +154,7 @@ fun LiveTvSettingsContent(
     val status by viewModel.status.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<LiveDialog?>(null) }
     val drive by viewModel.driveSync.state.collectAsStateWithLifecycle()
+    val developerToolsOn by com.nuvio.tv.livetv.model.DeveloperTools.enabled.collectAsStateWithLifecycle()
     val onDemandHas by viewModel.onDemand.hasContent.collectAsStateWithLifecycle()
     val onDemandStatus by viewModel.onDemand.status.collectAsStateWithLifecycle()
     var pinWrong by remember { mutableStateOf(false) }
@@ -337,11 +339,16 @@ fun LiveTvSettingsContent(
                     )
                     // Hidden developer tool: only shown after typing the secret word into the
                     // channel name editor (see NameEditor below).
-                    if (s.developerTools) {
+                    if (developerToolsOn) {
                         SettingsActionRow(
                             "Test poster lookup",
                             "Developer tool: what your addons return for a title",
                             onClick = { dialog = LiveDialog.PosterTest }
+                        )
+                        SettingsActionRow(
+                            "Remote button tester",
+                            "Developer tool: shows every button the remote sends",
+                            onClick = { dialog = LiveDialog.ButtonTester }
                         )
                     }
                     SettingsActionRow(
@@ -906,6 +913,7 @@ fun LiveTvSettingsContent(
             onDismiss = close,
             onConfirm = { t -> update { it.copy(homeRowTitle = t.trim()) }; close() }
         )
+        LiveDialog.ButtonTester -> com.nuvio.tv.livetv.ui.RemoteButtonTester(onClose = close)
         LiveDialog.PosterTest -> {
             val result by viewModel.posterTest.collectAsStateWithLifecycle()
             if (result == null) {
@@ -940,7 +948,7 @@ fun LiveTvSettingsContent(
             onConfirm = { text ->
                 // Secret word: turns the hidden developer tools on or off instead of saving.
                 if (text.trim().equals(DEVELOPER_WORD, ignoreCase = true)) {
-                    update { it.copy(developerTools = !it.developerTools) }
+                    com.nuvio.tv.livetv.model.DeveloperTools.toggle() // until the app next starts
                 } else {
                     update { it.copy(nameRemovals = text.trim()) }
                 }

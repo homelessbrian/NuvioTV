@@ -376,7 +376,13 @@ class LiveTvRepository @Inject constructor(
                     val url = input.readUTF()
                     val headers = HashMap<String, String>().apply { repeat(input.readInt()) { put(input.readUTF(), input.readUTF()) } }
                     val catchup = if (input.readBoolean()) CatchupInfo(input.readUTF(), readOpt(input), input.readInt()) else null
-                    list += LiveChannel(key, sourceId, sourceName, name, tvgId, tvgName, logo, groupId, group, number, url, headers, catchup)
+                    val drm = if (input.readBoolean()) {
+                        val scheme = input.readUTF()
+                        val license = input.readUTF()
+                        val lh = HashMap<String, String>().apply { repeat(input.readInt()) { put(input.readUTF(), input.readUTF()) } }
+                        com.nuvio.tv.livetv.model.DrmInfo(scheme, license, lh, readOpt(input))
+                    } else null
+                    list += LiveChannel(key, sourceId, sourceName, name, tvgId, tvgName, logo, groupId, group, number, url, headers, catchup, drm)
                 }
                 embeddedEpgUrls.clear()
                 embeddedEpgUrls.putAll(epg)
@@ -407,6 +413,12 @@ class LiveTvRepository @Inject constructor(
                     out.writeInt(c.headers.size); c.headers.forEach { (k, v) -> out.writeUTF(k); out.writeUTF(v) }
                     out.writeBoolean(c.catchup != null)
                     c.catchup?.let { cu -> out.writeUTF(cu.type); writeOpt(out, cu.source); out.writeInt(cu.days) }
+                    out.writeBoolean(c.drm != null)
+                    c.drm?.let { d ->
+                        out.writeUTF(d.scheme); out.writeUTF(d.license)
+                        out.writeInt(d.licenseHeaders.size); d.licenseHeaders.forEach { (k, v) -> out.writeUTF(k); out.writeUTF(v) }
+                        writeOpt(out, d.manifestType)
+                    }
                 }
             }
             if (!tmp.renameTo(savedChannelsFile)) { tmp.copyTo(savedChannelsFile, overwrite = true); tmp.delete() }
@@ -677,7 +689,8 @@ class LiveTvRepository @Inject constructor(
                     number = number,
                     url = e.url,
                     headers = headers,
-                    catchup = e.catchup
+                    catchup = e.catchup,
+                    drm = e.drm
                 )
             }
             prefs.updatePlaylists { list -> list.map { if (it.id == pl.id) it.copy(channelCount = parsed.entries.size) else it } }
@@ -1111,7 +1124,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
-        private const val CHANNELS_CACHE_VERSION = 1
+        private const val CHANNELS_CACHE_VERSION = 2
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(
