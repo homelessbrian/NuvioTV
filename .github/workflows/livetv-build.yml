@@ -1,4 +1,4 @@
-name: Build Live TV APK
+name: Build Nuvio + IPTV APK
 
 # Push a tag like v1.0.0 (or run it by hand from the Actions tab) to build the APK.
 # Tagged builds are attached to a GitHub Release automatically.

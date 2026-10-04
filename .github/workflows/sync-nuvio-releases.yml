@@ -177,7 +177,7 @@ jobs:
           mkdir -p out
           for f in $(find app/build/outputs/apk/full/release -name "*.apk"); do
             name=$(basename "$f" .apk)
-            cp "$f" "out/NuvioLiveTV-$TAG-${name#app-full-}.apk"
+            cp "$f" "out/NuvioPlusIPTV-$TAG-${name#app-full-}.apk"
           done
           ls -la out
 
@@ -186,10 +186,10 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ steps.merge.outputs.sha }}
-          name: Nuvio Live TV ${{ env.TAG }}
+          name: Nuvio + IPTV ${{ env.TAG }}
           prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
           files: out/*.apk
           body: |
-            Nuvio ${{ env.TAG }} with Live TV (multiple M3U/EPG sources, TiviMate-style guide).
+            Nuvio + IPTV, based on Nuvio ${{ env.TAG }}: everything in Nuvio, plus Live TV with a TiviMate-style guide and On Demand from your IPTV provider.
 
             Nuvio's changes in this version: https://github.com/${{ env.UPSTREAM }}/releases/tag/${{ env.TAG }}
