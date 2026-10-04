@@ -597,6 +597,7 @@ fun LiveTvGuideScreen(
                 channel = headerChannel,
                 block = headerBlock,
                 poster = headerPoster,
+                onSurfaceAttached = { viewModel.playback.onSurfaceAttached() },
                 playlistName = if (settings.showPlaylistInInfo) headerChannel?.sourceId?.let { playlistNames[it] } else null,
                 settings = settings,
                 now = now,
@@ -1324,7 +1325,9 @@ private fun GuideHeader(
     playbackBuffering: Boolean,
     playbackError: String?,
     catchupTitle: String?,
-    status: String?
+    status: String?,
+    /** The preview took over the picture (the player checks the picture actually starts). */
+    onSurfaceAttached: () -> Unit = {}
 ) {
     if (!settings.showProgramDetails && !showPreview) {
         Row(
@@ -1449,7 +1452,7 @@ private fun GuideHeader(
                         // kinds is what made some TVs freeze the picture when going full screen.
                         useSurfaceView = true,
                         modifier = Modifier.fillMaxSize(),
-                        onAttached = { viewModel.playback.onSurfaceAttached() }
+                        onAttached = onSurfaceAttached
                     )
                 }
                 val overlay = when {
