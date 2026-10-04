@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.focus.focusRequester
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
@@ -89,29 +91,48 @@ fun LiveTvHomeRow(above: Boolean) {
     val settings = s ?: return
     // Off, or not this spot: draw nothing (and don't load Live TV at all).
     if (!settings.homeRowEnabled || !settings.showInSidebar || settings.homeRowAboveContinueWatching != above) return
-    LiveTvHomeRowContent(settings)
+    LiveTvHomeRowContent(settings, takeInitialFocus = above)
 }
+
+/** The home screen opens on the Live TV row (when it's on top) once per app start. */
+private object HomeRowFocus { @Volatile var done = false }
 
 @Composable
 private fun LiveTvHomeRowContent(
     settings: com.nuvio.tv.livetv.model.LiveTvSettings,
+    takeInitialFocus: Boolean,
     viewModel: LiveTvViewModel = hiltViewModel()
 ) {
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val firstCard = remember { androidx.compose.ui.focus.FocusRequester() }
     val actions = LocalLiveTvHomeActions.current
     val entries by viewModel.homeRow.collectAsStateWithLifecycle()
     val now by viewModel.now.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
     if (entries.isEmpty()) return
+    // Row above Continue watching: the home screen opens here (Nuvio would otherwise jump down
+    // to Continue watching). Once per app start, so coming back keeps your place.
+    androidx.compose.runtime.LaunchedEffect(takeInitialFocus) {
+        if (!takeInitialFocus || HomeRowFocus.done) return@LaunchedEffect
+        HomeRowFocus.done = true
+        kotlinx.coroutines.delay(450)
+        runCatching { firstCard.requestFocus() }
+    }
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Row(modifier = Modifier.padding(start = 48.dp, end = 48.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             LiveText(settings.homeRowTitle.ifBlank { "Live TV" }, size = 16.sp, weight = FontWeight.SemiBold)
         }
         LazyRow(
+            state = listState,
             contentPadding = PaddingValues(horizontal = 48.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(entries, key = { it.channel.key }) { e ->
+            itemsIndexed(entries, key = { _, it -> it.channel.key }) { index, e ->
                 HomeCard(
+                    modifier = if (index == 0) Modifier.focusRequester(firstCard) else Modifier,
+                    // Back at the first card: show the very start of the row again.
+                    onFocused = { if (index == 0) scope.launch { listState.animateScrollToItem(0) } },
                     entry = e,
                     now = now,
                     playing = e.channel.key == playback.channelKey,
@@ -134,6 +155,8 @@ private fun LiveTvHomeRowContent(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeCard(
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
     entry: LiveTvViewModel.HomeRowEntry,
     now: Long,
     playing: Boolean,
@@ -147,13 +170,13 @@ private fun HomeCard(
     val shape = RoundedCornerShape(10.dp)
     val p = entry.now
     Row(
-        modifier = Modifier
+        modifier = modifier
             .width(if (compact) 180.dp else 230.dp)
             .height(if (compact) 54.dp else 72.dp)
             .clip(shape)
             .background(colors.background)
             .border(2.dp, if (focused) colors.border else Color.Transparent, shape)
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,

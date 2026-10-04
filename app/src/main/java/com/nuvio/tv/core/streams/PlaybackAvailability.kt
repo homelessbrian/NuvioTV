@@ -30,5 +30,7 @@ internal data class PlaybackAvailability(
     ): Boolean = video?.takeIf { it.id == videoId }?.streams?.isNotEmpty() == true ||
         cachedMeta(type, contentId)?.videos?.any { it.id == videoId && it.streams.isNotEmpty() } == true ||
         addons.any { it.enabled && it.supportsStreamResource(type, videoId) } ||
-        scrapers.any { it.enabled && it.supportsType(type) }
+        scrapers.any { it.enabled && it.supportsType(type) } ||
+        // Live TV fork: your IPTV provider's On Demand may have it (offered as "📡 On Demand").
+        ((type == "movie" || type == "series") && com.nuvio.tv.livetv.ondemand.OnDemandStreams.offeredInStreams)
 }

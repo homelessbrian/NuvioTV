@@ -1055,6 +1055,11 @@ fun LiveTvGuideScreen(
                 target = target,
                 reminderSet = target.block?.program?.let { p -> user.reminders.any { it.channelKey == target.channel.key && it.startMs == p.startMs } } == true,
                 onRemind = { p -> viewModel.toggleReminder(target.channel, p); menuTarget = null },
+                canRestart = viewModel.canWatchFromStart(target.channel),
+                onRestart = {
+                    menuTarget = null
+                    if (viewModel.watchFromStart(target.channel)) goFullscreen()
+                },
                 isFavorite = target.channel.key in user.favorites,
                 inFavoritesGroup = ui.selectedGroupId == ChannelGroup.FAVORITES,
                 now = now,
@@ -1147,7 +1152,12 @@ fun LiveTvGuideScreen(
                     if (viewModel.playCatchup(target.channel, p)) goFullscreen()
                 },
                 reminderSet = target.block?.program?.let { p -> user.reminders.any { it.channelKey == target.channel.key && it.startMs == p.startMs } } == true,
-                onRemind = { p -> viewModel.toggleReminder(target.channel, p); infoTarget = null }
+                onRemind = { p -> viewModel.toggleReminder(target.channel, p); infoTarget = null },
+                canRestart = viewModel.canWatchFromStart(target.channel),
+                onRestart = {
+                    infoTarget = null
+                    if (viewModel.watchFromStart(target.channel)) goFullscreen()
+                }
             )
         }
         textPrompt?.let { prompt ->
@@ -2073,6 +2083,9 @@ private fun ChannelContextMenu(
     onFindInNuvio: (EpgProgram) -> Unit,
     reminderSet: Boolean = false,
     onRemind: (EpgProgram) -> Unit = {},
+    /** The show on now can be restarted (catch-up channel). */
+    canRestart: Boolean = false,
+    onRestart: () -> Unit = {},
     onSearch: () -> Unit,
     onRefresh: () -> Unit,
     onSettings: () -> Unit
@@ -2090,6 +2103,10 @@ private fun ChannelContextMenu(
             if (canCatchup) item { MenuItem("Play from archive: ${program!!.title}", onClick = { onCatchup(program!!) }) }
             if (streamProgram != null) {
                 item { MenuItem("Find & stream \"${streamProgram.title}\" in Nuvio", onClick = { onFindInNuvio(streamProgram) }) }
+            }
+            // On now, on a catch-up channel: start it over.
+            if (program != null && now >= program.startMs && now < program.stopMs && canRestart) item {
+                MenuItem("Watch from the beginning", onClick = onRestart)
             }
             // Upcoming show: Remind me (or Cancel reminder), right in the long-press menu.
             if (program != null && program.startMs > now) item {
@@ -2628,7 +2645,9 @@ private fun ProgramInfoDialog(
     onWatch: () -> Unit,
     onCatchup: (EpgProgram) -> Unit,
     reminderSet: Boolean = false,
-    onRemind: (EpgProgram) -> Unit = {}
+    onRemind: (EpgProgram) -> Unit = {},
+    canRestart: Boolean = false,
+    onRestart: () -> Unit = {}
 ) {
     val first = remember { FocusRequester() }
     val block = target.block
@@ -2665,6 +2684,10 @@ private fun ProgramInfoDialog(
             }
             if (p != null && !upcoming) {
                 LiveFocusRow(onClick = { onFind(p) }) { f -> LiveText("Find & stream in Nuvio", color = focusedTextColor(f)) }
+            }
+            // On now, on a catch-up channel: start it over.
+            if (p != null && now >= p.startMs && now < p.stopMs && canRestart) {
+                LiveFocusRow(onClick = onRestart) { f -> LiveText("Watch from the beginning", color = focusedTextColor(f)) }
             }
             // Reminders: a message a minute before it starts, wherever you are in Nuvio.
             if (p != null && upcoming) {

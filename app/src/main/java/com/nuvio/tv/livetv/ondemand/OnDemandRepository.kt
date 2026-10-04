@@ -141,6 +141,10 @@ class OnDemandRepository @Inject constructor(
         if (started) return
         started = true
         scope.launch {
+            kotlinx.coroutines.flow.combine(hasContent, prefs.settings) { has, s -> has && s.onDemandInStreams }
+                .collect { OnDemandStreams.offeredInStreams = it }
+        }
+        scope.launch {
             _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
             // Learn each provider's title tags (for catalogs imported before this existed).
             runCatching {

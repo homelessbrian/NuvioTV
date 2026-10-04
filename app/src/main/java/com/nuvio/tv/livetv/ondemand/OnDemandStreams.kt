@@ -35,6 +35,14 @@ object OnDemandStreams {
     /** The label for the provider's copies in Nuvio's stream list. */
     const val GROUP_NAME = "📡 On Demand"
 
+    /**
+     * True while provider movies/series are imported and offered in Nuvio's stream list. Nuvio
+     * greys out Play ("Playback unavailable") when none of your addons can stream a title (for
+     * example shows without an IMDb id); with On Demand on, your provider may still have it.
+     */
+    @Volatile
+    var offeredInStreams: Boolean = false
+
     fun withOnDemand(
         context: Context,
         source: Flow<NetworkResult<List<AddonStreams>>>,
@@ -55,8 +63,14 @@ object OnDemandStreams {
         }
         // Added at the end, after your addon and debrid streams; auto-play never picks it.
         return combine(source, onDemand) { result, extra ->
-            if (extra.isEmpty() || result !is NetworkResult.Success) result
-            else NetworkResult.Success(result.data + AddonStreams(GROUP_NAME, null, extra))
+            when {
+                extra.isEmpty() -> result
+                result is NetworkResult.Success -> NetworkResult.Success(result.data + AddonStreams(GROUP_NAME, null, extra))
+                // No addon found anything (or they failed): your provider's copy is still offered,
+                // instead of "playback unavailable".
+                result is NetworkResult.Error -> NetworkResult.Success(listOf(AddonStreams(GROUP_NAME, null, extra)))
+                else -> result
+            }
         }
     }
 
