@@ -294,6 +294,7 @@ fun LiveTvPlayerScreen(
             player = viewModel.playback.player,
             modifier = Modifier.fillMaxSize(),
             useSurfaceView = true,
+            onAttached = { viewModel.playback.onSurfaceAttached() },
             aspectMode = aspectModeOf(settings.aspectMode)
         )
 

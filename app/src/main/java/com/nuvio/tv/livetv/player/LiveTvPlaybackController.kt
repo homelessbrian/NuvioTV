@@ -359,7 +359,50 @@ class LiveTvPlaybackController @Inject constructor(
             }
     }
 
+    // ---------------------------------------------------------------- picture watchdog
+
+    /**
+     * Moving the picture between the guide preview and full screen gives the player a new
+     * screen to draw on. On some TV chips the video then freezes (sound keeps going) or never
+     * starts. After each move, if no picture appears within a couple of seconds, quietly
+     * restart the stream on the new screen (what "Reload stream" did by hand).
+     */
+    @Volatile private var awaitingFrame = false
+    private var frameJob: Job? = null
+
+    fun onSurfaceAttached() {
+        val p = _player ?: return
+        awaitingFrame = true
+        frameJob?.cancel()
+        frameJob = scope.launch {
+            // Sound playing but no picture: frozen video. A channel that's simply still loading
+            // gets longer before we step in (it may just be slow to start).
+            delay(FRAME_TIMEOUT_MS)
+            if (!stuck(p, requireReady = true)) {
+                delay(LOADING_AFTER_MOVE_MS - FRAME_TIMEOUT_MS)
+                if (!stuck(p, requireReady = false)) return@launch
+            }
+            Log.w(TAG, "No picture after moving the video; restarting the stream")
+            val archive = _state.value.catchupTitle != null
+            val pos = p.currentPosition
+            p.stop()
+            p.prepare()
+            if (archive && pos > 0) p.seekTo(pos)
+            p.playWhenReady = true
+        }
+    }
+
+    private fun stuck(p: ExoPlayer, requireReady: Boolean): Boolean {
+        if (!awaitingFrame || !p.playWhenReady || currentChannel == null || _state.value.error != null) return false
+        return if (requireReady) p.playbackState == Player.STATE_READY && p.isPlaying
+        else p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_READY
+    }
+
     private val listener = object : Player.Listener {
+        override fun onRenderedFirstFrame() {
+            awaitingFrame = false
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             _state.value = _state.value.copy(
                 isBuffering = playbackState == Player.STATE_BUFFERING,
@@ -495,6 +538,10 @@ class LiveTvPlaybackController @Inject constructor(
         private const val MAX_RECONNECTS = 8
         /** No progress for this long while it should be playing = stalled. */
         private const val STALL_MS = 15_000L
+        /** No picture this long after the video moved to a new screen = stuck. */
+        private const val FRAME_TIMEOUT_MS = 2_500L
+        /** Still loading this long after the video moved to a new screen = stuck. */
+        private const val LOADING_AFTER_MOVE_MS = 7_000L
         private const val C_TIME_UNSET = Long.MIN_VALUE + 1
         private const val TAG = "LiveTvPlayback"
     }

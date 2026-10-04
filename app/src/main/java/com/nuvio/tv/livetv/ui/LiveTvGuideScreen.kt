@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,6 +38,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -1440,7 +1443,14 @@ private fun GuideHeader(
                     .background(Color.Black)
             ) {
                 if (playingKey != null) {
-                    LivePlayerSurface(player = player, useSurfaceView = false, modifier = Modifier.fillMaxSize())
+                    LivePlayerSurface(
+                        player = player,
+                        // Same kind of surface as full screen: switching between two different
+                        // kinds is what made some TVs freeze the picture when going full screen.
+                        useSurfaceView = true,
+                        modifier = Modifier.fillMaxSize(),
+                        onAttached = { viewModel.playback.onSurfaceAttached() }
+                    )
                 }
                 val overlay = when {
                     playingKey == null -> "Press OK on a channel to preview"
@@ -2301,6 +2311,33 @@ private fun EpgSidePanel(
                 )
             }
         }
+        // Which guide to pick from: one tap per guide (with how many channels each has).
+        if (sources.size > 1) {
+            Spacer(Modifier.height(8.dp))
+            val chips = listOf<Pair<String?, String>>(null to "All guides") +
+                sources.map { it.sourceId to "${it.name} (${it.channels.size})" }
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                itemsIndexed(chips, key = { _, c -> c.first ?: "__all__" }) { i, (id, label) ->
+                    EpgPanelButton(
+                        icon = if (id == sourceFilter) Icons.Default.Check else Icons.Default.Tv,
+                        label = label,
+                        style = style,
+                        modifier = Modifier
+                            .widthIn(min = 104.dp)
+                            .onPreviewKeyEvent { e ->
+                                e.type == KeyEventType.KeyDown && (
+                                    (e.key == Key.DirectionLeft && i == 0) ||
+                                        (e.key == Key.DirectionRight && i == chips.lastIndex)
+                                    )
+                            },
+                        onClick = { sourceFilter = id }
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(10.dp))
         Box(
             Modifier
@@ -2328,7 +2365,13 @@ private fun EpgSidePanel(
                 .fillMaxWidth()
                 .weight(1f)
                 .onPreviewKeyEvent { e ->
-                    e.type == KeyEventType.KeyDown && (e.key == Key.DirectionLeft || e.key == Key.DirectionRight)
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (e.key) {
+                        // Left: straight to Search (OK there opens the search box).
+                        Key.DirectionLeft -> { runCatching { buttonsFocus.requestFocus() }; true }
+                        Key.DirectionRight -> true
+                        else -> false
+                    }
                 },
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(vertical = 4.dp)

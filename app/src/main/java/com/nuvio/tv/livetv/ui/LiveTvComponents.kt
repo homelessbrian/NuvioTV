@@ -237,7 +237,9 @@ internal fun LivePlayerSurface(
     useSurfaceView: Boolean,
     resizeMode: Int = AspectRatioFrameLayout.RESIZE_MODE_FIT,
     /** Nuvio's picture-size mode (full screen only); null keeps the plain [resizeMode]. */
-    aspectMode: com.nuvio.tv.ui.screens.player.AspectMode? = null
+    aspectMode: com.nuvio.tv.ui.screens.player.AspectMode? = null,
+    /** Called when this view takes over the picture (the player's watchdog checks it starts). */
+    onAttached: () -> Unit = {}
 ) {
     val layout = if (useSurfaceView) R.layout.live_tv_surface_player_view else R.layout.live_tv_texture_player_view
     var viewRef by remember { mutableStateOf<PlayerView?>(null) }
@@ -248,7 +250,10 @@ internal fun LivePlayerSurface(
             (LayoutInflater.from(ctx).inflate(layout, null) as PlayerView).also { viewRef = it }
         },
         update = { view ->
-            if (view.player !== player) view.player = player
+            if (view.player !== player) {
+                view.player = player
+                if (player != null) onAttached()
+            }
             view.resizeMode = if (aspectMode != null) AspectRatioFrameLayout.RESIZE_MODE_FIT else resizeMode
             aspectMode?.let { mode -> view.post { com.nuvio.tv.ui.screens.player.applyExoAspectMode(view, mode) } }
         }
