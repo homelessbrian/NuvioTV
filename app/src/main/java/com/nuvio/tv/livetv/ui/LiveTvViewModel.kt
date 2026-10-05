@@ -247,7 +247,7 @@ class LiveTvViewModel @Inject constructor(
             "name" -> regular.sortedWith(
                 compareBy<ChannelGroup>(
                     { g -> if (g.sourceId == null) -1 else if (s.groupPlaylistHeadings) playlistIndex[g.sourceId] ?: Int.MAX_VALUE else 0 },
-                    { g -> g.name.lowercase() }
+                    { g -> g.title.lowercase() }
                 )
             )
             // Your order (Reorder groups), playlist order for anything not moved.
