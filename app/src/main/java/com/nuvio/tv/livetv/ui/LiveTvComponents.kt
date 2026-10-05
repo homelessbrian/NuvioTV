@@ -1,5 +1,7 @@
 package com.nuvio.tv.livetv.ui
 
+import com.nuvio.tv.livetv.model.EpgProgram
+
 import android.view.LayoutInflater
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -323,4 +325,18 @@ internal fun rememberDelayedTrue(value: Boolean, delayMs: Long): Boolean {
         shown = true
     }
     return value && shown
+}
+
+/** Fetches a show's full details (description, cast…) when the guide only has its short form. */
+internal val LocalShowDetails = androidx.compose.runtime.staticCompositionLocalOf<suspend (String, EpgProgram) -> EpgProgram> { { _, p -> p } }
+
+/** [program] with its details filled in (shown straight away, details a moment later if needed). */
+@Composable
+internal fun rememberShowDetails(channelKey: String?, program: EpgProgram?): EpgProgram? {
+    val loader = LocalShowDetails.current
+    val state = androidx.compose.runtime.produceState(initialValue = program, channelKey, program) {
+        value = program
+        if (channelKey != null && program != null) value = loader(channelKey, program)
+    }
+    return state.value
 }

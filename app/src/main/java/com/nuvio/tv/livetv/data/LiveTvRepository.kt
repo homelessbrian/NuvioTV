@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -90,11 +92,15 @@ class LiveTvRepository @Inject constructor(
     private var initialized = false
 
     /** Loads cached data immediately, then refreshes anything older than the configured interval. */
-    fun ensureLoaded() {
+    fun ensureLoaded(updateCheckDelayMs: Long = 0L) {
         if (initialized) return
         initialized = true
         scope.launch {
+            // Saved channels and guide first: reading them only uses the device's storage.
             loadFromCache()
+            // Checking for playlist / guide updates uses the network and a lot of processing,
+            // so when this starts with the app it waits a little, out of Nuvio's way.
+            if (updateCheckDelayMs > 0) delay(updateCheckDelayMs)
             refreshStale()
         }
     }
@@ -328,6 +334,9 @@ class LiveTvRepository @Inject constructor(
         // The channel list as it was last read, when no playlist has changed since: Live TV
         // (Favorites included) appears straight away instead of re-reading every playlist file.
         var t0 = System.currentTimeMillis()
+        // The stored guide is read at the same time as the channel list (it only has to be
+        // checked against the channels afterwards), so the two waits overlap.
+        val guidePreRead = scope.async(Dispatchers.IO) { preReadGuide() }
         if (!loadSavedChannels()) {
             buildChannels()
             saveChannels()
@@ -340,7 +349,7 @@ class LiveTvRepository @Inject constructor(
         // The guide as it was last matched, if nothing it depends on has changed: the guide
         // fills in straight away instead of re-reading every guide file at each start.
         t0 = System.currentTimeMillis()
-        if (!loadGuideFromDb(settings, targets)) {
+        if (!loadGuideFromDb(settings, targets, guidePreRead.await())) {
             buildPrograms(settings, targets)
             LIVE_REPORT.add("Guide re-read from guide files in ${System.currentTimeMillis() - t0} ms")
         } else {
@@ -359,7 +368,7 @@ class LiveTvRepository @Inject constructor(
 
     // ---------------------------------------------------------------- saved channel list
 
-    private val savedChannelsFile get() = File(baseDir, "channels_cache.bin")
+    private val savedChannelsFile get() = File(baseDir, "channels_cache3.bin")
 
     /** Everything the channel list is built from; a different value means it must be re-read. */
     private suspend fun channelsFingerprint(): String {
@@ -372,12 +381,18 @@ class LiveTvRepository @Inject constructor(
         return sb.toString()
     }
 
+    /**
+     * Saved channel list, format 3: not zipped (unzipping cost more than reading a slightly
+     * bigger file on TV boxes), and text that repeats across channels (playlist, group,
+     * catch-up type) stored once and referred to by number. Faster to read, less memory.
+     */
     private suspend fun loadSavedChannels(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { File(baseDir, "channels_cache.bin").delete() } // the old zipped format
         val file = savedChannelsFile
         if (!file.exists()) return@withContext false
         val expected = channelsFingerprint()
         runCatching {
-            java.io.DataInputStream(java.io.BufferedInputStream(java.util.zip.GZIPInputStream(file.inputStream()), 64 * 1024)).use { input ->
+            java.io.DataInputStream(java.io.BufferedInputStream(file.inputStream(), 256 * 1024)).use { input ->
                 val stored = input.readUTF()
                 if (stored != expected) {
                     LIVE_REPORT.add("Saved channel list out of date: ${fingerprintDiff(stored, expected)}")
@@ -388,27 +403,32 @@ class LiveTvRepository @Inject constructor(
                     val id = input.readUTF()
                     epg[id] = List(input.readInt()) { input.readUTF() }
                 }
-                val list = ArrayList<LiveChannel>(input.readInt().coerceAtLeast(0))
-                val count = list.let { input.readInt() }
+                val table = Array(input.readInt()) { input.readUTF() }
+                fun shared(): String = table[input.readInt()]
+                fun opt(): String? = if (input.readBoolean()) input.readUTF() else null
+                val count = input.readInt()
+                val list = ArrayList<LiveChannel>(count)
                 repeat(count) {
                     val key = input.readUTF()
-                    val sourceId = input.readUTF()
-                    val sourceName = input.readUTF()
+                    val sourceId = shared()
+                    val sourceName = shared()
                     val name = input.readUTF()
-                    val tvgId = readOpt(input)
-                    val tvgName = readOpt(input)
-                    val logo = readOpt(input)
-                    val groupId = input.readUTF()
-                    val group = input.readUTF()
+                    val tvgId = opt()
+                    val tvgName = opt()
+                    val logo = opt()
+                    val groupId = shared()
+                    val group = shared()
                     val number = input.readInt()
                     val url = input.readUTF()
-                    val headers = HashMap<String, String>().apply { repeat(input.readInt()) { put(input.readUTF(), input.readUTF()) } }
-                    val catchup = if (input.readBoolean()) CatchupInfo(input.readUTF(), readOpt(input), input.readInt()) else null
+                    val headerCount = input.readInt()
+                    val headers: Map<String, String> = if (headerCount == 0) emptyMap()
+                    else HashMap<String, String>(headerCount * 2).apply { repeat(headerCount) { put(shared(), input.readUTF()) } }
+                    val catchup = if (input.readBoolean()) CatchupInfo(shared(), opt(), input.readInt()) else null
                     val drm = if (input.readBoolean()) {
-                        val scheme = input.readUTF()
+                        val scheme = shared()
                         val license = input.readUTF()
                         val lh = HashMap<String, String>().apply { repeat(input.readInt()) { put(input.readUTF(), input.readUTF()) } }
-                        com.nuvio.tv.livetv.model.DrmInfo(scheme, license, lh, readOpt(input))
+                        com.nuvio.tv.livetv.model.DrmInfo(scheme, license, lh, opt())
                     } else null
                     list += LiveChannel(key, sourceId, sourceName, name, tvgId, tvgName, logo, groupId, group, number, url, headers, catchup, drm)
                 }
@@ -426,26 +446,42 @@ class LiveTvRepository @Inject constructor(
     private suspend fun saveChannels() = withContext(Dispatchers.IO) {
         val fingerprint = channelsFingerprint()
         runCatching {
-            val tmp = File(baseDir, "channels_cache.tmp")
-            java.io.DataOutputStream(java.io.BufferedOutputStream(java.util.zip.GZIPOutputStream(tmp.outputStream()), 64 * 1024)).use { out ->
+            val list = _channels.value
+            // Text shared by many channels, stored once.
+            val index = LinkedHashMap<String, Int>()
+            fun id(v: String): Int = index.getOrPut(v) { index.size }
+            list.forEach { c ->
+                id(c.sourceId); id(c.sourceName); id(c.groupId); id(c.group)
+                c.headers.keys.forEach { id(it) }
+                c.catchup?.let { id(it.type) }
+                c.drm?.let { id(it.scheme) }
+            }
+            val tmp = File(baseDir, "channels_cache3.tmp")
+            java.io.DataOutputStream(java.io.BufferedOutputStream(tmp.outputStream(), 256 * 1024)).use { out ->
+                fun opt(v: String?) { out.writeBoolean(v != null); if (v != null) out.writeUTF(v) }
                 out.writeUTF(fingerprint)
                 out.writeInt(embeddedEpgUrls.size)
-                embeddedEpgUrls.forEach { (id, urls) -> out.writeUTF(id); out.writeInt(urls.size); urls.forEach { out.writeUTF(it) } }
-                val list = _channels.value
-                out.writeInt(list.size) // capacity hint
+                embeddedEpgUrls.forEach { (eid, urls) -> out.writeUTF(eid); out.writeInt(urls.size); urls.forEach { out.writeUTF(it) } }
+                out.writeInt(index.size)
+                index.keys.forEach { out.writeUTF(it) }
                 out.writeInt(list.size)
                 list.forEach { c ->
-                    out.writeUTF(c.key); out.writeUTF(c.sourceId); out.writeUTF(c.sourceName); out.writeUTF(c.name)
-                    writeOpt(out, c.tvgId); writeOpt(out, c.tvgName); writeOpt(out, c.logo)
-                    out.writeUTF(c.groupId); out.writeUTF(c.group); out.writeInt(c.number); out.writeUTF(c.url)
-                    out.writeInt(c.headers.size); c.headers.forEach { (k, v) -> out.writeUTF(k); out.writeUTF(v) }
+                    out.writeUTF(c.key)
+                    out.writeInt(index.getValue(c.sourceId)); out.writeInt(index.getValue(c.sourceName))
+                    out.writeUTF(c.name)
+                    opt(c.tvgId); opt(c.tvgName); opt(c.logo)
+                    out.writeInt(index.getValue(c.groupId)); out.writeInt(index.getValue(c.group))
+                    out.writeInt(c.number)
+                    out.writeUTF(c.url)
+                    out.writeInt(c.headers.size)
+                    c.headers.forEach { (k, v) -> out.writeInt(index.getValue(k)); out.writeUTF(v) }
                     out.writeBoolean(c.catchup != null)
-                    c.catchup?.let { cu -> out.writeUTF(cu.type); writeOpt(out, cu.source); out.writeInt(cu.days) }
+                    c.catchup?.let { cu -> out.writeInt(index.getValue(cu.type)); opt(cu.source); out.writeInt(cu.days) }
                     out.writeBoolean(c.drm != null)
                     c.drm?.let { d ->
-                        out.writeUTF(d.scheme); out.writeUTF(d.license)
+                        out.writeInt(index.getValue(d.scheme)); out.writeUTF(d.license)
                         out.writeInt(d.licenseHeaders.size); d.licenseHeaders.forEach { (k, v) -> out.writeUTF(k); out.writeUTF(v) }
-                        writeOpt(out, d.manifestType)
+                        opt(d.manifestType)
                     }
                 }
             }
@@ -483,24 +519,87 @@ class LiveTvRepository @Inject constructor(
      * Opening Live TV: if the guide database matches the current guide and channels, read just
      * the hours around now. Instant, however big the guide is.
      */
-    private suspend fun loadGuideFromDb(settings: LiveTvSettings, targets: List<EpgTarget>): Boolean = withContext(Dispatchers.IO) {
+    /** What [preReadGuide] read ahead: the stored fingerprint, and the priority channels' listings. */
+    private class GuidePreRead(val fingerprint: String?, val from: Long, val to: Long, val window: Map<String, List<EpgProgram>>)
+
+    /** Channels to fill in first: the group you were last looking at, and your Favorites. */
+    private val priorityFile get() = File(baseDir, "guide_priority.txt")
+
+    private fun priorityKeys(): List<String> =
+        runCatching { priorityFile.readLines().filter { it.isNotBlank() } }.getOrDefault(emptyList())
+
+    /** Remembers which channels to load first next time, and loads them now if needed. */
+    fun rememberPriority(keys: List<String>) {
+        val list = keys.distinct().take(600)
+        if (list.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            runCatching { priorityFile.writeText(list.joinToString("\n")) }
+            if (!guideInDb) return@launch
+            val missing = list.filter { it !in _programs.value }
+            if (missing.isEmpty()) return@launch
+            val got = runCatching { guideDb.range(loadedFrom, loadedTo, light = true, channels = missing) }.getOrNull() ?: return@launch
+            rangeMutex.withLock { _programs.value = _programs.value + got }
+        }
+    }
+
+    private fun preReadGuide(): GuidePreRead? = runCatching {
+        val now = System.currentTimeMillis()
+        val from = now - 60 * 60 * 1000L
+        val to = now + 4 * HOUR
+        val fp = guideDb.fingerprint() ?: return@runCatching null
+        val keys = priorityKeys()
+        val window = if (keys.isEmpty()) emptyMap() else guideDb.range(from, to, light = true, channels = keys)
+        GuidePreRead(fp, from, to, window)
+    }.getOrNull()
+
+    /**
+     * Opening Live TV: if the guide database matches the current guide and channels, show the
+     * channels you were last looking at straight away (read ahead, short form), then fill in all
+     * the others in the background. Instant, however big the guide is.
+     */
+    private suspend fun loadGuideFromDb(settings: LiveTvSettings, targets: List<EpgTarget>, pre: GuidePreRead?): Boolean = withContext(Dispatchers.IO) {
         if (_channels.value.isEmpty()) return@withContext false
         runCatching { savedGuideFile.delete() } // the old single-file copy isn't used any more
         val expected = guideFingerprint(settings, targets)
-        val stored = runCatching { guideDb.fingerprint() }.getOrNull()
+        val stored = pre?.fingerprint ?: runCatching { guideDb.fingerprint() }.getOrNull()
         if (stored != expected) {
             LIVE_REPORT.add(if (stored == null) "No stored guide yet" else "Stored guide out of date: ${fingerprintDiff(stored, expected)}")
             return@withContext false
         }
-        val (from, to) = defaultWindow()
-        val window = runCatching { guideDb.range(from, to) }.getOrNull() ?: return@withContext false
-        _programs.value = window
+        val now = System.currentTimeMillis()
+        val from = pre?.from ?: (now - 60 * 60 * 1000L)
+        val to = pre?.to ?: (now + 4 * HOUR)
+        _programs.value = pre?.window.orEmpty()
         _autoMatches.value = runCatching { guideDb.autoMatches() }.getOrDefault(emptyMap())
         loadedFrom = from
         loadedTo = to
         guideInDb = true
+        lightPrograms = true
         epgDetailsPending = true
+        LIVE_REPORT.add("First channels' listings ready: ${_programs.value.size} channels")
+        // Everything else (short form), then the rest of the usual hours, in the background.
+        scope.launch(Dispatchers.IO) {
+            val t0 = System.currentTimeMillis()
+            val rest = runCatching { guideDb.range(from, to, light = true) }.getOrNull()
+            if (rest != null) rangeMutex.withLock {
+                val merged = HashMap<String, List<EpgProgram>>(rest)
+                _programs.value.forEach { (k, v) -> if ((merged[k]?.size ?: 0) < v.size) merged[k] = v }
+                _programs.value = merged
+            }
+            LIVE_REPORT.add("All channels' listings ready: ${_programs.value.size} channels in ${System.currentTimeMillis() - t0} ms")
+            val (fullFrom, fullTo) = defaultWindow()
+            ensureRange(fullFrom, fullTo)
+        }
         true
+    }
+
+    /** Programs in memory may be the short form (no descriptions): see [programDetails]. */
+    @Volatile var lightPrograms = false
+        private set
+
+    /** One show's full details (description, cast…), from the stored guide. */
+    suspend fun programDetails(channelKey: String, startMs: Long): EpgProgram? = withContext(Dispatchers.IO) {
+        if (!guideInDb) null else runCatching { guideDb.program(channelKey, startMs) }.getOrNull()
     }
 
     /**
@@ -514,7 +613,7 @@ class LiveTvRepository @Inject constructor(
                 if (fromMs >= loadedFrom && toMs <= loadedTo) return@withLock
                 val from = minOf(fromMs, loadedFrom)
                 val to = maxOf(toMs, loadedTo)
-                val loaded = runCatching { guideDb.range(from, to) }.getOrNull() ?: return@withLock
+                val loaded = runCatching { guideDb.range(from, to, light = lightPrograms) }.getOrNull() ?: return@withLock
                 // Keep any full single-channel schedules already loaded (overlay mode, catch-up).
                 val merged = HashMap<String, List<EpgProgram>>(loaded)
                 _programs.value.forEach { (ch, list) ->
@@ -930,6 +1029,7 @@ class LiveTvRepository @Inject constructor(
         val stored = runCatching { guideDb.replaceAll(guideFingerprint(settings, targets), result, auto) }
             .onFailure { Log.w(TAG, "Couldn't store the guide", it) }.isSuccess
         if (stored) {
+            lightPrograms = false
             val (from, to) = defaultWindow()
             _programs.value = result.mapValues { (_, l) -> l.filter { it.stopMs > from && it.startMs < to } }.filterValues { it.isNotEmpty() }
             loadedFrom = from
@@ -1256,7 +1356,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
-        private const val CHANNELS_CACHE_VERSION = 2
+        private const val CHANNELS_CACHE_VERSION = 3
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(

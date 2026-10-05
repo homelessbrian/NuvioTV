@@ -208,7 +208,7 @@ fun LiveTvPlayerScreen(
 
     // What's on now, and the poster Nuvio's catalogs would show for it (looked up ahead of time,
     // so it's ready when the info bar opens).
-    val nowProgram = current?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } }
+    val nowProgram = rememberShowDetails(current?.key, current?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } })
     val watchingTitle = playback.catchupTitle ?: nowProgram?.title
     val poster by androidx.compose.runtime.produceState<String?>(initialValue = null, watchingTitle) {
         value = null

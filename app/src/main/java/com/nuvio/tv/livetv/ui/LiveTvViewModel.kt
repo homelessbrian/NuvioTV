@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -593,6 +594,24 @@ class LiveTvViewModel @Inject constructor(
         if (s.homeRowLimit > 0) entries.take(s.homeRowLimit) else entries
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * The channels the home screen row shows (Favorites, Recently watched or one of your own
+     * groups), loaded first at start-up so the row fills in straight away.
+     */
+    private val homeRowKeys: kotlinx.coroutines.flow.Flow<List<String>> =
+        combine(displayChannels, userState, settings) { channels, user, s ->
+            if (!s.homeRowEnabled || channels.isEmpty()) emptyList()
+            else {
+                val groupId = when (s.homeRowSource) {
+                    "favorites", "" -> ChannelGroup.FAVORITES
+                    "recent" -> ChannelGroup.RECENT
+                    else -> s.homeRowSource
+                }
+                val limit = if (s.homeRowLimit > 0) s.homeRowLimit * 3 else 200
+                buildUi(channels, user, s, groupId, "", true).channels.take(limit).map { it.key }
+            }
+        }.flowOn(Dispatchers.Default).distinctUntilChanged()
+
     /** Home screen: play [channel] (the guide then opens on the row's group behind it). */
     fun playFromHome(channel: LiveChannel) {
         val s = settings.value
@@ -604,6 +623,21 @@ class LiveTvViewModel @Inject constructor(
             }
         )
         preview(channel)
+    }
+
+    init {
+        viewModelScope.launch {
+            combine(
+                uiState.map { it.channels.map { c -> c.key } }.distinctUntilChanged(),
+                userState.map { it.favorites }.distinctUntilChanged(),
+                homeRowKeys
+            ) { a, b, c -> c + b + a.take(400) }
+                .distinctUntilChanged()
+                .collectLatest { keys ->
+                    delay(1_500)
+                    if (keys.isNotEmpty()) repository.rememberPriority(keys)
+                }
+        }
     }
 
     /** Guide scrolled ahead or back: load those hours from the guide database if needed. */
@@ -659,15 +693,49 @@ class LiveTvViewModel @Inject constructor(
         program: EpgProgram? = null,
         channel: LiveChannel? = null
     ): String? = if (!settings.value.showPosters) null // "Show posters" off: logo only, no lookups
-    else posterResolver.posterFor(
-        programTitle,
-        com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(program, channel),
-        com.nuvio.tv.livetv.data.LiveTvPosterResolver.Clues(
-            year = program?.year,
-            people = program?.people.orEmpty(),
-            description = program?.description
+    else {
+        // Details (year, cast, description) sharpen the match; fetch them if not loaded yet.
+        val full = if (program != null && channel != null) details(channel.key, program) else program
+        posterResolver.posterFor(
+            programTitle,
+            com.nuvio.tv.livetv.data.LiveTvPosterResolver.typeHint(full, channel),
+            com.nuvio.tv.livetv.data.LiveTvPosterResolver.Clues(
+                year = full?.year,
+                people = full?.people.orEmpty(),
+                description = full?.description
+            )
         )
-    )
+    }
+
+    // ------------------------------------------------------------ show details on demand
+
+    private val detailCache = com.nuvio.tv.livetv.data.boundedCache<String, EpgProgram>(800)
+
+    /**
+     * A show with its full details (description, cast, category, year). The guide keeps only
+     * the short form of every listing in memory (much faster to load); the details of the show
+     * you're looking at are fetched here, once, and remembered.
+     */
+    suspend fun details(channelKey: String, program: EpgProgram): EpgProgram {
+        if (!repository.lightPrograms || program.description != null || program.people.isNotEmpty()) return program
+        val key = "$channelKey|${program.startMs}"
+        detailCache[key]?.let { return it }
+        val shift = settings.value.epgOffsetMinutes * 60_000L
+        val full = repository.programDetails(channelKey, program.startMs - shift) ?: return program
+        val merged = program.copy(
+            description = full.description,
+            category = full.category,
+            year = full.year,
+            people = full.people,
+            episode = program.episode ?: full.episode,
+            icon = program.icon ?: full.icon
+        )
+        detailCache[key] = merged
+        return merged
+    }
+
+    /** Remembers which channels to fill in first next time (the group on screen, favorites). */
+    fun rememberPriority(keys: List<String>) = repository.rememberPriority(keys)
 
     // ------------------------------------------------------------ channel management
 

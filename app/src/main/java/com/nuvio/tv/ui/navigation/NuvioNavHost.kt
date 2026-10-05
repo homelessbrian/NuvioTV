@@ -237,6 +237,7 @@ private fun PlaybackNavHost(
             }
             androidx.compose.runtime.CompositionLocalProvider(
                 com.nuvio.tv.livetv.home.LocalLiveTvHomeActions provides com.nuvio.tv.livetv.home.LiveTvHomeActions(
+                    onHome = true,
                     openFullscreen = {
                         openLiveTv()
                         navController.navigate(Screen.LiveTvPlayer.route) { launchSingleTop = true }

@@ -32,13 +32,15 @@ object LiveTvPreload {
         val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(
             context.applicationContext, LiveTvStartupEntryPoint::class.java
         )
-        // Let Nuvio's own start-up go first.
-        kotlinx.coroutines.delay(2_500)
+        // Reading the saved channel list and guide is quick and only uses storage, so it starts
+        // almost straight away, as the app opens. Checking for updates (network, heavy) waits
+        // until the app has settled.
+        kotlinx.coroutines.delay(300)
         val prefs = entry.liveTvPreferences()
         val settings = prefs.settings.first()
         val playlists = prefs.playlists.first()
         if (!settings.showInSidebar || playlists.none { it.liveEnabled }) return
-        entry.liveTvRepository().ensureLoaded()
+        entry.liveTvRepository().ensureLoaded(updateCheckDelayMs = 20_000)
     }
 }
 

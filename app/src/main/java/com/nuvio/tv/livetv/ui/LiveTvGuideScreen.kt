@@ -579,6 +579,9 @@ fun LiveTvGuideScreen(
     var previewBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     // Only a Back press that *started* in the guide counts as "hold Back" here.
     var backPressStartedHere by remember { mutableStateOf(false) }
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalShowDetails provides { key, p -> viewModel.details(key, p) }
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1486,6 +1489,7 @@ fun LiveTvGuideScreen(
         }
     }
     }
+    }
 }
 
 private fun channelColumnWidth(s: LiveTvSettings): Dp {
@@ -1589,7 +1593,7 @@ private fun GuideHeader(
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                val p = block?.program
+                val p = rememberShowDetails(channel.key, block?.program)
                 LiveText(
                     text = p?.title ?: channel.name,
                     modifier = Modifier.fillMaxWidth(),
@@ -2835,7 +2839,7 @@ private fun ProgramInfoDialog(
 ) {
     val first = remember { FocusRequester() }
     val block = target.block
-    val p = block?.program
+    val p = rememberShowDetails(target.channel.key, block?.program)
     LiveDialog(onDismiss = onDismiss, width = 640.dp) {
         LiveText(p?.title ?: target.channel.name, size = 24.sp, weight = FontWeight.Bold, maxLines = 2)
         Spacer(Modifier.height(6.dp))

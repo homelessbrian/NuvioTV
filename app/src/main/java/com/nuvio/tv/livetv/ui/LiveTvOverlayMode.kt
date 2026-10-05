@@ -277,7 +277,8 @@ internal fun LiveTvOverlayMode(
             OverlayLevel.SCHEDULE, OverlayLevel.DATES -> focusedShow?.program
             OverlayLevel.GROUPS -> null
         }
-        card?.let { p ->
+        val cardChannelKey = if (level == OverlayLevel.CHANNELS) settledChannel?.key else scheduleChannel?.key
+        rememberShowDetails(cardChannelKey, card)?.let { p ->
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)

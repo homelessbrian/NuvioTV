@@ -364,6 +364,9 @@ open class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // Live TV fork: start reading the saved channel list and guide as the app opens (before
+        // any screen, even the profile picker), so Live TV is ready when you get to it.
+        lifecycleScope.launch { runCatching { com.nuvio.tv.livetv.startup.LiveTvPreload.start(this@MainActivity) } }
         isFirstResumeAfterCreate = true
         window?.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
 
@@ -1346,6 +1349,9 @@ open class MainActivity : ComponentActivity() {
     val longPressBackHeld = mutableStateOf(false)
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Live TV fork: remember when the remote was last used (the home screen's Live TV row
+        // only claims the first highlight while nobody has pressed anything yet).
+        if (event.action == KeyEvent.ACTION_DOWN) com.nuvio.tv.livetv.home.LiveTvHomeFocus.lastKeyAt = android.os.SystemClock.uptimeMillis()
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (longPressBackHeld.value) {
                 if (event.action == KeyEvent.ACTION_UP) longPressBackHeld.value = false
@@ -1466,11 +1472,11 @@ private fun LegacySidebarScaffold(
         onExitApp()
     }
 
-    // Live TV fork: the menu closing over Home hands the highlight to the Live TV row (when on top).
+    // Live TV fork: back from the menu to Home, the Live TV row gets the highlight back only if
+    // it had it when the menu opened (otherwise Nuvio returns to the row you were on).
     LaunchedEffect(drawerState.currentValue) {
-        if (drawerState.currentValue == DrawerValue.Closed && currentRoute == Screen.Home.route) {
-            com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
-        }
+        if (drawerState.currentValue == DrawerValue.Open) com.nuvio.tv.livetv.home.LiveTvHomeFocus.menuOpened()
+        else if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.menuClosed()
     }
 
     LaunchedEffect(drawerState.currentValue, pendingContentFocusTransfer) {
@@ -1480,8 +1486,6 @@ private fun LegacySidebarScaffold(
         repeat(2) { withFrameNanos { } }
         runCatching { contentFocusRequester.requestFocus() }
         pendingContentFocusTransfer = false
-        // Live TV fork: back from the menu onto Home starts on the Live TV row when it's on top.
-        if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     }
 
     LaunchedEffect(drawerState.currentValue, selectedDrawerRoute, showSidebar, pendingSidebarFocusRequest) {
@@ -1981,9 +1985,11 @@ private fun ModernSidebarScaffold(
     val sidebarDeflateOffsetX = NuvioTheme.spacing.none
     val sidebarDeflateOffsetY = NuvioTheme.spacing.none
 
-    // Live TV fork: the sidebar closing over Home hands the highlight to the Live TV row (when on top).
+    // Live TV fork: back from the sidebar to Home, the Live TV row gets the highlight back only if
+    // it had it when the sidebar opened (otherwise Nuvio returns to the row you were on).
     LaunchedEffect(isSidebarExpanded) {
-        if (!isSidebarExpanded && currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
+        if (isSidebarExpanded) com.nuvio.tv.livetv.home.LiveTvHomeFocus.menuOpened()
+        else if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.menuClosed()
     }
 
     LaunchedEffect(isSidebarExpanded, sidebarCollapsePending, pendingContentFocusTransfer, showSidebar) {
@@ -1993,8 +1999,6 @@ private fun ModernSidebarScaffold(
         repeat(2) { withFrameNanos { } }
         runCatching { contentFocusRequester.requestFocus() }
         pendingContentFocusTransfer = false
-        // Live TV fork: back from the menu onto Home starts on the Live TV row when it's on top.
-        if (currentRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     }
 
     LaunchedEffect(isSidebarExpanded, pendingSidebarFocusRequest, showSidebar, selectedDrawerRoute) {
@@ -2375,8 +2379,6 @@ private fun navigateToDrawerRoute(
     currentRoute: String?,
     targetRoute: String
 ) {
-    // Live TV fork: Home from the menu starts on the Live TV row when it's on top.
-    if (targetRoute == Screen.Home.route) com.nuvio.tv.livetv.home.LiveTvHomeFocus.request()
     if (currentRoute == targetRoute) {
         if (targetRoute == Screen.Home.route) {
             // Scroll Home to top by clearing saved focus/scroll state on the ViewModel.

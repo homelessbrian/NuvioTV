@@ -17,7 +17,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_guide.db", null, 1) {
+    SQLiteOpenHelper(context, "livetv_guide.db", null, 2) {
 
     init {
         // Readers don't wait for writers: the guide stays readable (scrolling, catch-up) while a
@@ -33,15 +33,23 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
         )
         db.execSQL("CREATE INDEX programs_ch_start ON programs(ch, start)")
         db.execSQL("CREATE INDEX programs_stop ON programs(stop)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS programs_start ON programs(start)")
         db.execSQL("CREATE TABLE auto (ch TEXT PRIMARY KEY, source TEXT NOT NULL, xmltv TEXT NOT NULL)")
         db.execSQL("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS programs")
-        db.execSQL("DROP TABLE IF EXISTS auto")
-        db.execSQL("DROP TABLE IF EXISTS meta")
-        onCreate(db)
+        // Version 2: an index on start time, so "the hours around now" is read directly instead
+        // of going through every future listing (which took minutes on big guides).
+        if (oldVersion < 2) {
+            runCatching { db.execSQL("CREATE INDEX IF NOT EXISTS programs_start ON programs(start)") }
+                .onFailure {
+                    db.execSQL("DROP TABLE IF EXISTS programs")
+                    db.execSQL("DROP TABLE IF EXISTS auto")
+                    db.execSQL("DROP TABLE IF EXISTS meta")
+                    onCreate(db)
+                }
+        }
     }
 
     /** Replaces the whole guide (after a guide update), in one transaction. */
@@ -89,29 +97,65 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
         }
 
     /** Listings overlapping [fromMs, toMs), by channel, in time order. */
-    fun range(fromMs: Long, toMs: Long, onlyChannel: String? = null): Map<String, List<EpgProgram>> {
+    /**
+     * Listings in [fromMs, toMs), by channel, in time order.
+     *  - [light]: just the parts the guide grid needs (title, times, episode, image), without
+     *    descriptions and cast. Several times quicker to read and much smaller in memory;
+     *    details are fetched for the show you're looking at ([program]).
+     *  - [channels]: only these channels (the group on screen first, the rest afterwards).
+     */
+    fun range(
+        fromMs: Long,
+        toMs: Long,
+        onlyChannel: String? = null,
+        light: Boolean = false,
+        channels: Collection<String>? = null
+    ): Map<String, List<EpgProgram>> {
         val out = HashMap<String, ArrayList<EpgProgram>>()
-        val sql = "SELECT ch, start, stop, title, descr, cat, ep, icon, year, people FROM programs " +
-            "WHERE " + (if (onlyChannel != null) "ch = ? AND " else "") + "stop > ? AND start < ? ORDER BY ch, start"
-        val args = listOfNotNull(onlyChannel, fromMs.toString(), toMs.toString()).toTypedArray()
-        readableDatabase.rawQuery(sql, args).use { c ->
-            while (c.moveToNext()) {
-                val p = EpgProgram(
-                    startMs = c.getLong(1),
-                    stopMs = c.getLong(2),
-                    title = c.getString(3),
-                    description = if (c.isNull(4)) null else c.getString(4),
-                    category = if (c.isNull(5)) null else c.getString(5),
-                    episode = if (c.isNull(6)) null else c.getString(6),
-                    icon = if (c.isNull(7)) null else c.getString(7),
-                    year = if (c.isNull(8)) null else c.getInt(8),
-                    people = if (c.isNull(9)) emptyList() else c.getString(9).split('\u001F')
-                )
-                out.getOrPut(c.getString(0)) { ArrayList() } += p
+        val columns = if (light) "ch, start, stop, title, ep, icon" else "ch, start, stop, title, descr, cat, ep, icon, year, people"
+        // Read by start time (indexed): shows starting in the window, plus ones that started up
+        // to [MAX_SHOW_MS] earlier and are still on. Looking up "everything that ends after the
+        // start of the window" instead meant reading every future listing in the guide.
+        val timeArgs = listOf((fromMs - MAX_SHOW_MS).toString(), toMs.toString(), fromMs.toString())
+        fun read(chFilter: String, chArgs: List<String>) {
+            val sql = "SELECT $columns FROM programs WHERE $chFilter start >= ? AND start < ? AND stop > ?"
+            readableDatabase.rawQuery(sql, (chArgs + timeArgs).toTypedArray()).use { c ->
+                while (c.moveToNext()) {
+                    val p = if (light) EpgProgram(
+                        startMs = c.getLong(1),
+                        stopMs = c.getLong(2),
+                        title = c.getString(3),
+                        episode = if (c.isNull(4)) null else c.getString(4),
+                        icon = if (c.isNull(5)) null else c.getString(5)
+                    ) else EpgProgram(
+                        startMs = c.getLong(1),
+                        stopMs = c.getLong(2),
+                        title = c.getString(3),
+                        description = if (c.isNull(4)) null else c.getString(4),
+                        category = if (c.isNull(5)) null else c.getString(5),
+                        episode = if (c.isNull(6)) null else c.getString(6),
+                        icon = if (c.isNull(7)) null else c.getString(7),
+                        year = if (c.isNull(8)) null else c.getInt(8),
+                        people = if (c.isNull(9)) emptyList() else c.getString(9).split('\u001F')
+                    )
+                    out.getOrPut(c.getString(0)) { ArrayList() } += p
+                }
             }
         }
+        when {
+            onlyChannel != null -> read("ch = ? AND", listOf(onlyChannel))
+            channels != null -> channels.distinct().chunked(400).forEach { part ->
+                read("ch IN (" + part.joinToString(",") { "?" } + ") AND", part)
+            }
+            else -> read("", emptyList())
+        }
+        out.values.forEach { l -> l.sortBy { it.startMs } }
         return out
     }
+
+    /** One show's full details (description, cast…), for the show you're looking at. */
+    fun program(ch: String, startMs: Long): EpgProgram? =
+        range(startMs, startMs + 1, onlyChannel = ch)[ch]?.firstOrNull { it.startMs == startMs }
 
     /** One channel's listings across [fromMs, toMs) (overlay mode's full schedule, catch-up). */
     fun channelRange(ch: String, fromMs: Long, toMs: Long): List<EpgProgram> =
@@ -157,3 +201,6 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
         db.delete("meta", null, null)
     }
 }
+
+/** Longest single listing assumed when reading a time window (longer ones are very rare). */
+private const val MAX_SHOW_MS = 12L * 60 * 60 * 1000
