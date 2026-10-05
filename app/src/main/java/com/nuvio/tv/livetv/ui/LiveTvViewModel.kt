@@ -155,6 +155,7 @@ class LiveTvViewModel @Inject constructor(
             settings.collect {
                 playback.autoReconnect = it.autoReconnect
                 playback.audioPassthrough = it.audioPassthrough
+                playback.bufferSize = it.bufferSize
             }
         }
         viewModelScope.launch {
@@ -236,9 +237,24 @@ class LiveTvViewModel @Inject constructor(
             regular += ChannelGroup(id, v.first, v.second + copied, sourceId = groupSource[id], locked = id in lockedIds)
         }
         val orderIndex = user.groupOrder.withIndex().associate { (i, id) -> id to i }
-        val orderedRegular = regular.withIndex()
-            .sortedWith(compareBy<IndexedValue<ChannelGroup>>({ orderIndex[it.value.id] ?: Int.MAX_VALUE }, { it.index }))
-            .map { it.value }
+        // Playlists in their own order (your own groups first), for keeping each playlist's
+        // groups together when sorting by name.
+        val playlistIndex = HashMap<String, Int>().also { m -> shown.forEach { c -> m.putIfAbsent(c.sourceId, m.size) } }
+        val orderedRegular = when (s.groupSort) {
+            // As the playlist lists them (your own groups first).
+            "playlist" -> regular
+            // A–Z, kept per playlist when playlist headings are on.
+            "name" -> regular.sortedWith(
+                compareBy<ChannelGroup>(
+                    { g -> if (g.sourceId == null) -1 else if (s.groupPlaylistHeadings) playlistIndex[g.sourceId] ?: Int.MAX_VALUE else 0 },
+                    { g -> g.name.lowercase() }
+                )
+            )
+            // Your order (Reorder groups), playlist order for anything not moved.
+            else -> regular.withIndex()
+                .sortedWith(compareBy<IndexedValue<ChannelGroup>>({ orderIndex[it.value.id] ?: Int.MAX_VALUE }, { it.index }))
+                .map { it.value }
+        }
         groups += orderedRegular
 
         val defaultGroupId = when {
@@ -594,7 +610,13 @@ class LiveTvViewModel @Inject constructor(
     fun ensureGuideRange(fromMs: Long, toMs: Long) = repository.ensureRange(fromMs, toMs)
 
     /** A channel's full schedule (overlay mode's days, catch-up). */
-    fun ensureChannelSchedule(channelKey: String) = repository.ensureChannelSchedule(channelKey)
+    fun ensureChannelSchedule(channelKey: String) {
+        repository.ensureChannelSchedule(channelKey)
+        displayChannels.value.firstOrNull { it.key == channelKey }?.let { repository.loadXtreamArchive(listOf(it)) }
+    }
+
+    /** Past listings from the Xtream catch-up archive for these channels (browsing back). */
+    fun loadCatchupArchive(channels: List<LiveChannel>) = repository.loadXtreamArchive(channels)
 
     /** Assign EPG: make sure the full guide-channel lists are loaded (the saved guide skips them). */
     fun ensureEpgDetails() = repository.ensureEpgDetails()
@@ -676,6 +698,8 @@ class LiveTvViewModel @Inject constructor(
 
     /** Saves the whole group order at once (Reorder groups). */
     fun saveGroupOrder(ids: List<String>) {
+        // Reordering by hand means "my order" from now on.
+        if (settings.value.groupSort != "custom") viewModelScope.launch { prefs.updateSettings { it.copy(groupSort = "custom") } }
         if (ids.isEmpty()) return
         viewModelScope.launch { prefs.moveGroup(ids.first(), 0, ids) }
     }

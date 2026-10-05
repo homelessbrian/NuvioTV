@@ -256,7 +256,11 @@ data class LiveTvSettings(
     /** A "Next: 9:00 The News" line on each card. */
     val homeRowShowNext: Boolean = false,
     /** Compact cards: logo and show name only. */
-    val homeRowCompact: Boolean = false
+    val homeRowCompact: Boolean = false,
+    /** Live TV buffer: "small" (fastest channel changes), "normal", "large", "xlarge". */
+    val bufferSize: String = "normal",
+    /** Group list order: "custom" (yours, from Reorder groups), "playlist" or "name" (A–Z). */
+    val groupSort: String = "custom"
 )
 
 data class LiveUserState(

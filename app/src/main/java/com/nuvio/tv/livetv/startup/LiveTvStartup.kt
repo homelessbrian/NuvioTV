@@ -16,6 +16,30 @@ import kotlinx.coroutines.flow.first
 interface LiveTvStartupEntryPoint {
     fun liveTvPreferences(): LiveTvPreferences
     fun onDemandRepository(): com.nuvio.tv.livetv.ondemand.OnDemandRepository
+    fun liveTvRepository(): com.nuvio.tv.livetv.data.LiveTvRepository
+}
+
+/**
+ * Gets Live TV ready in the background shortly after the app starts (when it's in use), so
+ * the guide is already there when you open it instead of loading only then.
+ */
+object LiveTvPreload {
+    @Volatile private var started = false
+
+    suspend fun start(context: android.content.Context) {
+        if (started) return
+        started = true
+        val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext, LiveTvStartupEntryPoint::class.java
+        )
+        // Let Nuvio's own start-up go first.
+        kotlinx.coroutines.delay(2_500)
+        val prefs = entry.liveTvPreferences()
+        val settings = prefs.settings.first()
+        val playlists = prefs.playlists.first()
+        if (!settings.showInSidebar || playlists.none { it.liveEnabled }) return
+        entry.liveTvRepository().ensureLoaded()
+    }
 }
 
 /**

@@ -119,6 +119,31 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
         return out
     }
 
+    /**
+     * Adds a channel's listings for a time span (Xtream catch-up archive), replacing anything
+     * stored for that channel in that span.
+     */
+    fun putChannelRange(ch: String, fromMs: Long, toMs: Long, programs: List<EpgProgram>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("programs", "ch = ? AND start >= ? AND start < ?", arrayOf(ch, fromMs.toString(), toMs.toString()))
+            val stmt = db.compileStatement(
+                "INSERT INTO programs (ch, start, stop, title, descr, cat, ep, icon, year, people) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            )
+            programs.forEach { p ->
+                stmt.clearBindings()
+                stmt.bindString(1, ch); stmt.bindLong(2, p.startMs); stmt.bindLong(3, p.stopMs); stmt.bindString(4, p.title)
+                p.description?.let { stmt.bindString(5, it) } ?: stmt.bindNull(5)
+                stmt.bindNull(6); stmt.bindNull(7); stmt.bindNull(8); stmt.bindNull(9); stmt.bindNull(10)
+                stmt.executeInsert()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun clear() {
         val db = writableDatabase
         db.delete("programs", null, null)

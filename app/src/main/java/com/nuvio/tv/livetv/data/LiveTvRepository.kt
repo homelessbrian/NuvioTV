@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -271,6 +272,7 @@ class LiveTvRepository @Inject constructor(
                         // Xtream lists are rebuilt each time: unchanged if identical to before.
                         val unchanged = old != null && old.length() == file.length() && sameContent(old, file)
                         old?.delete()
+                        if (!unchanged) markChanged(file)
                         !unchanged
                     } else download(pl.resolvedUrl(), file, pl.userAgent)
                 }
@@ -289,6 +291,7 @@ class LiveTvRepository @Inject constructor(
         if (changed || _channels.value.isEmpty()) {
             setStatus(loading = true, message = "Reading channels…")
             buildChannels()
+            saveChannels() // so the next start uses it straight away
         }
 
         val epgTargets = collectEpgTargets()
@@ -343,7 +346,7 @@ class LiveTvRepository @Inject constructor(
         prefs.currentPlaylists().filter { it.liveEnabled }.forEach { pl ->
             val f = playlistFile(pl.id)
             sb.append(pl.id).append(':').append(pl.name.hashCode()).append(':').append(pl.userAgent.hashCode())
-                .append(':').append(f.length()).append(':').append(f.lastModified()).append(',')
+                .append(':').append(f.length()).append(':').append(contentStamp(f)).append(',')
         }
         return sb.toString()
     }
@@ -497,6 +500,85 @@ class LiveTvRepository @Inject constructor(
         }
     }
 
+    // ---------------------------------------------------------------- Xtream catch-up archive
+
+    /** Channels whose archive listings were already fetched this session. */
+    private val archiveFetched = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val archivePermits = kotlinx.coroutines.sync.Semaphore(3)
+
+    /**
+     * Past listings for Xtream catch-up channels, the way TiviMate gets them: many providers'
+     * guide file only covers about a day back, while the Xtream API keeps the full catch-up
+     * archive (up to 7 days or more) per channel. Fetched for the channels you're looking at,
+     * once per session, and stored with the rest of the guide.
+     */
+    fun loadXtreamArchive(channels: List<LiveChannel>) {
+        val wanted = channels.filter { it.catchup != null && it.key !in archiveFetched }
+        if (wanted.isEmpty()) return
+        wanted.forEach { archiveFetched += it.key }
+        scope.launch {
+            val playlists = prefs.currentPlaylists().associateBy { it.id }
+            val settings = prefs.currentSettings()
+            wanted.forEach { ch ->
+                val pl = playlists[ch.sourceId]?.takeIf { it.isXtream } ?: return@forEach
+                val streamId = Regex("""/(\d+)(?:\.[a-z0-9]+)?(?:\?.*)?$""", RegexOption.IGNORE_CASE)
+                    .find(ch.url)?.groupValues?.get(1) ?: return@forEach
+                archivePermits.withPermit {
+                    runCatching {
+                        val url = "${pl.xtreamBase()}/player_api.php?username=" +
+                            java.net.URLEncoder.encode(pl.xtreamUsername.trim(), "UTF-8") +
+                            "&password=" + java.net.URLEncoder.encode(pl.xtreamPassword.trim(), "UTF-8") +
+                            "&action=get_simple_data_table&stream_id=$streamId"
+                        val json = JSONObject(getText(url, pl.userAgent.ifBlank { DEFAULT_UA }))
+                        val arr = json.optJSONArray("epg_listings") ?: return@runCatching
+                        fun b64(v: String): String = runCatching {
+                            String(android.util.Base64.decode(v, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                        }.getOrDefault(v)
+                        val list = ArrayList<EpgProgram>()
+                        for (i in 0 until arr.length()) {
+                            val o = arr.optJSONObject(i) ?: continue
+                            val start = o.optString("start_timestamp").toLongOrNull()?.times(1000) ?: continue
+                            val stop = o.optString("stop_timestamp").toLongOrNull()?.times(1000)
+                                ?: o.optString("end_timestamp").toLongOrNull()?.times(1000) ?: continue
+                            if (stop <= start) continue
+                            val title = b64(o.optString("title")).trim()
+                            if (title.isEmpty()) continue
+                            list += EpgProgram(
+                                startMs = start,
+                                stopMs = stop,
+                                title = title,
+                                description = b64(o.optString("description")).trim().takeIf { it.isNotEmpty() }
+                            )
+                        }
+                        if (list.isEmpty()) return@runCatching
+                        list.sortBy { it.startMs }
+                        val now = System.currentTimeMillis()
+                        // Keep what the guide file already has from about now on; the archive
+                        // fills in the past.
+                        val pastEnd = minOf(now, list.last().stopMs)
+                        val past = list.filter { it.startMs < pastEnd }
+                        val existing = _programs.value[ch.key].orEmpty()
+                        // Beyond the end of the guide file's listings, the archive's later
+                        // shows are used too (some guide files only cover a day ahead).
+                        val existingEnd = existing.maxOfOrNull { it.stopMs } ?: now
+                        val later = list.filter { it.startMs >= maxOf(existingEnd, now) }
+                        if (past.isEmpty() && later.isEmpty()) return@runCatching
+                        val from = past.firstOrNull()?.startMs ?: pastEnd
+                        val keep = existing.filter { it.startMs >= pastEnd || it.startMs < from }
+                        val merged = (past + keep + later).sortedBy { it.startMs }
+                            .fold(ArrayList<EpgProgram>()) { acc, p -> if (acc.isEmpty() || p.startMs >= acc.last().stopMs - 60_000) acc += p; acc }
+                        if (guideInDb) runCatching {
+                            if (past.isNotEmpty()) guideDb.putChannelRange(ch.key, from, pastEnd, past)
+                            if (later.isNotEmpty()) guideDb.putChannelRange(ch.key, later.first().startMs, later.last().stopMs, later)
+                        }
+                        _programs.value = _programs.value + (ch.key to merged)
+                        loadedFrom = minOf(loadedFrom, from)
+                    }.onFailure { Log.w(TAG, "Catch-up archive for ${ch.name} unavailable", it) }
+                }
+            }
+        }
+    }
+
     /** One channel's whole schedule (overlay mode's days, catch-up following into later shows). */
     fun ensureChannelSchedule(channelKey: String) {
         if (!guideInDb) return
@@ -521,7 +603,7 @@ class LiveTvRepository @Inject constructor(
         sb.append(settings.epgPastHours).append('|').append(settings.epgFutureDays).append('|')
         targets.forEach { t ->
             val f = epgFile(t.fileId)
-            sb.append(t.fileId).append(':').append(f.length()).append(':').append(f.lastModified()).append(',')
+            sb.append(t.fileId).append(':').append(f.length()).append(':').append(contentStamp(f)).append(',')
         }
         sb.append('|').append(overrides.hashCode())
         sb.append('|').append(_channels.value.size).append(':').append(_channels.value.sumOf { it.key.hashCode().toLong() })
@@ -929,8 +1011,24 @@ class LiveTvRepository @Inject constructor(
                 tmp.copyTo(target, overwrite = true)
                 tmp.delete()
             }
+            markChanged(target)
             true
         }
+    }
+
+    /**
+     * When a downloaded file last really changed. The saved channel list and guide are checked
+     * against this, not the file's date: the date is also bumped every time an update finds
+     * nothing new, which used to make every restart re-read all playlists and guides.
+     */
+    private fun stampFile(f: File) = File(f.parentFile, f.name + ".stamp")
+
+    private fun contentStamp(f: File): String =
+        runCatching { stampFile(f).readText().trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: "${f.length()}"
+
+    private fun markChanged(f: File) {
+        runCatching { stampFile(f).writeText(System.currentTimeMillis().toString()) }
     }
 
     private fun sameContent(a: File, b: File): Boolean = runCatching {

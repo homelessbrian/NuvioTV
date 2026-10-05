@@ -25,6 +25,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,7 +50,9 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 internal fun AppIconPickerDialog(
     state: AppIconSettingsState,
     onSelected: (AppIconOption) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** Live TV fork: "+ IPTV" on the icon on or off. */
+    onToggleIptv: (Boolean) -> Unit = {}
 ) {
     val selectedFocusRequester = remember { FocusRequester() }
 
@@ -74,6 +77,12 @@ internal fun AppIconPickerDialog(
         contentSpacing = 12.dp
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Live TV fork: show "+ IPTV" on the icon, or use Nuvio's original icons.
+            com.nuvio.tv.livetv.branding.IptvIconToggle(
+                enabled = state.iptvBranding,
+                busy = state.pending != null,
+                onToggle = onToggleIptv
+            )
             AppIconOption.entries.chunked(3).forEach { options ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -82,6 +91,7 @@ internal fun AppIconPickerDialog(
                     options.forEach { option ->
                         AppIconOptionCard(
                             option = option,
+                            iptv = state.iptvBranding,
                             selected = state.selected == option,
                             enabled = state.pending == null,
                             onClick = { onSelected(option) },
@@ -159,7 +169,8 @@ private fun AppIconOptionCard(
     selected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    iptv: Boolean = false
 ) {
     val shape = RoundedCornerShape(12.dp)
     Card(
@@ -188,7 +199,7 @@ private fun AppIconOptionCard(
     ) {
         Column(modifier = Modifier.padding(8.dp)) {
             Image(
-                painter = painterResource(option.bannerResource),
+                painter = painterResource(com.nuvio.tv.livetv.branding.IptvIconResources.banner(LocalContext.current, option, iptv)),
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -203,7 +214,7 @@ private fun AppIconOptionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Image(
-                    painter = painterResource(option.iconResource),
+                    painter = painterResource(com.nuvio.tv.livetv.branding.IptvIconResources.icon(LocalContext.current, option, iptv)),
                     contentDescription = null,
                     modifier = Modifier
                         .size(34.dp)

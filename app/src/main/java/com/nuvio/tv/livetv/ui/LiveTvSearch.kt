@@ -118,10 +118,13 @@ private fun rememberLiveTvSearchResultsEnabled(
         if (q.length >= 2) delay(300)
         value = q
     }
-    val hits by produceState(initialValue = emptyList<LiveSearchHit>(), settled, ui.allVisibleChannels, programs, now, settings.showInSearch) {
+    // Opened from Live TV: always search Live TV, whatever "Show in Nuvio search" says.
+    val liveOnly by LiveTvSearchBridge.liveOnly.collectAsStateWithLifecycle()
+    val searchLive = settings.showInSearch || liveOnly
+    val hits by produceState(initialValue = emptyList<LiveSearchHit>(), settled, ui.allVisibleChannels, programs, now, searchLive) {
         val q = settled
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            if (!settings.showInSearch || q.length < 2) return@withContext emptyList()
+            if (!searchLive || q.length < 2) return@withContext emptyList()
             val out = ArrayList<LiveSearchHit>()
             val seen = HashSet<String>()
             for (c in ui.allVisibleChannels) {

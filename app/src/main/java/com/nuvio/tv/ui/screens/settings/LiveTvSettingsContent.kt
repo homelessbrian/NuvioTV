@@ -418,6 +418,14 @@ fun LiveTvSettingsContent(
                         { update { it.copy(rememberLastGroup = !it.rememberLastGroup) } }
                     )
                     SettingsActionRow(
+                        title = "Group order",
+                        subtitle = "How the group list is sorted. Your order follows Reorder groups (anything not moved stays in playlist order).",
+                        value = when (s.groupSort) { "playlist" -> "Playlist order"; "name" -> "Name (A–Z)"; else -> "Your order" },
+                        onClick = {
+                            update { st -> st.copy(groupSort = when (st.groupSort) { "custom" -> "playlist"; "playlist" -> "name"; else -> "custom" }) }
+                        }
+                    )
+                    SettingsActionRow(
                         title = "Channel order",
                         subtitle = "How channels are sorted in every group, Favorites included. Playlist order keeps your own order in Favorites and your groups.",
                         value = when (s.channelSort) {
@@ -480,6 +488,14 @@ fun LiveTvSettingsContent(
                         "Asks Xtream providers for HLS catch-up first, so replays have a working seek bar. Falls back to TS if the provider doesn't offer it.",
                         s.catchupPreferHls,
                         { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
+                    )
+                    SettingsActionRow(
+                        title = "Buffer size",
+                        subtitle = "Larger rides out a slow connection or provider (fewer pauses); smaller changes channels a little faster",
+                        value = when (s.bufferSize) { "small" -> "Small"; "large" -> "Large"; "xlarge" -> "Extra large"; else -> "Normal" },
+                        onClick = {
+                            update { st -> st.copy(bufferSize = when (st.bufferSize) { "small" -> "normal"; "normal" -> "large"; "large" -> "xlarge"; else -> "small" }) }
+                        }
                     )
                     SettingsToggleRow(
                         "Audio passthrough",

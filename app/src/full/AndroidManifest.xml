@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Live TV fork: on-screen crash reports. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <application>
         <provider
             android:name="com.nuvio.tv.livetv.crash.CrashCatcherInitProvider"
@@ -14,5 +15,114 @@
             android:process=":crash"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
+
+        <!-- Live TV fork: "Nuvio + IPTV" icons (one per icon color). The original Nuvio
+             icons stay available: Settings > Appearance > App icon > "+ IPTV on the icon". -->
+        <activity
+            android:name="com.nuvio.tv.launcher.AppIconDefault"
+            android:enabled="false"
+            tools:replace="android:enabled" />
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconDefault"
+            android:banner="@mipmap/iptv_banner"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconArcticBlue"
+            android:banner="@mipmap/iptv_banner_arctic_blue"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher_arctic_blue"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconEmerald"
+            android:banner="@mipmap/iptv_banner_emerald"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher_emerald"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconRoseGold"
+            android:banner="@mipmap/iptv_banner_rose_gold"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher_rose_gold"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconCopper"
+            android:banner="@mipmap/iptv_banner_copper"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher_copper"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.nuvio.tv.livetv.branding.IptvIconGraphite"
+            android:banner="@mipmap/iptv_banner_graphite"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation|layoutDirection|fontScale|locale"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/iptv_ic_launcher_graphite"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

@@ -115,6 +115,8 @@ class LiveTvPreferences @Inject constructor(
         val homeRowOpensGuide = booleanPreferencesKey("home_row_opens_guide")
         val homeRowShowNext = booleanPreferencesKey("home_row_show_next")
         val homeRowCompact = booleanPreferencesKey("home_row_compact")
+        val bufferSize = stringPreferencesKey("buffer_size")
+        val groupSort = stringPreferencesKey("group_sort")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -209,7 +211,9 @@ class LiveTvPreferences @Inject constructor(
             homeRowHidePlaceholders = p[Keys.homeRowHidePlaceholders] ?: d.homeRowHidePlaceholders,
             homeRowOpensGuide = p[Keys.homeRowOpensGuide] ?: d.homeRowOpensGuide,
             homeRowShowNext = p[Keys.homeRowShowNext] ?: d.homeRowShowNext,
-            homeRowCompact = p[Keys.homeRowCompact] ?: d.homeRowCompact
+            homeRowCompact = p[Keys.homeRowCompact] ?: d.homeRowCompact,
+            bufferSize = p[Keys.bufferSize] ?: d.bufferSize,
+            groupSort = p[Keys.groupSort] ?: d.groupSort
         )
     }.distinctUntilChanged()
 
@@ -323,6 +327,8 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.homeRowOpensGuide] = s.homeRowOpensGuide
         p[Keys.homeRowShowNext] = s.homeRowShowNext
         p[Keys.homeRowCompact] = s.homeRowCompact
+        p[Keys.bufferSize] = s.bufferSize
+        p[Keys.groupSort] = s.groupSort
     }
 
     // ---------- channel management ----------

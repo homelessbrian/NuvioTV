@@ -115,6 +115,7 @@ fun LiveTvPlayerScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var numberBuffer by remember { mutableStateOf("") }
     var longPressFired by remember { mutableStateOf(false) }
+    var okHoldJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
 
     // Follows the channel list as it loads (it was read once before, so a list that was still
@@ -231,17 +232,29 @@ fun LiveTvPlayerScreen(
                 val archive = playback.catchupTitle != null
                 if (isOk) {
                     if (e.type == KeyEventType.KeyDown) {
-                        // A new press: forget a long press whose release went to a dialog.
-                        if (e.nativeKeyEvent.repeatCount == 0) longPressFired = false
-                        if (e.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
+                        if (e.nativeKeyEvent.repeatCount == 0) {
+                            // A new press: forget a long press whose release went to a dialog.
+                            longPressFired = false
+                            // Long press by time held too (remotes that never repeat, like CEC).
+                            okHoldJob?.cancel()
+                            okHoldJob = scope.launch {
+                                delay(LONG_PRESS_MS)
+                                if (!longPressFired) { longPressFired = true; dialog = PlayerDialog.OPTIONS }
+                            }
+                        } else if (!longPressFired) {
+                            okHoldJob?.cancel()
                             longPressFired = true
                             dialog = PlayerDialog.OPTIONS
                         }
                         return@onPreviewKeyEvent true
                     }
                     if (e.type == KeyEventType.KeyUp) {
+                        okHoldJob?.cancel()
+                        val heldMs = e.nativeKeyEvent.eventTime - e.nativeKeyEvent.downTime
                         if (longPressFired) {
                             longPressFired = false
+                        } else if (heldMs >= LONG_PRESS_MS) {
+                            dialog = PlayerDialog.OPTIONS
                         } else when {
                             playback.error != null && playback.reconnectAttempt > 8 -> viewModel.playback.retry()
                             // Catch-up: OK pauses and resumes, and shows the seek bar.

@@ -223,6 +223,10 @@ private fun PlaybackNavHost(
             androidx.compose.runtime.LaunchedEffect(Unit) {
                 com.nuvio.tv.livetv.startup.LiveTvStartup.maybeOpenLiveTv(context, navController)
             }
+            // Live TV fork: get Live TV ready in the background, so the guide is there when opened.
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                runCatching { com.nuvio.tv.livetv.startup.LiveTvPreload.start(context) }
+            }
             // Live TV fork: what the home screen's Live TV row opens.
             val openLiveTv = {
                 navController.navigate(Screen.LiveTv.route) {

@@ -83,6 +83,20 @@ class LiveTvPlaybackController @Inject constructor(
      * which is far more robust with Alexa Home Theater / Echo speakers on Fire TV. Changing it
      * rebuilds the player (and carries on with the same channel).
      */
+    /** Live TV buffer size ("small", "normal", "large", "xlarge"); changing it rebuilds the player. */
+    var bufferSize: String = "normal"
+        set(value) {
+            if (field == value) return
+            field = value
+            val p = _player ?: return
+            val ch = currentChannel
+            val url = currentUrl
+            val title = _state.value.catchupTitle
+            val wasPlaying = p.playWhenReady
+            release()
+            if (ch != null && wasPlaying) play(ch, overrideUrl = url.takeIf { it != ch.url }, catchupTitle = title)
+        }
+
     var audioPassthrough: Boolean = true
         set(value) {
             if (field == value) return
@@ -347,8 +361,17 @@ class LiveTvPlaybackController @Inject constructor(
         }
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
+        // Buffer size setting: how much is downloaded ahead. Bigger rides out a shaky connection or
+        // a slow provider; smaller starts channels a little faster.
+        val (minMs, maxMs, startMs, rebufferMs) = when (bufferSize) {
+            "small" -> listOf(10_000, 30_000, 1_000, 2_000)
+            "large" -> listOf(40_000, 90_000, 3_000, 6_000)
+            "xlarge" -> listOf(60_000, 150_000, 5_000, 10_000)
+            else -> listOf(25_000, 60_000, 2_000, 4_000)
+        }
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 50_000, 1_500, 3_000)
+            .setBufferDurationsMs(minMs, maxMs, startMs, rebufferMs)
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         return ExoPlayer.Builder(context, renderers)
             .setLoadControl(loadControl)
@@ -586,8 +609,22 @@ class LiveTvPlaybackController @Inject constructor(
             lower.endsWith(".ts") -> builder.setMimeType(MimeTypes.VIDEO_MP2T)
         }
         if (isLive) {
+            // How far behind "live" to play. Playing very close to live (it was 8 seconds) left
+            // almost no room for a slow segment, so some providers kept buffering; now it
+            // follows the stream's own recommendation, with more room for bigger buffers.
+            val offset = when (bufferSize) {
+                "small" -> 10_000L
+                "large" -> 30_000L
+                "xlarge" -> 45_000L
+                else -> null
+            }
             builder.setLiveConfiguration(
-                MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(8_000).build()
+                MediaItem.LiveConfiguration.Builder()
+                    .apply { if (offset != null) setTargetOffsetMs(offset) }
+                    // No speeding up / slowing down to chase the live edge (can cause stutter).
+                    .setMinPlaybackSpeed(1f)
+                    .setMaxPlaybackSpeed(1f)
+                    .build()
             )
         }
         return builder.build()

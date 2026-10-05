@@ -161,12 +161,15 @@ fun LiveTvGuideScreen(
     LaunchedEffect(windowStart) {
         viewModel.ensureGuideRange(windowStart - 2 * 3_600_000L, windowStart + WINDOW_MS + 6 * 3_600_000L)
     }
+    // Going back in time on catch-up channels: fetch their full catch-up archive (many guide
+    // files only reach about a day back; the provider keeps up to a week or more).
     var pendingGroupId by remember { mutableStateOf<String?>(null) }
     // The group list slides in from the left when you press Left, and slides away again when
     // you pick a group or go back to the channels, giving the guide the full width.
     var groupsOpen by remember { mutableStateOf(false) }
     var leftTapPending by remember { mutableStateOf(false) }
     var lastVerticalAt by remember { mutableStateOf(0L) }
+    var okHoldJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var okDuringScroll by remember { mutableStateOf(false) }
     var lastHeldLeftAt by remember { mutableStateOf(0L) }
     // "Browse by channel name": the highlight is on the channel name itself (OK plays it,
@@ -297,6 +300,13 @@ fun LiveTvGuideScreen(
         }
     }
 
+    LaunchedEffect(windowStart < System.currentTimeMillis() - 6 * 3_600_000L, row / 6, channels.size) {
+        if (windowStart >= System.currentTimeMillis() - 6 * 3_600_000L || channels.isEmpty()) return@LaunchedEffect
+        delay(300)
+        val from = (row - 6).coerceAtLeast(0)
+        val to = (row + 14).coerceAtMost(channels.size)
+        viewModel.loadCatchupArchive(channels.subList(from, to))
+    }
     // Leaving full screen: back to where you were browsing (or the playing channel).
     LaunchedEffect(exitFullscreenTick) {
         if (exitFullscreenTick == 0) return@LaunchedEffect
@@ -874,17 +884,35 @@ fun LiveTvGuideScreen(
                                     return@onPreviewKeyEvent true
                                 }
                                 if (isOk) {
+                                    fun openMenu() {
+                                        longPressFired = true
+                                        focusedChannel?.let { menuTarget = MenuTarget(it, focusedBlock) }
+                                    }
                                     if (event.type == KeyEventType.KeyDown) {
-                                        // A new press: forget a long press whose release went to a dialog.
-                                        if (event.nativeKeyEvent.repeatCount == 0) longPressFired = false
-                                        if (event.nativeKeyEvent.repeatCount > 0 && !longPressFired) {
-                                            longPressFired = true
-                                            focusedChannel?.let { menuTarget = MenuTarget(it, focusedBlock) }
+                                        if (event.nativeKeyEvent.repeatCount == 0) {
+                                            // A new press: forget a long press whose release went to a dialog.
+                                            longPressFired = false
+                                            // Long press by time held, not only by repeats: some remotes
+                                            // (HDMI-CEC TV remotes, e.g. Samsung on a Shield) never repeat.
+                                            okHoldJob?.cancel()
+                                            okHoldJob = scope.launch {
+                                                delay(LONG_PRESS_MS)
+                                                if (!longPressFired) openMenu()
+                                            }
+                                        } else if (!longPressFired) {
+                                            okHoldJob?.cancel()
+                                            openMenu()
                                         }
                                         return@onPreviewKeyEvent true
                                     }
                                     if (event.type == KeyEventType.KeyUp) {
-                                        if (longPressFired) longPressFired = false else activate()
+                                        okHoldJob?.cancel()
+                                        val heldMs = event.nativeKeyEvent.eventTime - event.nativeKeyEvent.downTime
+                                        when {
+                                            longPressFired -> longPressFired = false
+                                            heldMs >= LONG_PRESS_MS -> { openMenu(); longPressFired = false }
+                                            else -> activate()
+                                        }
                                         return@onPreviewKeyEvent true
                                     }
                                 }
@@ -2950,3 +2978,6 @@ object LiveTvFullscreen {
 
 /** An OK arriving this soon after Up/Down is treated as part of that press and ignored. */
 private const val OK_WITH_ARROW_MS = 250L
+
+/** OK held this long counts as a long press (also without key repeats, e.g. HDMI-CEC remotes). */
+internal const val LONG_PRESS_MS = 550L

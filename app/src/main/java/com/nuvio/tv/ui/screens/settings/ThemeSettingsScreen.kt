@@ -390,7 +390,8 @@ fun ThemeSettingsContent(
             onDismiss = {
                 viewModel.onEvent(ThemeSettingsEvent.DismissAppIconFailure)
                 showAppIconDialog = false
-            }
+            },
+            onToggleIptv = { viewModel.setIptvBranding(it) }
         )
     }
 

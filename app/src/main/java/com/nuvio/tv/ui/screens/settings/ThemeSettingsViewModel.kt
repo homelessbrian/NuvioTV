@@ -153,6 +153,9 @@ class ThemeSettingsViewModel @Inject constructor(
 
     fun selectAppIcon(option: AppIconOption): Boolean = appIconManager.select(option)
 
+    /** Live TV fork: "+ IPTV" on the app icon on or off. */
+    fun setIptvBranding(enabled: Boolean): Boolean = appIconManager.setIptvBranding(enabled)
+
     private fun selectTheme(theme: AppTheme) {
         if (currentTheme() == theme) return
         viewModelScope.launch {

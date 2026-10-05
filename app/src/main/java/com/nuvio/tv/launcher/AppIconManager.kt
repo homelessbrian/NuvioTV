@@ -15,7 +15,9 @@ import javax.inject.Singleton
 data class AppIconSettingsState(
     val selected: AppIconOption = AppIconOption.ORIGINAL,
     val pending: AppIconOption? = null,
-    val changeFailed: Boolean = false
+    val changeFailed: Boolean = false,
+    /** Live TV fork: show "+ IPTV" on the icon and banner (off: the original Nuvio icons). */
+    val iptvBranding: Boolean = true
 )
 
 @Singleton
@@ -31,12 +33,59 @@ class AppIconManager @Inject constructor(
         AppIconOption.GRAPHITE to "com.nuvio.tv.launcher.AppIconGraphite"
     )
 
+    // Live TV fork: the same colors with "+ IPTV" on the icon and banner.
+    private val iptvClasses = mapOf(
+        AppIconOption.ORIGINAL to "com.nuvio.tv.livetv.branding.IptvIconDefault",
+        AppIconOption.ARCTIC_BLUE to "com.nuvio.tv.livetv.branding.IptvIconArcticBlue",
+        AppIconOption.EMERALD to "com.nuvio.tv.livetv.branding.IptvIconEmerald",
+        AppIconOption.ROSE_GOLD to "com.nuvio.tv.livetv.branding.IptvIconRoseGold",
+        AppIconOption.COPPER to "com.nuvio.tv.livetv.branding.IptvIconCopper",
+        AppIconOption.GRAPHITE to "com.nuvio.tv.livetv.branding.IptvIconGraphite"
+    )
+    private val brandingPrefs = context.getSharedPreferences("livetv_app_icon", Context.MODE_PRIVATE)
+    private fun iptvBranding() = brandingPrefs.getBoolean("iptv_branding", true)
+    private fun allClasses() = launcherClasses.values + iptvClasses.values
+    private fun classFor(option: AppIconOption, iptv: Boolean) =
+        (if (iptv) iptvClasses else launcherClasses).getValue(option)
+
     private val _state = MutableStateFlow(AppIconSettingsState())
     val state: StateFlow<AppIconSettingsState> = _state.asStateFlow()
 
     init {
-        restoreDefaultIfNeeded()
-        _state.value = AppIconSettingsState(selected = currentOption())
+        normalizeLauncherEntries()
+        _state.value = AppIconSettingsState(selected = currentOption(), iptvBranding = iptvBranding())
+    }
+
+    /** Live TV fork: "+ IPTV" on the icon on or off, keeping the chosen color. */
+    fun setIptvBranding(enabled: Boolean): Boolean {
+        val current = _state.value
+        if (current.pending != null || current.iptvBranding == enabled) return false
+        brandingPrefs.edit().putBoolean("iptv_branding", enabled).apply()
+        val changed = activate(current.selected, enabled)
+        _state.value = if (changed) current.copy(iptvBranding = enabled, changeFailed = false)
+        else current.copy(changeFailed = true)
+        return changed
+    }
+
+    /**
+     * Exactly one launcher entry enabled: the chosen color, with or without "+ IPTV". Also moves
+     * people who picked a color before this existed onto the matching "+ IPTV" version.
+     */
+    private fun normalizeLauncherEntries() {
+        val pm = context.packageManager
+        val enabled = allClasses().filter { isEnabled(pm, it) }
+        val option = currentOption()
+        val wanted = classFor(option, iptvBranding())
+        if (enabled == listOf(wanted)) return
+        activate(option, iptvBranding())
+    }
+
+    private fun isEnabled(pm: PackageManager, className: String): Boolean {
+        val setting = runCatching { pm.getComponentEnabledSetting(component(className)) }
+            .getOrDefault(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+        return setting == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+            // The one entry the manifest enables by default.
+            (setting == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && className == iptvClasses.getValue(AppIconOption.ORIGINAL))
     }
 
     fun select(option: AppIconOption): Boolean {
@@ -44,9 +93,9 @@ class AppIconManager @Inject constructor(
         if (current.pending != null || current.selected == option) return false
 
         _state.value = current.copy(pending = option, changeFailed = false)
-        val changed = activate(option)
+        val changed = activate(option, current.iptvBranding)
         _state.value = if (changed) {
-            AppIconSettingsState(selected = option)
+            AppIconSettingsState(selected = option, iptvBranding = current.iptvBranding)
         } else {
             current.copy(changeFailed = true)
         }
@@ -61,7 +110,8 @@ class AppIconManager @Inject constructor(
 
     private fun currentOption(): AppIconOption {
         val packageManager = context.packageManager
-        val explicitlyEnabled = launcherClasses.entries.firstOrNull { (_, className) ->
+        // The color in use, whichever of the two styles it's in.
+        val explicitlyEnabled = (iptvClasses.entries + launcherClasses.entries).firstOrNull { (_, className) ->
             packageManager.getComponentEnabledSetting(component(className)) ==
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED
         }
@@ -91,13 +141,13 @@ class AppIconManager @Inject constructor(
         )
     }
 
-    private fun activate(option: AppIconOption): Boolean {
-        val selectedClass = launcherClasses.getValue(option)
+    private fun activate(option: AppIconOption, iptv: Boolean = iptvBranding()): Boolean {
+        val selectedClass = classFor(option, iptv)
         val packageManager = context.packageManager
         return runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 packageManager.setComponentEnabledSettings(
-                    launcherClasses.values.map { className ->
+                    allClasses().map { className ->
                         PackageManager.ComponentEnabledSetting(
                             component(className),
                             if (className == selectedClass) {
@@ -115,7 +165,7 @@ class AppIconManager @Inject constructor(
                     PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                     PackageManager.DONT_KILL_APP
                 )
-                launcherClasses.values
+                allClasses()
                     .filterNot { it == selectedClass }
                     .forEach { className ->
                         packageManager.setComponentEnabledSetting(
