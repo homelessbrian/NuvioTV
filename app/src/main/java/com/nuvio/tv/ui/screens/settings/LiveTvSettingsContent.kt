@@ -93,6 +93,7 @@ private sealed interface LiveDialog {
     data object NameEditor : LiveDialog
     data object PosterTest : LiveDialog
     data object ButtonTester : LiveDialog
+    data object LoadReport : LiveDialog
     data object HomeRowSource : LiveDialog
     data object HomeRowTitle : LiveDialog
     data class ConfirmDeletePlaylist(val source: PlaylistSource) : LiveDialog
@@ -349,6 +350,11 @@ fun LiveTvSettingsContent(
                             "Remote button tester",
                             "Developer tool: shows every button the remote sends",
                             onClick = { dialog = LiveDialog.ButtonTester }
+                        )
+                        SettingsActionRow(
+                            "Live TV start-up report",
+                            "Developer tool: what loading did this time, and how long it took",
+                            onClick = { dialog = LiveDialog.LoadReport }
                         )
                     }
                     SettingsActionRow(
@@ -930,6 +936,7 @@ fun LiveTvSettingsContent(
             onConfirm = { t -> update { it.copy(homeRowTitle = t.trim()) }; close() }
         )
         LiveDialog.ButtonTester -> com.nuvio.tv.livetv.ui.RemoteButtonTester(onClose = close)
+        LiveDialog.LoadReport -> com.nuvio.tv.livetv.ui.LoadReportDialog(onDismiss = close)
         LiveDialog.PosterTest -> {
             val result by viewModel.posterTest.collectAsStateWithLifecycle()
             if (result == null) {

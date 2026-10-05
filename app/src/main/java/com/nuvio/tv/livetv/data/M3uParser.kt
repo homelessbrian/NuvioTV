@@ -86,10 +86,15 @@ object M3uParser {
                 else -> {
                     val info = pendingInfo
                     if (info != null) {
-                        val stream = pendingProps["stream_headers"]
-                        if (!stream.isNullOrBlank()) stream.split('&').forEach { part ->
-                            val k = part.substringBefore('=').trim()
-                            if (k.isNotEmpty()) pendingHeaders[normalizeHeader(k)] = java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+                        // Request headers from Kodi lines: stream_headers, manifest_headers and
+                        // common_headers ("User-Agent=…&Referer=…").
+                        listOf("stream_headers", "manifest_headers", "common_headers").forEach { key ->
+                            val v = pendingProps[key]
+                            if (!v.isNullOrBlank()) v.split('&').forEach { part ->
+                                val k = part.substringBefore('=').trim()
+                                if (k.isNotEmpty()) pendingHeaders[normalizeHeader(k)] =
+                                    runCatching { java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8") }.getOrDefault(part.substringAfter('=', ""))
+                            }
                         }
                         entries.add(buildEntry(info, pendingGroup, line, pendingHeaders.toMap()).copy(drm = drmFrom(pendingProps)))
                     }
@@ -124,6 +129,12 @@ object M3uParser {
         parts.getOrNull(1)?.takeIf { it.contains('=') }?.split('&')?.forEach { h ->
             val k = h.substringBefore('=').trim()
             if (k.isNotEmpty()) headers[normalizeHeader(k)] = java.net.URLDecoder.decode(h.substringAfter('=', ""), "UTF-8")
+        }
+        // Newer Kodi style: license request headers on their own line.
+        props["license_headers"]?.takeIf { it.isNotBlank() }?.split('&')?.forEach { h ->
+            val k = h.substringBefore('=').trim()
+            if (k.isNotEmpty()) headers[normalizeHeader(k)] =
+                runCatching { java.net.URLDecoder.decode(h.substringAfter('=', ""), "UTF-8") }.getOrDefault(h.substringAfter('=', ""))
         }
         if (license.isBlank() && scheme != "clearkey") return null
         return com.nuvio.tv.livetv.model.DrmInfo(

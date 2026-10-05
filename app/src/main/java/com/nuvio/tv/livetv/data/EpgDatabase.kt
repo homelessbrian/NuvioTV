@@ -19,6 +19,12 @@ import javax.inject.Singleton
 class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
     SQLiteOpenHelper(context, "livetv_guide.db", null, 1) {
 
+    init {
+        // Readers don't wait for writers: the guide stays readable (scrolling, catch-up) while a
+        // guide update is being stored, instead of stalling until it finishes.
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE programs (

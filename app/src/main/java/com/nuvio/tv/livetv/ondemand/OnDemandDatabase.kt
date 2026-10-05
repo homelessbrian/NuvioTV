@@ -79,6 +79,11 @@ data class VodCategory(
 class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context) :
     SQLiteOpenHelper(context, "livetv_on_demand.db", null, 6) {
 
+    init {
+        // Browsing On Demand doesn't wait while an import or genre lookup is writing.
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE items (

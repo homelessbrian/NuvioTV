@@ -1435,6 +1435,9 @@ fun LiveTvGuideScreen(
             // Preview hidden: keep the view (so nothing has to be rebuilt), out of sight.
             else -> Modifier.size(1.dp)
         }
+        // Full screen: black behind the picture, so channels that don't fill the screen (other
+        // shapes, 4:3) show black bars instead of the guide underneath.
+        if (fullscreen) Box(Modifier.fillMaxSize().background(Color.Black))
         LivePlayerSurface(
             player = viewModel.playback.player,
             useSurfaceView = true,

@@ -8,6 +8,7 @@ import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.EpgSourceChannels
 import com.nuvio.tv.livetv.model.EpgSource
 import com.nuvio.tv.livetv.model.LiveChannel
+import com.nuvio.tv.livetv.model.LiveTvLoadReport as LIVE_REPORT
 import com.nuvio.tv.livetv.model.CatchupInfo
 import com.nuvio.tv.livetv.model.LiveTvSettings
 import com.nuvio.tv.livetv.model.PlaylistSource
@@ -263,6 +264,7 @@ class LiveTvRepository @Inject constructor(
             val stale = !file.exists() ||
                 now - file.lastModified() > settings.playlistRefreshHours.coerceAtLeast(1) * HOUR
             if (forcePlaylists || stale || pl.id in forceIds) {
+                LIVE_REPORT.add("Checking playlist \"${pl.name}\" for updates")
                 setStatus(loading = true, message = "Updating playlist \"${pl.name}\"…")
                 val before = if (file.exists()) file.length() to file.lastModified() else null
                 val result = runCatching {
@@ -273,6 +275,7 @@ class LiveTvRepository @Inject constructor(
                         val unchanged = old != null && old.length() == file.length() && sameContent(old, file)
                         old?.delete()
                         if (!unchanged) markChanged(file)
+                        LIVE_REPORT.add(if (unchanged) "Playlist \"${pl.name}\": no changes" else "Playlist \"${pl.name}\": new content")
                         !unchanged
                     } else download(pl.resolvedUrl(), file, pl.userAgent)
                 }
@@ -324,16 +327,34 @@ class LiveTvRepository @Inject constructor(
         setStatus(loading = true, message = "Loading channels…")
         // The channel list as it was last read, when no playlist has changed since: Live TV
         // (Favorites included) appears straight away instead of re-reading every playlist file.
+        var t0 = System.currentTimeMillis()
         if (!loadSavedChannels()) {
             buildChannels()
             saveChannels()
+            LIVE_REPORT.add("Channels re-read from playlists: ${_channels.value.size} in ${System.currentTimeMillis() - t0} ms")
+        } else {
+            LIVE_REPORT.add("Saved channel list used: ${_channels.value.size} channels in ${System.currentTimeMillis() - t0} ms")
         }
         val targets = collectEpgTargets()
         val settings = prefs.currentSettings()
         // The guide as it was last matched, if nothing it depends on has changed: the guide
         // fills in straight away instead of re-reading every guide file at each start.
-        if (!loadGuideFromDb(settings, targets)) buildPrograms(settings, targets)
+        t0 = System.currentTimeMillis()
+        if (!loadGuideFromDb(settings, targets)) {
+            buildPrograms(settings, targets)
+            LIVE_REPORT.add("Guide re-read from guide files in ${System.currentTimeMillis() - t0} ms")
+        } else {
+            LIVE_REPORT.add("Stored guide used: ${_programs.value.size} channels with listings in ${System.currentTimeMillis() - t0} ms")
+        }
         _status.value = LiveTvStatus(loading = false, loadedOnce = true)
+    }
+
+    /** Which parts of a saved copy's fingerprint differ (for the start-up report). */
+    private fun fingerprintDiff(old: String, new: String): String {
+        val a = old.split('|', ',').toSet()
+        val b = new.split('|', ',').toSet()
+        val changed = (b - a).take(4).joinToString("; ") { it.take(60) }
+        return if (changed.isBlank()) "format changed" else "changed: $changed"
     }
 
     // ---------------------------------------------------------------- saved channel list
@@ -357,7 +378,11 @@ class LiveTvRepository @Inject constructor(
         val expected = channelsFingerprint()
         runCatching {
             java.io.DataInputStream(java.io.BufferedInputStream(java.util.zip.GZIPInputStream(file.inputStream()), 64 * 1024)).use { input ->
-                if (input.readUTF() != expected) return@withContext false
+                val stored = input.readUTF()
+                if (stored != expected) {
+                    LIVE_REPORT.add("Saved channel list out of date: ${fingerprintDiff(stored, expected)}")
+                    return@withContext false
+                }
                 val epg = HashMap<String, List<String>>()
                 repeat(input.readInt()) {
                     val id = input.readUTF()
@@ -463,7 +488,10 @@ class LiveTvRepository @Inject constructor(
         runCatching { savedGuideFile.delete() } // the old single-file copy isn't used any more
         val expected = guideFingerprint(settings, targets)
         val stored = runCatching { guideDb.fingerprint() }.getOrNull()
-        if (stored != expected) return@withContext false
+        if (stored != expected) {
+            LIVE_REPORT.add(if (stored == null) "No stored guide yet" else "Stored guide out of date: ${fingerprintDiff(stored, expected)}")
+            return@withContext false
+        }
         val (from, to) = defaultWindow()
         val window = runCatching { guideDb.range(from, to) }.getOrNull() ?: return@withContext false
         _programs.value = window
@@ -780,7 +808,13 @@ class LiveTvRepository @Inject constructor(
         _channels.value = out
     }
 
-    private suspend fun buildPrograms(settings: LiveTvSettings, targets: List<EpgTarget>) = withContext(Dispatchers.IO) {
+    private suspend fun buildPrograms(settings: LiveTvSettings, targets: List<EpgTarget>) {
+        val t0 = System.currentTimeMillis()
+        buildProgramsInner(settings, targets)
+        LIVE_REPORT.add("Guide matched and stored: ${_programs.value.size} channels in ${System.currentTimeMillis() - t0} ms")
+    }
+
+    private suspend fun buildProgramsInner(settings: LiveTvSettings, targets: List<EpgTarget>) = withContext(Dispatchers.IO) {
         val channels = _channels.value
         if (channels.isEmpty()) {
             _programs.value = emptyMap()

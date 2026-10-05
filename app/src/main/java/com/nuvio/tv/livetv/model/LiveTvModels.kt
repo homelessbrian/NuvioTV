@@ -425,3 +425,17 @@ object DeveloperTools {
     val enabled = kotlinx.coroutines.flow.MutableStateFlow(false)
     fun toggle() { enabled.value = !enabled.value }
 }
+
+
+/**
+ * What Live TV did while loading, with timings, for the hidden "Live TV start-up report"
+ * (developer tools): shows whether the saved channel list and guide were used, and why not.
+ */
+object LiveTvLoadReport {
+    private val startedAt = System.currentTimeMillis()
+    val lines = kotlinx.coroutines.flow.MutableStateFlow<List<String>>(emptyList())
+    fun add(text: String) {
+        val t = (System.currentTimeMillis() - startedAt) / 100 / 10.0
+        lines.value = (lines.value + "+${t}s  $text").takeLast(80)
+    }
+}

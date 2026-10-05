@@ -133,6 +133,10 @@ class LiveTvPlaybackController @Inject constructor(
 
     fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
         val url = overrideUrl ?: channel.url
+        if (currentChannel?.key != channel.key || currentUrl != url) {
+            forcedMime = null
+            formatGuess = 0
+        }
         fallbackUrl = fallback
         startStallWatch()
         val p = _player ?: attach().also { attachCount-- }
@@ -459,6 +463,17 @@ class LiveTvPlaybackController @Inject constructor(
                 p.playWhenReady = true
                 return
             }
+            // "Container unsupported": the link didn't say what kind of stream it is and it was
+            // read as a plain video file. Try it as HLS, then as DASH, before giving up.
+            if (ch != null && p != null && isUnrecognizedFormat(error) && formatGuess < FORMAT_GUESSES.size) {
+                forcedMime = FORMAT_GUESSES[formatGuess++]
+                Log.w(TAG, "Unrecognized stream format for ${ch.name}; trying $forcedMime")
+                val url = currentUrl ?: ch.url
+                p.setMediaSource(buildMediaSource(url, ch.headers, isLive = _state.value.catchupTitle == null))
+                p.prepare()
+                p.playWhenReady = true
+                return
+            }
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && p != null) {
                 p.seekToDefaultPosition()
                 p.prepare()
@@ -466,6 +481,20 @@ class LiveTvPlaybackController @Inject constructor(
             }
             scheduleReconnect(describe(error))
         }
+    }
+
+    /** Format tried for a link that doesn't say what it is (after "container unsupported"). */
+    @Volatile private var forcedMime: String? = null
+    @Volatile private var formatGuess = 0
+
+    private fun isUnrecognizedFormat(error: PlaybackException): Boolean {
+        var c: Throwable? = error
+        while (c != null) {
+            if (c is androidx.media3.exoplayer.source.UnrecognizedInputFormatException) return true
+            if (c is androidx.media3.common.ParserException && c.message?.contains("ontainer", true) == true) return true
+            c = c.cause
+        }
+        return error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
     }
 
     private fun scheduleReconnect(reason: String) {
@@ -562,10 +591,19 @@ class LiveTvPlaybackController @Inject constructor(
             }
             itemBuilder.setDrmConfiguration(MediaItem.DrmConfiguration.Builder(androidx.media3.common.C.CLEARKEY_UUID).build())
         } else {
+            // License requests go out with the same User-Agent / Referer as the stream (like
+            // TiviMate and Kodi), plus any license headers from the playlist. Without them many
+            // license servers refuse the request.
+            val licenseHeaders = LinkedHashMap<String, String>()
+            headers.forEach { (k, v) -> if (k.equals("User-Agent", true) || k.equals("Referer", true) || k.equals("Origin", true)) licenseHeaders[k] = v }
+            licenseHeaders.putAll(drm.licenseHeaders)
+            factory.setDrmSessionManagerProvider(
+                androidx.media3.exoplayer.drm.DefaultDrmSessionManagerProvider().apply { setDrmHttpDataSourceFactory(http) }
+            )
             itemBuilder.setDrmConfiguration(
                 MediaItem.DrmConfiguration.Builder(uuid)
                     .setLicenseUri(license)
-                    .setLicenseRequestHeaders(drm.licenseHeaders)
+                    .setLicenseRequestHeaders(licenseHeaders)
                     .setMultiSession(true)
                     .build()
             )
@@ -604,6 +642,7 @@ class LiveTvPlaybackController @Inject constructor(
         val builder = MediaItem.Builder().setUri(Uri.parse(url))
         val lower = url.lowercase().substringBefore('?')
         when {
+            forcedMime != null -> builder.setMimeType(forcedMime)
             lower.endsWith(".m3u8") || lower.contains("/hls/") || lower.contains("m3u8") -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
             lower.endsWith(".mpd") -> builder.setMimeType(MimeTypes.APPLICATION_MPD)
             lower.endsWith(".ts") -> builder.setMimeType(MimeTypes.VIDEO_MP2T)
@@ -654,6 +693,7 @@ class LiveTvPlaybackController @Inject constructor(
         private const val MAX_RECONNECTS = 8
         /** No progress for this long while it should be playing = stalled. */
         private const val STALL_MS = 15_000L
+        private val FORMAT_GUESSES = listOf(MimeTypes.APPLICATION_M3U8, MimeTypes.APPLICATION_MPD)
         /** No picture this long after the video moved to a new screen = stuck. */
         private const val FRAME_TIMEOUT_MS = 2_500L
         /** Still loading this long after the video moved to a new screen = stuck. */
