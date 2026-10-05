@@ -193,3 +193,24 @@ jobs:
             Nuvio + IPTV, based on Nuvio ${{ env.TAG }}: everything in Nuvio, plus Live TV with a TiviMate-style guide and On Demand from your IPTV provider.
 
             Nuvio's changes in this version: https://github.com/${{ env.UPSTREAM }}/releases/tag/${{ env.TAG }}
+
+      # One link that always gives the newest APK (for a Downloader code):
+      # https://github.com/<you>/<repo>/releases/download/downloader/NuvioPlusIPTV.apk
+      # It lives on its own "downloader" release, whose file is replaced each time. That release
+      # has no version number, so the in-app updater ignores it, and in-app updates keep
+      # working exactly as before.
+      - name: Update the Downloader link (always the newest version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls out/*universal*.apk 2>/dev/null | head -1)
+          [ -z "$APK" ] && APK=$(ls out/*.apk | head -1)
+          mkdir -p dl
+          cp "$APK" dl/NuvioPlusIPTV.apk
+          if ! gh release view downloader -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create downloader -R "$GITHUB_REPOSITORY" \
+              --title "Nuvio + IPTV for Downloader (always the newest version)" \
+              --notes "This file is replaced with the newest version every release, so one link (and one Downloader code) always installs the latest Nuvio + IPTV. Updates after that happen inside the app." \
+              --latest=false --prerelease
+          fi
+          gh release upload downloader dl/NuvioPlusIPTV.apk -R "$GITHUB_REPOSITORY" --clobber
