@@ -368,14 +368,18 @@ class LiveTvPosterResolver @Inject constructor(
         aboutCache[key]?.let { return it.meta }
         val hit = requestPermitsAware {
             val hint = TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT)
-            lookup(name, hint, Clues(), Attempt())
-                // A brand in front ("OnePlay Paw Patrol"): without the first word, then two.
-                ?: name.split(' ').filter { it.isNotBlank() }.let { w ->
-                    (1..2).asSequence()
-                        .filter { w.size - it >= 1 && w.drop(it).joinToString(" ").length >= 3 }
-                        .mapNotNull { lookup(w.drop(it).joinToString(" "), hint, Clues(), Attempt()) }
-                        .firstOrNull()
+            var found = lookup(name, hint, Clues(), Attempt())
+            // A brand in front ("OnePlay Paw Patrol"): without the first word, then two.
+            if (found == null) {
+                val w = name.split(' ').filter { it.isNotBlank() }
+                for (drop in 1..2) {
+                    val rest = w.drop(drop).joinToString(" ")
+                    if (w.size - drop < 1 || rest.length < 3) continue
+                    found = lookup(rest, hint, Clues(), Attempt())
+                    if (found != null) break
                 }
+            }
+            found
         }
         if (hit == null) aboutMisses += key else aboutCache[key] = hit
         return hit?.meta
