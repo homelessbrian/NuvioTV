@@ -260,7 +260,11 @@ data class LiveTvSettings(
     /** Live TV buffer: "small" (fastest channel changes), "normal", "large", "xlarge". */
     val bufferSize: String = "normal",
     /** Group list order: "custom" (yours, from Reorder groups), "playlist" or "name" (A–Z). */
-    val groupSort: String = "custom"
+    val groupSort: String = "custom",
+    /** Pause and rewind live TV (channels without catch-up): record while paused. */
+    val timeshiftEnabled: Boolean = true,
+    /** How much to keep, in minutes. */
+    val timeshiftMinutes: Int = 30
 )
 
 data class LiveUserState(

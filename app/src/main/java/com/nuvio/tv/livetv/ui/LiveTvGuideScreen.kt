@@ -580,7 +580,8 @@ fun LiveTvGuideScreen(
     // Only a Back press that *started* in the guide counts as "hold Back" here.
     var backPressStartedHere by remember { mutableStateOf(false) }
     androidx.compose.runtime.CompositionLocalProvider(
-        LocalShowDetails provides { key, p -> viewModel.details(key, p) }
+        LocalShowDetails provides { key, p -> viewModel.details(key, p) },
+        LocalChannelAbout provides { ch -> viewModel.channelAbout(ch) }
     ) {
     Box(
         modifier = Modifier
@@ -1042,7 +1043,63 @@ fun LiveTvGuideScreen(
         }
 
         // Loading status in the top corner (the clock now sits above the channel list).
-        if ((settings.showProgramDetails || settings.showPreview) && status.loading) {
+        // ---------------------------------------------------------------- the video
+        // One video view for the preview window and full screen: it just changes size. Drawn
+        // right after the guide itself, so menus and panels (Assign EPG, channel menu…) cover
+        // it instead of the video showing through them.
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val pb = previewBounds
+        val rb = rootBounds
+        val videoModifier = when {
+            fullscreen -> Modifier.fillMaxSize()
+            pb != null && rb != null && pb.width > 1f -> with(density) {
+                Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
+                    .size(pb.width.toDp(), pb.height.toDp())
+            }
+            // Preview hidden: keep the view (so nothing has to be rebuilt), out of sight.
+            else -> Modifier.size(1.dp)
+        }
+        // Full screen: black behind the picture, so channels that don't fill the screen (other
+        // shapes, 4:3) show black bars instead of the guide underneath.
+        if (fullscreen) Box(Modifier.fillMaxSize().background(Color.Black))
+        LivePlayerSurface(
+            player = viewModel.playback.player,
+            useSurfaceView = true,
+            modifier = videoModifier,
+            onAttached = { viewModel.playback.onSurfaceAttached() },
+            aspectMode = if (fullscreen) aspectModeOf(settings.aspectMode) else null
+        )
+        // The preview's own messages, drawn over the video.
+        if (!fullscreen && pb != null && rb != null && pb.width > 1f) {
+            val showLoading = rememberDelayedTrue(playback.isBuffering && playback.error == null, 1_200)
+            val text = when {
+                playback.channelKey == null -> "Press OK on a channel to preview"
+                playback.error != null -> "Reconnecting… (${playback.error})"
+                showLoading -> "Loading…"
+                else -> null
+            }
+            with(density) {
+                Box(
+                    modifier = Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
+                        .size(pb.width.toDp(), pb.height.toDp()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    text?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp) }
+                    playback.catchupTitle?.let {
+                        LiveText(
+                            "ARCHIVE · $it",
+                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = Color.White, size = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+        if (!fullscreen && (settings.showProgramDetails || settings.showPreview) && status.loading) {
             status.message?.let {
                 LiveText(
                     it,
@@ -1423,60 +1480,6 @@ fun LiveTvGuideScreen(
             }
         }
     
-        // ---------------------------------------------------------------- the video
-        // One video view for the preview window and full screen: it just changes size.
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        val pb = previewBounds
-        val rb = rootBounds
-        val videoModifier = when {
-            fullscreen -> Modifier.fillMaxSize()
-            pb != null && rb != null && pb.width > 1f -> with(density) {
-                Modifier
-                    .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
-                    .size(pb.width.toDp(), pb.height.toDp())
-            }
-            // Preview hidden: keep the view (so nothing has to be rebuilt), out of sight.
-            else -> Modifier.size(1.dp)
-        }
-        // Full screen: black behind the picture, so channels that don't fill the screen (other
-        // shapes, 4:3) show black bars instead of the guide underneath.
-        if (fullscreen) Box(Modifier.fillMaxSize().background(Color.Black))
-        LivePlayerSurface(
-            player = viewModel.playback.player,
-            useSurfaceView = true,
-            modifier = videoModifier,
-            onAttached = { viewModel.playback.onSurfaceAttached() },
-            aspectMode = if (fullscreen) aspectModeOf(settings.aspectMode) else null
-        )
-        // The preview's own messages, drawn over the video.
-        if (!fullscreen && pb != null && rb != null && pb.width > 1f) {
-            val showLoading = rememberDelayedTrue(playback.isBuffering && playback.error == null, 1_200)
-            val text = when {
-                playback.channelKey == null -> "Press OK on a channel to preview"
-                playback.error != null -> "Reconnecting… (${playback.error})"
-                showLoading -> "Loading…"
-                else -> null
-            }
-            with(density) {
-                Box(
-                    modifier = Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset((pb.left - rb.left).toInt(), (pb.top - rb.top).toInt()) }
-                        .size(pb.width.toDp(), pb.height.toDp()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    text?.let { LiveText(it, color = NuvioTheme.colors.TextSecondary, size = 14.sp) }
-                    playback.catchupTitle?.let {
-                        LiveText(
-                            "ARCHIVE · $it",
-                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
-                                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                            color = Color.White, size = 11.sp
-                        )
-                    }
-                }
-            }
-        }
         // ---------------------------------------------------------------- full screen
         if (fullscreen) {
             LiveTvPlayerScreen(
@@ -1620,8 +1623,17 @@ private fun GuideHeader(
                     }
                 }
                 Spacer(Modifier.height(if (small) 4.dp else 6.dp))
+                // 24/7 channels (no episode info): what the channel plays, from your addons.
+                val about = rememberChannelAbout(channel, p)
+                if (about != null) {
+                    aboutLine(about).takeIf { it.isNotBlank() }?.let {
+                        LiveText(it, color = NuvioTheme.colors.TextSecondary, size = if (small) 13.sp else 14.sp)
+                        Spacer(Modifier.height(if (small) 2.dp else 4.dp))
+                    }
+                }
                 LiveText(
-                    text = p?.description ?: if (p == null) "No program information" else "",
+                    text = about?.description?.takeIf { it.isNotBlank() }
+                        ?: p?.description ?: if (p == null) "No program information" else "",
                     color = NuvioTheme.colors.TextSecondary,
                     size = if (small) 13.sp else 14.sp,
                     maxLines = if (small) 1 else 2

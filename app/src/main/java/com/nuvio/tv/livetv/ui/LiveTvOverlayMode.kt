@@ -278,6 +278,27 @@ internal fun LiveTvOverlayMode(
             OverlayLevel.GROUPS -> null
         }
         val cardChannelKey = if (level == OverlayLevel.CHANNELS) settledChannel?.key else scheduleChannel?.key
+        // 24/7 channels with no listing: what the channel plays, as the card.
+        val about = if (level == OverlayLevel.CHANNELS) rememberChannelAbout(settledChannel, card) else null
+        if (card == null && about != null && !about.description.isNullOrBlank()) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 24.dp, end = 24.dp)
+                    .width(360.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(16.dp)
+            ) {
+                LiveText(about.name, size = 20.sp, weight = FontWeight.Bold, marquee = true, modifier = Modifier.fillMaxWidth())
+                aboutLine(about).takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(6.dp))
+                    LiveText(it, size = 13.sp, color = Color.White.copy(alpha = 0.75f))
+                }
+                Spacer(Modifier.height(8.dp))
+                LiveText(about.description.orEmpty(), size = 13.sp, color = Color.White.copy(alpha = 0.85f), maxLines = 6)
+            }
+        }
         rememberShowDetails(cardChannelKey, card)?.let { p ->
             Column(
                 modifier = Modifier

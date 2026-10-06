@@ -203,4 +203,4 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
 }
 
 /** Longest single listing assumed when reading a time window (longer ones are very rare). */
-private const val MAX_SHOW_MS = 12L * 60 * 60 * 1000
+private const val MAX_SHOW_MS = 6L * 60 * 60 * 1000

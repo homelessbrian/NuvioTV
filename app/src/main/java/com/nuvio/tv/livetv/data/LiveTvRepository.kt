@@ -528,6 +528,20 @@ class LiveTvRepository @Inject constructor(
     private fun priorityKeys(): List<String> =
         runCatching { priorityFile.readLines().filter { it.isNotBlank() } }.getOrDefault(emptyList())
 
+    /** Loads these channels' listings straight away if they aren't loaded yet (the group you open). */
+    fun loadChannelsNow(keys: List<String>) {
+        if (!guideInDb || keys.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            val missing = keys.distinct().filter { it !in _programs.value }
+            if (missing.isEmpty()) return@launch
+            val got = runCatching { guideDb.range(loadedFrom, loadedTo, light = true, channels = missing) }.getOrNull() ?: return@launch
+            rangeMutex.withLock {
+                val cur = _programs.value
+                _programs.value = cur + got.filterKeys { it !in cur }
+            }
+        }
+    }
+
     /** Remembers which channels to load first next time, and loads them now if needed. */
     fun rememberPriority(keys: List<String>) {
         val list = keys.distinct().take(600)
@@ -577,18 +591,25 @@ class LiveTvRepository @Inject constructor(
         lightPrograms = true
         epgDetailsPending = true
         LIVE_REPORT.add("First channels' listings ready: ${_programs.value.size} channels")
-        // Everything else (short form), then the rest of the usual hours, in the background.
+        // Everything else (short form, the usual hours), in the background, in one read.
+        rangeBusy.set(true)
         scope.launch(Dispatchers.IO) {
+          try {
             val t0 = System.currentTimeMillis()
-            val rest = runCatching { guideDb.range(from, to, light = true) }.getOrNull()
+            val (fullFrom, fullTo) = defaultWindow()
+            val rest = runCatching { guideDb.range(fullFrom, fullTo, light = true) }.getOrNull()
             if (rest != null) rangeMutex.withLock {
                 val merged = HashMap<String, List<EpgProgram>>(rest)
                 _programs.value.forEach { (k, v) -> if ((merged[k]?.size ?: 0) < v.size) merged[k] = v }
                 _programs.value = merged
+                loadedFrom = minOf(loadedFrom, fullFrom)
+                loadedTo = maxOf(loadedTo, fullTo)
             }
             LIVE_REPORT.add("All channels' listings ready: ${_programs.value.size} channels in ${System.currentTimeMillis() - t0} ms")
-            val (fullFrom, fullTo) = defaultWindow()
-            ensureRange(fullFrom, fullTo)
+          } finally {
+            rangeBusy.set(false)
+            pendingRange?.let { (f, t) -> pendingRange = null; ensureRange(f, t) }
+          }
         }
         true
     }
@@ -606,14 +627,27 @@ class LiveTvRepository @Inject constructor(
      * Makes sure listings for [fromMs]..[toMs] are loaded (scrolling the guide ahead or back,
      * catch-up). Reads only what's missing; does nothing when the database isn't in use.
      */
+    /** A big read is running: further requests wait for it instead of starting another. */
+    private val rangeBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var pendingRange: Pair<Long, Long>? = null
+
     fun ensureRange(fromMs: Long, toMs: Long) {
         if (!guideInDb || (fromMs >= loadedFrom && toMs <= loadedTo)) return
-        scope.launch {
+        if (!rangeBusy.compareAndSet(false, true)) {
+            // One read at a time (each covers every channel): remember the widest request.
+            val p = pendingRange
+            pendingRange = if (p == null) fromMs to toMs else minOf(p.first, fromMs) to maxOf(p.second, toMs)
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+          try {
+            // Read without holding the lock (a big read used to make everything else wait for it,
+            // like a group you just opened); only the merge is locked.
+            val from = minOf(fromMs, loadedFrom)
+            val to = maxOf(toMs, loadedTo)
+            val loaded = runCatching { guideDb.range(from, to, light = lightPrograms) }.getOrNull() ?: return@launch
             rangeMutex.withLock {
                 if (fromMs >= loadedFrom && toMs <= loadedTo) return@withLock
-                val from = minOf(fromMs, loadedFrom)
-                val to = maxOf(toMs, loadedTo)
-                val loaded = runCatching { guideDb.range(from, to, light = lightPrograms) }.getOrNull() ?: return@withLock
                 // Keep any full single-channel schedules already loaded (overlay mode, catch-up).
                 val merged = HashMap<String, List<EpgProgram>>(loaded)
                 _programs.value.forEach { (ch, list) ->
@@ -624,6 +658,10 @@ class LiveTvRepository @Inject constructor(
                 loadedFrom = from
                 loadedTo = to
             }
+          } finally {
+            rangeBusy.set(false)
+            pendingRange?.let { (f, t) -> pendingRange = null; ensureRange(f, t) }
+          }
         }
     }
 

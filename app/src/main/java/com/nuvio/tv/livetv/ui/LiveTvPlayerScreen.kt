@@ -129,6 +129,12 @@ fun LiveTvPlayerScreen(
 
     fun showBanner() { bannerVisible = true; bannerToken++ }
 
+    // The bottom panel's controls (Down while it's showing): which one is highlighted.
+    var controlFocus by remember { mutableStateOf<PanelControl?>(null) }
+    val shiftStartedAt by viewModel.playback.shiftStartedAt.collectAsStateWithLifecycle()
+    var captionsOn by remember { mutableStateOf(false) }
+    LaunchedEffect(playback.channelKey, bannerVisible) { captionsOn = viewModel.playback.captionsOn() }
+
     // Picture quality (for the guide's badges) and frame rate (for Match frame rate).
     var videoFps by remember { mutableStateOf(-1f) }
     LaunchedEffect(playback.channelKey, playback.catchupTitle) {
@@ -230,6 +236,49 @@ fun LiveTvPlayerScreen(
                 if (listVisible || dialog != PlayerDialog.NONE) return@onPreviewKeyEvent false
                 val isOk = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
                 val archive = playback.catchupTitle != null
+                val shifting = shiftStartedAt != null
+                // ---- the panel's controls (entered with Down while the panel shows)
+                val cf = controlFocus
+                if (cf != null) {
+                    val mode = if (archive) PanelMode.CATCHUP else if (shifting) PanelMode.SHIFT else PanelMode.LIVE
+                    val paused = !playback.isPlaying && !playback.isBuffering
+                    val list = panelControls(mode, paused, canSkip = archive || viewModel.playback.shiftCanSeek())
+                    if (e.type == KeyEventType.KeyUp) return@onPreviewKeyEvent isOk || e.key == Key.Back
+                    showBanner()
+                    val i = list.indexOf(cf).coerceAtLeast(0)
+                    when {
+                        e.key == Key.DirectionLeft -> { controlFocus = list[(i - 1).coerceAtLeast(0)]; return@onPreviewKeyEvent true }
+                        e.key == Key.DirectionRight -> { controlFocus = list[(i + 1).coerceAtMost(list.lastIndex)]; return@onPreviewKeyEvent true }
+                        e.key == Key.DirectionUp || e.key == Key.Back -> {
+                            if (e.key == Key.Back) (context as? com.nuvio.tv.MainActivity)?.longPressBackHeld?.value = true
+                            controlFocus = null; return@onPreviewKeyEvent true
+                        }
+                        e.key == Key.DirectionDown -> return@onPreviewKeyEvent true
+                        isOk -> {
+                            if (e.nativeKeyEvent.repeatCount > 0) return@onPreviewKeyEvent true
+                            when (list.getOrNull(i)) {
+                                PanelControl.BACK -> if (archive) scrub(forward = false, repeat = 0) else viewModel.playback.shiftSeekBy(-30_000)
+                                PanelControl.FORWARD -> if (archive) scrub(forward = true, repeat = 0) else viewModel.playback.shiftSeekBy(30_000)
+                                PanelControl.PLAY -> viewModel.playback.togglePause()
+                                PanelControl.LIVE -> {
+                                    if (archive) current?.let { viewModel.backToLive(it) } else viewModel.playback.goLive()
+                                    controlFocus = PanelControl.PLAY
+                                }
+                                PanelControl.CC -> {
+                                    captionsOn = viewModel.playback.toggleCaptions()
+                                    toast = if (captionsOn) "Captions on" else if (viewModel.playback.subtitleTracks().isEmpty()) "No captions on this channel" else "Captions off"
+                                }
+                                PanelControl.AUDIO -> dialog = PlayerDialog.AUDIO
+                                PanelControl.SIZE -> dialog = PlayerDialog.SCREEN_SIZE
+                                PanelControl.SLEEP -> dialog = PlayerDialog.SLEEP
+                                PanelControl.MORE -> dialog = PlayerDialog.OPTIONS
+                                null -> Unit
+                            }
+                            return@onPreviewKeyEvent true
+                        }
+                        else -> Unit
+                    }
+                }
                 if (isOk) {
                     if (e.type == KeyEventType.KeyDown) {
                         if (e.nativeKeyEvent.repeatCount == 0) {
@@ -257,8 +306,8 @@ fun LiveTvPlayerScreen(
                             dialog = PlayerDialog.OPTIONS
                         } else when {
                             playback.error != null && playback.reconnectAttempt > 8 -> viewModel.playback.retry()
-                            // Catch-up: OK pauses and resumes, and shows the seek bar.
-                            archive -> { viewModel.playback.togglePause(); showBanner() }
+                            // Catch-up / a recording / paused: OK pauses and resumes, and shows the panel.
+                            archive || shifting || (!playback.isPlaying && !playback.isBuffering) -> { viewModel.playback.togglePause(); showBanner() }
                             // OK shows the info bar; OK again hides it.
                             bannerVisible -> bannerVisible = false
                             else -> showBanner()
@@ -270,17 +319,26 @@ fun LiveTvPlayerScreen(
                 val code = e.nativeKeyEvent.keyCode
                 when {
                     e.key == Key.DirectionUp || e.key == Key.ChannelUp -> { zap(1); true }
+                    e.key == Key.DirectionDown && current != null &&
+                        (bannerVisible || (!playback.isPlaying && !playback.isBuffering)) -> {
+                        controlFocus = PanelControl.PLAY; showBanner(); true
+                    }
                     e.key == Key.DirectionDown || e.key == Key.ChannelDown -> { zap(-1); true }
                     e.key == Key.DirectionLeft -> {
                         when {
                             archive -> scrub(forward = false, repeat = e.nativeKeyEvent.repeatCount)
+                            shifting && viewModel.playback.shiftCanSeek() -> { viewModel.playback.shiftSeekBy(-30_000); showBanner() }
                             settings.overlayMode -> listVisible = true
                             else -> { viewModel.requestGroupsOnReturn(); onBackToGroups() }
                         }
                         true
                     }
                     e.key == Key.DirectionRight -> {
-                        if (archive) scrub(forward = true, repeat = e.nativeKeyEvent.repeatCount) else showBanner()
+                        when {
+                            archive -> scrub(forward = true, repeat = e.nativeKeyEvent.repeatCount)
+                            shifting && viewModel.playback.shiftCanSeek() -> { viewModel.playback.shiftSeekBy(30_000); showBanner() }
+                            else -> showBanner()
+                        }
                         true
                     }
                     e.key == Key.Info -> { showBanner(); true }
@@ -338,52 +396,97 @@ fun LiveTvPlayerScreen(
             )
         }
 
-        // Info banner (bottom)
+        // The bottom panel: poster, the show, its timeline (live, catch-up or a pause-and-rewind
+        // recording), playback buttons and quick options. Stays up while paused.
+        val pausedNow = !playback.isPlaying && !playback.isBuffering && current != null && playback.error == null
+        LaunchedEffect(bannerVisible, pausedNow) { if (!bannerVisible && !pausedNow) controlFocus = null }
         AnimatedVisibility(
-            visible = bannerVisible && current != null,
+            visible = (bannerVisible || controlFocus != null || pausedNow) && current != null,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             current?.let { ch ->
-                val list = programs[ch.key].orEmpty()
-                val next = list.firstOrNull { it.startMs >= (nowProgram?.stopMs ?: now) }
                 val use24h = settings.use24HourClock
-                InfoBanner(
+                val archive = playback.catchupTitle != null
+                val cs = catchupSession
+                val mode = when {
+                    archive -> PanelMode.CATCHUP
+                    shiftStartedAt != null -> PanelMode.SHIFT
+                    else -> PanelMode.LIVE
+                }
+                // 24/7 channels with no episode info: what the channel plays, from your addons.
+                val about = if (!archive) rememberChannelAbout(ch, nowProgram) else null
+                val showProgram = if (archive) cs?.program else nowProgram
+                // Ticks while visible, so the timeline moves.
+                var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+                LaunchedEffect(Unit) { while (true) { delay(1_000); tick = System.currentTimeMillis() } }
+                val timeline: PanelTimeline? = when (mode) {
+                    PanelMode.CATCHUP -> cs?.let { session ->
+                        val pos = scrubTargetMs ?: positionMs
+                        val len = session.program.stopMs - session.program.startMs
+                        PanelTimeline(
+                            startMs = session.program.startMs,
+                            endMs = session.program.stopMs,
+                            positionMs = session.program.startMs + pos,
+                            leftLabel = formatClock(session.program.startMs, use24h),
+                            rightLabel = formatClock(session.program.stopMs, use24h),
+                            status = formatDuration(pos) + " / " + formatDuration(len)
+                        )
+                    }
+                    PanelMode.SHIFT -> {
+                        val start = shiftStartedAt ?: tick
+                        val pos = viewModel.playback.shiftPositionWallMs() ?: start
+                        val behind = (tick - pos).coerceAtLeast(0L)
+                        PanelTimeline(
+                            startMs = start,
+                            endMs = maxOf(tick, start + 60_000),
+                            positionMs = pos,
+                            liveMs = tick,
+                            recordedUntilMs = tick,
+                            leftLabel = "Recorded from " + formatClock(start, use24h),
+                            rightLabel = "Live " + formatClock(tick, use24h),
+                            status = formatDuration(behind) + " behind live",
+                            statusLive = true
+                        )
+                    }
+                    PanelMode.LIVE -> nowProgram?.let { p ->
+                        PanelTimeline(
+                            startMs = p.startMs,
+                            endMs = p.stopMs,
+                            positionMs = tick.coerceIn(p.startMs, p.stopMs),
+                            leftLabel = formatClock(p.startMs, use24h),
+                            rightLabel = formatClock(p.stopMs, use24h),
+                            status = minutesLeftLabel(p.stopMs, tick)
+                        )
+                    }
+                }
+                val paused = !playback.isPlaying && !playback.isBuffering
+                LiveTvPlayerPanel(
                     channel = ch,
+                    mode = mode,
                     title = watchingTitle ?: ch.name,
-                    isArchive = playback.catchupTitle != null,
                     meta = listOfNotNull(
-                        nowProgram?.let { formatRange(it.startMs, it.stopMs, use24h) },
-                        nowProgram?.let { minutesLeftLabel(it.stopMs, now) },
-                        nowProgram?.episode,
-                        nowProgram?.category
+                        showProgram?.episode,
+                        showProgram?.category,
+                        about?.let { aboutLine(it) }?.takeIf { it.isNotBlank() }
                     ).joinToString("  ·  "),
-                    progress = if (playback.catchupTitle == null) nowProgram?.progress(now) else null,
-                    description = if (playback.catchupTitle == null) nowProgram?.description else null,
-                    nextLine = next?.let { "Next: ${formatClock(it.startMs, use24h)}  ${it.title}" },
+                    description = about?.description?.takeIf { it.isNotBlank() } ?: showProgram?.description,
                     poster = poster,
                     showPosters = settings.showPosters,
-                    isFavorite = ch.key in user.favorites,
-                    clock = formatClock(now, use24h),
+                    timeline = timeline,
+                    paused = paused,
+                    controls = panelControls(mode, paused, canSkip = archive || viewModel.playback.shiftCanSeek()),
+                    focused = controlFocus,
+                    captionsOn = captionsOn,
+                    audioLabel = remember(playback.channelKey, bannerVisible) { viewModel.playback.audioLabel() },
+                    sizeLabel = aspectLabel(settings.aspectMode),
+                    sleepLabel = sleepAt?.let { at -> "Sleep " + ((at - tick).coerceAtLeast(0) / 60_000 + 1) + "m" },
+                    clock = formatClock(tick, use24h),
                     resolution = if (playback.videoHeight > 0) "${playback.videoHeight}p" else null,
-                    showNumber = settings.showChannelNumbers,
-                    showLogo = settings.showChannelLogos
+                    showNumber = settings.showChannelNumbers
                 )
             }
-        }
-
-        // Catch-up seek bar.
-        val cs = catchupSession
-        if (cs != null && playback.catchupTitle != null && (bannerVisible || scrubTargetMs != null)) {
-            CatchupSeekBar(
-                program = cs.program,
-                positionMs = scrubTargetMs ?: positionMs,
-                scrubbing = scrubTargetMs != null,
-                paused = !playback.isPlaying && !playback.isBuffering,
-                use24h = settings.use24HourClock,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 64.dp, end = 64.dp)
-            )
         }
 
         // Overlay mode (TiviMate style): channels, groups and each channel's schedule over the video.
@@ -886,4 +989,12 @@ private fun MatchFrameRate(enabled: Boolean, fps: Float) {
         attrs.preferredDisplayModeId = best.modeId
         activity.window.attributes = attrs
     }
+}
+
+/** The picture-size setting, short, for the panel. */
+private fun aspectLabel(name: String): String = when (name.lowercase()) {
+    "fit", "" -> "Fit"
+    "fill", "stretch" -> "Fill"
+    "zoom", "crop" -> "Zoom"
+    else -> name.replaceFirstChar { it.uppercase() }.take(10)
 }

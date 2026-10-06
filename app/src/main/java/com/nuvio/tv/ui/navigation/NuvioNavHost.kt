@@ -438,10 +438,21 @@ private fun PlaybackNavHost(
                           Screen.Player.createRoute(
                               streamUrl = resolved.url,
                               title = resolved.title,
+                              // Everything Nuvio needs to track progress, so it shows up in
+                              // Continue Watching (and Trakt / watched marks) like any stream.
+                              year = year,
+                              contentId = contentId,
                               contentType = contentType,
                               contentName = title,
                               poster = poster ?: resolved.poster,
-                              addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME
+                              backdrop = backdrop,
+                              logo = logo,
+                              videoId = videoId,
+                              season = season,
+                              episode = episode,
+                              episodeTitle = episodeName,
+                              addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME,
+                              contentLanguage = contentLanguage
                           )
                       )
                   }

@@ -157,6 +157,8 @@ class LiveTvViewModel @Inject constructor(
                 playback.autoReconnect = it.autoReconnect
                 playback.audioPassthrough = it.audioPassthrough
                 playback.bufferSize = it.bufferSize
+                playback.timeshiftEnabled = it.timeshiftEnabled
+                playback.timeshiftMinutes = it.timeshiftMinutes
             }
         }
         viewModelScope.launch {
@@ -638,6 +640,29 @@ class LiveTvViewModel @Inject constructor(
                     if (keys.isNotEmpty()) repository.rememberPriority(keys)
                 }
         }
+        // The group you open: its listings straight away, if they aren't loaded yet.
+        viewModelScope.launch {
+            uiState.map { it.channels.take(400).map { c -> c.key } }.distinctUntilChanged().collect { keys ->
+                repository.loadChannelsNow(keys)
+            }
+        }
+    }
+
+    init {
+        // Posters for what's on now in the group on screen, fetched quietly one at a time in the
+        // background, so they're already there as you move through the guide.
+        viewModelScope.launch {
+            uiState.map { it.channels.take(40) }.distinctUntilChanged().collectLatest { channels ->
+                delay(2_000)
+                if (!settings.value.showPosters) return@collectLatest
+                for (ch in channels) {
+                    val nowMs = System.currentTimeMillis()
+                    val p = programs.value[ch.key]?.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs } ?: continue
+                    if (com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(p.title)) continue
+                    runCatching { posterFor(p.title, p, ch) }
+                }
+            }
+        }
     }
 
     /** Guide scrolled ahead or back: load those hours from the guide database if needed. */
@@ -732,6 +757,28 @@ class LiveTvViewModel @Inject constructor(
         )
         detailCache[key] = merged
         return merged
+    }
+
+    // ------------------------------------------------------------ 24/7 channels
+
+    private val TWENTY_FOUR_SEVEN = Regex("""(?i)\b24\s*[/\\|\-x]?\s*7\b""")
+
+    /**
+     * For 24/7 channels (one show, or one star's films, all day, usually with no guide): what
+     * the channel plays, from your addons, by the channel's name. "24/7 Seinfeld" -> Seinfeld's
+     * description. Only for channels marked 24/7 (in the name or group), never for others.
+     */
+    suspend fun channelAbout(channel: LiveChannel): com.nuvio.tv.domain.model.MetaPreview? {
+        if (!com.nuvio.tv.livetv.data.LiveTvPosterResolver.is247(channel)) return null
+        val name = channel.name
+            .replace(TWENTY_FOUR_SEVEN, " ")
+            .replace(Regex("""(?i)^\s*[A-Z]{2,3}\s*[:|\-]\s*"""), " ") // "US: …"
+            .replace(Regex("""(?i)\b(fhd|uhd|hd|sd|4k|hevc|h265|live|tv|channel)\b"""), " ")
+            .replace(Regex("""[\[\](){}|:•·\-]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        if (name.length < 2) return null
+        return posterResolver.aboutTitle(name)
     }
 
     /** Remembers which channels to fill in first next time (the group on screen, favorites). */

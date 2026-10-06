@@ -284,8 +284,11 @@ internal fun PauseLiveTvInBackground(playback: com.nuvio.tv.livetv.player.LiveTv
         val lifecycle = (c as? androidx.lifecycle.LifecycleOwner)?.lifecycle
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_STOP -> playback.onAppBackground()
-                androidx.lifecycle.Lifecycle.Event.ON_START -> playback.onAppForeground()
+                // Pause as soon as the app stops being the one in front (not only once it's fully
+                // hidden): some launchers, notably ones showing a live wallpaper, leave the app
+                // "visible behind" them, so it never got the fully-hidden signal and kept playing.
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE, androidx.lifecycle.Lifecycle.Event.ON_STOP -> playback.onAppBackground()
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> playback.onAppForeground()
                 else -> Unit
             }
         }
@@ -340,3 +343,29 @@ internal fun rememberShowDetails(channelKey: String?, program: EpgProgram?): Epg
     }
     return state.value
 }
+
+/** Looks up what a 24/7 channel plays (see LiveTvViewModel.channelAbout). */
+internal val LocalChannelAbout = androidx.compose.runtime.staticCompositionLocalOf<suspend (com.nuvio.tv.livetv.model.LiveChannel) -> com.nuvio.tv.domain.model.MetaPreview?> { { null } }
+
+/**
+ * What a 24/7 channel plays (description, year, genres), when the channel has no real listing
+ * for now. Null for normal channels and while looking it up.
+ */
+@Composable
+internal fun rememberChannelAbout(channel: com.nuvio.tv.livetv.model.LiveChannel?, program: EpgProgram?): com.nuvio.tv.domain.model.MetaPreview? {
+    val loader = LocalChannelAbout.current
+    val noListing = program == null || com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(program.title) ||
+        program.description.isNullOrBlank() && channel != null && program.title.equals(channel.name, ignoreCase = true)
+    val state = androidx.compose.runtime.produceState<com.nuvio.tv.domain.model.MetaPreview?>(null, channel?.key, noListing) {
+        value = if (channel != null && noListing) loader(channel) else null
+    }
+    return state.value
+}
+
+/** "2014– · Comedy, Drama · ★ 8.1" for a 24/7 channel's show. */
+internal fun aboutLine(m: com.nuvio.tv.domain.model.MetaPreview): String =
+    listOfNotNull(
+        (m.releaseInfo ?: m.released)?.takeIf { it.isNotBlank() },
+        m.genres.take(2).joinToString(", ").takeIf { it.isNotBlank() },
+        m.imdbRating?.let { "★ " + String.format(java.util.Locale.US, "%.1f", it) }
+    ).joinToString("  ·  ")

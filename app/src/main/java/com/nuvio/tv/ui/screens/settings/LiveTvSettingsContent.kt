@@ -495,6 +495,20 @@ fun LiveTvSettingsContent(
                         s.catchupPreferHls,
                         { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
                     )
+                    SettingsToggleRow(
+                        "Pause and rewind live TV",
+                        "On channels without catch-up, pausing records the channel to this device, so play carries on from where you paused",
+                        s.timeshiftEnabled,
+                        { update { it.copy(timeshiftEnabled = !it.timeshiftEnabled) } }
+                    )
+                    if (s.timeshiftEnabled) SettingsActionRow(
+                        title = "Keep up to",
+                        subtitle = "How much can be recorded while paused (uses this device's storage, deleted afterwards)",
+                        value = "${s.timeshiftMinutes} min · about " + (s.timeshiftMinutes * 35).let { mb -> if (mb >= 1000) String.format(java.util.Locale.US, "%.1f GB", mb / 1024f) else "$mb MB" },
+                        onClick = {
+                            update { st -> st.copy(timeshiftMinutes = when (st.timeshiftMinutes) { 10 -> 30; 30 -> 60; else -> 10 }) }
+                        }
+                    )
                     SettingsActionRow(
                         title = "Buffer size",
                         subtitle = "Larger rides out a slow connection or provider (fewer pauses); smaller changes channels a little faster",

@@ -70,6 +70,110 @@ class LiveTvPlaybackController @Inject constructor(
 
     private var currentChannel: LiveChannel? = null
 
+    // ---------------------------------------------------------------- pause and rewind
+
+    private val timeshift = LiveTvTimeshift(context)
+    var timeshiftEnabled: Boolean = true
+    var timeshiftMinutes: Int = 30
+
+    private val _shiftStartedAt = MutableStateFlow<Long?>(null)
+    /** Non-null while playing from a pause-and-rewind recording: when the recording started. */
+    val shiftStartedAt: StateFlow<Long?> = _shiftStartedAt.asStateFlow()
+    private var shiftPrepared = false
+    private var shiftJob: Job? = null
+
+    /** Wall-clock time of what's on screen while playing a recording, or null. */
+    fun shiftPositionWallMs(): Long? {
+        val start = _shiftStartedAt.value ?: return null
+        val p = _player ?: return start
+        return start + timeshift.trimmedMs + if (shiftPrepared) p.currentPosition.coerceAtLeast(0) else 0L
+    }
+
+    /** Skipping back and forward works on HLS recordings (TS recordings can only pause and resume). */
+    fun shiftCanSeek(): Boolean = timeshift.session?.kind == LiveTvTimeshift.Kind.HLS && shiftPrepared
+
+    /**
+     * Pause on a live channel without catch-up: record it from here (pause and rewind live TV),
+     * so play carries on from this moment. Falls back to a plain pause if recording isn't
+     * possible (turned off, not enough storage, encrypted stream).
+     */
+    fun pauseLive() {
+        val p = _player ?: return
+        val ch = currentChannel
+        if (_shiftStartedAt.value != null) { p.pause(); return }
+        if (ch == null || _state.value.catchupTitle != null || !timeshiftEnabled || !timeshift.hasRoomFor(timeshiftMinutes)) {
+            p.pause(); return
+        }
+        val url = currentUrl ?: ch.url
+        p.pause()
+        p.stop() // hand the provider connection over to the recording
+        val session = timeshift.start(url, ch.headers, timeshiftMinutes)
+        if (session == null) {
+            // Couldn't record: back to the live stream, paused.
+            p.setMediaSource(buildMediaSource(url, ch.headers, isLive = true)); p.prepare(); p.playWhenReady = false
+            return
+        }
+        shiftPrepared = false
+        _shiftStartedAt.value = session.startedAtMs
+        reconnectJob?.cancel()
+    }
+
+    /** Play from the recording (first time: once there's something recorded to play). */
+    private fun resumeShift() {
+        val p = _player ?: return
+        val session = timeshift.session ?: return
+        if (shiftPrepared) { p.play(); return }
+        shiftJob?.cancel()
+        shiftJob = scope.launch {
+            // Wait until the first part is saved (a second or two for HLS).
+            var waited = 0
+            while (waited < 15_000) {
+                val f = java.io.File(session.playUri.path ?: "")
+                if (f.exists() && f.length() > 0) break
+                delay(250); waited += 250
+            }
+            val source = if (session.kind == LiveTvTimeshift.Kind.HLS) {
+                androidx.media3.exoplayer.hls.HlsMediaSource.Factory(androidx.media3.datasource.DefaultDataSource.Factory(context))
+                    .createMediaSource(MediaItem.Builder().setUri(session.playUri).setMimeType(MimeTypes.APPLICATION_M3U8).build())
+            } else {
+                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(timeshift.dataSourceFactory())
+                    .createMediaSource(MediaItem.fromUri(session.playUri))
+            }
+            p.setMediaSource(source)
+            p.prepare()
+            if (session.kind == LiveTvTimeshift.Kind.HLS) p.seekTo(0)
+            p.playWhenReady = true
+            shiftPrepared = true
+        }
+    }
+
+    /** Skip back or forward in the recording (HLS recordings). */
+    fun shiftSeekBy(deltaMs: Long) {
+        val p = _player ?: return
+        if (!shiftCanSeek()) return
+        val max = if (p.duration > 0) p.duration - 3_000 else p.currentPosition
+        p.seekTo((p.currentPosition + deltaMs).coerceIn(0L, max.coerceAtLeast(0L)))
+    }
+
+    /** Go live: drop the recording and play the channel live again. */
+    fun goLive() {
+        val ch = currentChannel
+        val url = currentUrl
+        stopShift()
+        if (ch != null) {
+            currentUrl = null
+            play(ch, overrideUrl = url.takeIf { it != ch.url })
+        }
+    }
+
+    private fun stopShift() {
+        shiftJob?.cancel()
+        shiftJob = null
+        if (_shiftStartedAt.value != null || timeshift.session != null) timeshift.stop()
+        _shiftStartedAt.value = null
+        shiftPrepared = false
+    }
+
     /** The channel the player is on (as it was when playback started). */
     val playingChannel: LiveChannel? get() = currentChannel
     private var currentUrl: String? = null
@@ -132,6 +236,7 @@ class LiveTvPlaybackController @Inject constructor(
     private var fallbackUrl: String? = null
 
     fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
+        if (_shiftStartedAt.value != null) stopShift()
         val url = overrideUrl ?: channel.url
         if (currentChannel?.key != channel.key || currentUrl != url) {
             forcedMime = null
@@ -232,6 +337,7 @@ class LiveTvPlaybackController @Inject constructor(
 
     private fun checkStall() {
         val p = _player ?: return
+        if (_shiftStartedAt.value != null) { lastProgressAt = android.os.SystemClock.elapsedRealtime(); return }
         val now = android.os.SystemClock.elapsedRealtime()
         val ch = currentChannel
         // Paused, in the background, nothing playing, or already showing an error: not a stall.
@@ -296,13 +402,38 @@ class LiveTvPlaybackController @Inject constructor(
 
     fun togglePause() {
         val p = _player ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        when {
+            _shiftStartedAt.value != null -> if (p.isPlaying) p.pause() else resumeShift()
+            p.isPlaying && _state.value.catchupTitle == null -> pauseLive()
+            p.isPlaying -> p.pause()
+            else -> p.play()
+        }
     }
 
     fun seekBy(ms: Long) {
         val p = _player ?: return
         p.seekTo((p.currentPosition + ms).coerceAtLeast(0))
     }
+
+    /** Captions are showing (a text track is selected and text isn't switched off). */
+    fun captionsOn(): Boolean {
+        val p = _player ?: return false
+        if (C.TRACK_TYPE_TEXT in p.trackSelectionParameters.disabledTrackTypes) return false
+        return tracksOf(C.TRACK_TYPE_TEXT).any { it.selected }
+    }
+
+    /** One press: captions off if on; otherwise on, with the first available track. */
+    fun toggleCaptions(): Boolean {
+        val tracks = tracksOf(C.TRACK_TYPE_TEXT)
+        return if (captionsOn()) { selectTrack(C.TRACK_TYPE_TEXT, null); false }
+        else {
+            val pick = tracks.firstOrNull() ?: return false
+            selectTrack(C.TRACK_TYPE_TEXT, pick); true
+        }
+    }
+
+    /** The audio track playing, short ("English 5.1"), for the panel. */
+    fun audioLabel(): String = tracksOf(C.TRACK_TYPE_AUDIO).firstOrNull { it.selected }?.label?.take(18) ?: "Audio"
 
     fun audioTracks(): List<LiveTrackOption> = tracksOf(C.TRACK_TYPE_AUDIO)
     fun subtitleTracks(): List<LiveTrackOption> = tracksOf(C.TRACK_TYPE_TEXT)
@@ -379,6 +510,15 @@ class LiveTvPlaybackController @Inject constructor(
             .build()
         return ExoPlayer.Builder(context, renderers)
             .setLoadControl(loadControl)
+            // Take part in Android's audio focus like other media apps: when something else starts
+            // playing sound (another app, a launcher's video wallpaper with sound…), Live TV pauses.
+            .setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true
+            )
             .build()
             .apply {
                 playWhenReady = true
@@ -451,6 +591,8 @@ class LiveTvPlaybackController @Inject constructor(
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // A recording that failed: back to live rather than reconnecting to nowhere.
+            if (_shiftStartedAt.value != null) { Log.w(TAG, "Recording playback failed", error); goLive(); return }
             val p = _player
             // The provider doesn't offer this as HLS: switch to the TS link once.
             val fb = fallbackUrl
@@ -678,6 +820,7 @@ class LiveTvPlaybackController @Inject constructor(
     }
 
     private fun release() {
+        stopShift()
         reconnectJob?.cancel()
         stallJob?.cancel()
         stallJob = null

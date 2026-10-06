@@ -54,6 +54,8 @@ fun LiveTvLoadingHost(navController: NavController) {
     val entry = remember {
         runCatching { EntryPointAccessors.fromApplication(context.applicationContext, LoadingEntryPoint::class.java) }.getOrNull()
     } ?: return
+    // Live TV fork: stop Live TV's sound whenever the app leaves the front, from any screen.
+    PauseLiveTvInBackground(entry.liveTvPlayback())
     val live by entry.liveTvRepository().status.collectAsState()
     val vod by entry.onDemandRepository().status.collectAsState()
     val route = navController.currentBackStackEntryAsState().value?.destination?.route.orEmpty()

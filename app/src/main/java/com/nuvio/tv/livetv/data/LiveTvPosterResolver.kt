@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -31,7 +32,8 @@ import javax.inject.Singleton
 @Singleton
 class LiveTvPosterResolver @Inject constructor(
     private val addonRepository: AddonRepository,
-    private val catalogRepository: CatalogRepository
+    private val catalogRepository: CatalogRepository,
+    private val store: LiveTvPosterStore
 ) {
     private val cache = boundedCache<String, Result>(4_000)
     private val mutex = Mutex()
@@ -40,7 +42,12 @@ class LiveTvPosterResolver @Inject constructor(
 
     /** Whether a program is a movie or a series, and how sure we are. */
     enum class Kind { MOVIE, SERIES }
-    data class TypeHint(val kind: Kind, val strong: Boolean)
+    /**
+     * What kind of title the guide suggests. [strong]: only that kind is searched. Otherwise
+     * both are, and [weight] is how much the suggested kind counts when picking between
+     * same-named titles (a show on a 24/7 channel counts for a lot more than a guess from length).
+     */
+    data class TypeHint(val kind: Kind, val strong: Boolean, val weight: Double = 15.0)
 
     /** What the guide says about the program, used to tell same-named titles apart. */
     data class Clues(
@@ -149,9 +156,15 @@ class LiveTvPosterResolver @Inject constructor(
         if (LiveTvRepository.isPlaceholderTitle(programTitle)) return null
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
-        val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (clues.year ?: "") +
-            "|" + (clues.description?.hashCode() ?: 0)
+        // One lookup per show (not per episode): the key is the title, kind and year.
+        val key = normalize(query) + "|" + (hint?.kind ?: "any") + "|" + (hint?.weight?.toInt() ?: 0) + "|" + (clues.year ?: "")
         cache[key]?.let { return it.poster }
+        // Remembered from an earlier session: no search needed.
+        withContext(kotlinx.coroutines.Dispatchers.IO) { store.get(key) }?.let { saved ->
+            val poster = saved.ifEmpty { null }
+            cache[key] = Result(poster)
+            return poster
+        }
         // One lookup per title at a time. Started only after it's registered, so a finished
         // lookup can never be left behind and answer "no poster" forever.
         val fresh = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
@@ -193,7 +206,10 @@ class LiveTvPosterResolver @Inject constructor(
         }
         // Only remember "no poster" when the catalogs actually answered. If addons hadn't
         // loaded yet or the network failed, try again next time instead of showing a logo forever.
-        if (poster != null || attempt.reached) cache[key] = Result(poster)
+        if (poster != null || attempt.reached) {
+            cache[key] = Result(poster)
+            store.put(key, poster) // remembered across restarts
+        }
         // Addons not answering (rate limits, offline): back off for a minute.
         if (poster == null && !attempt.reached) {
             if (++failuresInARow >= 5) { pausedUntil = System.currentTimeMillis() + 60_000; failuresInARow = 0 }
@@ -209,13 +225,15 @@ class LiveTvPosterResolver @Inject constructor(
         val all = searchTargets(addons)
         if (hint == null) return lookupIn(query, all.take(MAX_CATALOGS), clues, attempt)
         val preferredType = if (hint.kind == Kind.MOVIE) "movie" else "series"
-        // Search the right kind of catalog first. With a strong hint (episode number, or the guide
-        // says "Movie"), never take the other kind: that's how a sitcom ends up with a movie poster.
         val preferred = all.filter { it.second.apiType == preferredType }.take(MAX_CATALOGS)
-        lookupIn(query, preferred, clues, attempt)?.let { return it }
-        if (hint.strong) return null
+        // Strong hint (episode number, or the guide says "Movie"): only that kind. That's how a
+        // sitcom never ends up with a movie poster.
+        if (hint.strong) return lookupIn(query, preferred, clues, attempt)
+        // Weak hint (just the show's length): look at both kinds and pick the likeliest. A
+        // two-hour reality episode ("Bachelor in Paradise") used to stop at the first movie with
+        // the same name (a 1961 film) without ever looking at the show.
         val others = all.filter { it.second.apiType != preferredType }.take(MAX_CATALOGS)
-        return lookupIn(query, others, clues, attempt)
+        return lookupIn(query, preferred + others, clues, attempt, preferredType, hint.weight)
     }
 
     /**
@@ -229,9 +247,16 @@ class LiveTvPosterResolver @Inject constructor(
         targets: List<Pair<Addon, CatalogDescriptor>>,
         clues: Clues,
         attempt: Attempt
+,
+        /** A weak preference for "movie" or "series" (from the show's length). */
+        preferredType: String? = null,
+        preferredWeight: Double = 15.0
     ): Hit? {
         val wanted = normalize(query)
         val exact = LinkedHashMap<String, Hit>()
+        // Where each title came in its catalog's search results (addons list the best known /
+        // most popular first): used to break ties between same-named titles.
+        val rankOf = HashMap<String, Int>()
         var closeMatch: Hit? = null
 
         // Ask every catalog at once (not one after another), so a slow addon costs a few seconds
@@ -263,8 +288,13 @@ class LiveTvPosterResolver @Inject constructor(
             if (result is NetworkResult.Success) attempt.reached = true
             val (addon, catalog) = targets[i]
             val items = (result as? NetworkResult.Success)?.data?.items.orEmpty()
-            items.filter { normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
-                .forEach { exact.putIfAbsent(it.imdbId ?: it.id, Hit(it, addon.baseUrl, catalog.apiType)) }
+            items.withIndex()
+                .filter { (_, it) -> normalize(it.name) == wanted && !it.poster.isNullOrBlank() }
+                .forEach { (idx, it) ->
+                    val id = it.imdbId ?: it.id
+                    exact.putIfAbsent(id, Hit(it, addon.baseUrl, catalog.apiType))
+                    rankOf[id] = minOf(rankOf[id] ?: Int.MAX_VALUE, idx)
+                }
             if (closeMatch == null) {
                 closeMatch = items.take(5).firstOrNull { item ->
                     val n = normalize(item.name)
@@ -278,7 +308,9 @@ class LiveTvPosterResolver @Inject constructor(
         if (exact.isNotEmpty()) {
             // Year, cast and description pick the best of several same-named titles; they never
             // throw away the only match (guides' years are often the airing, not the release).
-            return exact.values.maxByOrNull { score(it.meta, clues) }!!
+            return exact.entries.maxByOrNull { (id, hit) ->
+                score(hit.meta, clues) + popularity(hit, clues, rankOf[id] ?: 10, preferredType, preferredWeight)
+            }!!.value
         }
         val close = closeMatch ?: return null
         if (clues.year != null) {
@@ -287,6 +319,51 @@ class LiveTvPosterResolver @Inject constructor(
         }
         return close
     }
+
+    /**
+     * Tie-breakers between same-named titles when the guide gives no year: the kind the show's
+     * length suggests, how high the title came in the search results (addons list the best
+     * known first), how recent it is (TV guides are mostly current shows and recent films), and
+     * whether it's rated. Small next to a matching year, cast or ID, which still decide first.
+     */
+    private fun popularity(hit: Hit, clues: Clues, rank: Int, preferredType: String?, preferredWeight: Double = 15.0): Double {
+        var bonus = 0.0
+        if (preferredType != null && hit.type == preferredType) bonus += preferredWeight
+        bonus += (8 - rank).coerceAtLeast(0) * 5.0
+        if (clues.year == null) {
+            val y = yearOf(hit.meta)
+            val thisYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            if (y != null) {
+                if (y >= thisYear - 25) bonus += 30.0
+                else if (y < thisYear - 45) bonus -= 15.0
+            }
+            // A show that's still running ("2014-") is very likely what's on.
+            if (hit.type == "series" && (hit.meta.releaseInfo ?: "").trim().endsWith("-")) bonus += 20.0
+        }
+        hit.meta.imdbRating?.let { if (it >= 6f) bonus += 10.0 }
+        return bonus
+    }
+
+    private val aboutCache = boundedCache<String, Hit>(500)
+    private val aboutMisses = boundedSet<String>(500)
+
+    /**
+     * What a title is (description, poster, year, rating) by its name alone, show or movie: for
+     * 24/7 channels, which play one show (or one actor's films) around the clock with no guide.
+     */
+    suspend fun aboutTitle(name: String): MetaPreview? {
+        val key = normalize(name)
+        if (key.length < 2 || key in aboutMisses) return null
+        aboutCache[key]?.let { return it.meta }
+        val hit = requestPermitsAware {
+            lookup(name, TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT), Clues(), Attempt())
+        }
+        if (hit == null) aboutMisses += key else aboutCache[key] = hit
+        return hit?.meta
+    }
+
+    private suspend fun <T> requestPermitsAware(block: suspend () -> T): T? =
+        runCatching { withTimeoutOrNull(20_000) { block() } }.getOrNull()
 
     /** A match in one of your addon catalogs: its details page and its poster. */
     data class Hit(val meta: MetaPreview, val addonBaseUrl: String, val type: String)
@@ -383,9 +460,21 @@ class LiveTvPosterResolver @Inject constructor(
          * strong signal; failing that, the running time (under about an hour is almost always a
          * series episode, over 80 minutes usually a movie) and the channel's group are weak ones.
          */
+        private val TWENTY_FOUR_SEVEN = Regex("""(?i)\b24\s*[/\\|\-x]?\s*7\b""")
+
+        /** A 24/7 channel (by its name or its group). */
+        fun is247(channel: LiveChannel): Boolean =
+            TWENTY_FOUR_SEVEN.containsMatchIn(channel.name) || TWENTY_FOUR_SEVEN.containsMatchIn(channel.group)
+
+        /** How much "it's a show" counts on 24/7 channels (enough to beat obscure same-named films). */
+        const val SHOW_247_WEIGHT = 80.0
+
         fun typeHint(program: EpgProgram?, channel: LiveChannel?): TypeHint? {
             if (program == null) return null
             if (!program.episode.isNullOrBlank()) return TypeHint(Kind.SERIES, strong = true)
+            // 24/7 channels nearly always play a TV show around the clock, in blocks of any
+            // length: lean strongly to shows, whatever the block length suggests.
+            if (channel != null && is247(channel)) return TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT)
             program.category?.let { cat ->
                 if (movieWords.containsMatchIn(cat)) return TypeHint(Kind.MOVIE, strong = true)
                 if (seriesWords.containsMatchIn(cat)) return TypeHint(Kind.SERIES, strong = true)
