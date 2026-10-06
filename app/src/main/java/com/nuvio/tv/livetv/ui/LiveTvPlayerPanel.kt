@@ -46,7 +46,7 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 internal enum class PanelMode { LIVE, CATCHUP, SHIFT }
 
 /** The panel's buttons and quick options, in the order the highlight moves through them. */
-internal enum class PanelControl { BACK, PLAY, FORWARD, LIVE, CC, AUDIO, SIZE, SLEEP, MORE }
+internal enum class PanelControl { TIMELINE, BACK, PLAY, FORWARD, LIVE, CC, AUDIO, SIZE, SLEEP, MORE }
 
 /** Timeline: everything in wall-clock milliseconds. */
 internal data class PanelTimeline(
@@ -66,6 +66,8 @@ internal data class PanelTimeline(
 /** Which controls the panel offers in each mode. */
 internal fun panelControls(mode: PanelMode, paused: Boolean, canSkip: Boolean): List<PanelControl> = buildList {
     val transport = mode != PanelMode.LIVE || paused
+    // The timeline itself can be grabbed (Up from the buttons) and moved with ◀ / ▶.
+    if (transport && canSkip) add(PanelControl.TIMELINE)
     if (transport && canSkip) add(PanelControl.BACK)
     add(PanelControl.PLAY)
     if (transport && canSkip) add(PanelControl.FORWARD)
@@ -74,14 +76,17 @@ internal fun panelControls(mode: PanelMode, paused: Boolean, canSkip: Boolean): 
 }
 
 /**
- * The full-screen player's single bottom panel: poster on the left, the show and its timeline
- * (live progress, catch-up, or a pause-and-rewind recording), the playback buttons and quick
- * options. [focused] is the highlighted control while the controls are in use (Down), else null.
+ * The full-screen player's bottom panel, in two sizes:
+ *  - compact ([full] = false): channel, show and progress, shown while changing channels;
+ *  - full (OK): also the description, the timeline (live, catch-up, or a pause-and-rewind
+ *    recording), the playback buttons and quick options.
+ * [focused] is the highlighted control in the full panel, else null. Colors follow Nuvio's theme.
  */
 @Composable
 internal fun LiveTvPlayerPanel(
     channel: LiveChannel,
     mode: PanelMode,
+    full: Boolean,
     title: String,
     meta: String,
     description: String?,
@@ -100,63 +105,29 @@ internal fun LiveTvPlayerPanel(
     showNumber: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val panelBg = Color(0xF20E1014)
-    Box(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 56.dp)
-                .background(panelBg)
-                .padding(start = 40.dp, end = 40.dp, top = 16.dp, bottom = 22.dp)
-        ) {
-            // Room for the poster, which rises above the panel's top edge.
-            Spacer(Modifier.width(if (showPosters) 136.dp else 96.dp))
-            Spacer(Modifier.width(20.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LiveText(title, size = 22.sp, weight = FontWeight.Bold, maxLines = 1, marquee = true, modifier = Modifier.weight(1f), color = Color.White)
-                    Spacer(Modifier.width(16.dp))
-                    timeline?.let {
-                        LiveText(
-                            it.status,
-                            size = 14.sp,
-                            color = if (it.statusLive) Color(0xFFF09595) else Color(0xFF9FC5F5),
-                            modifier = Modifier.padding(end = 14.dp)
-                        )
-                    }
-                    resolution?.let { LiveText(it, color = Color(0xFF9AA1AD), size = 13.sp, modifier = Modifier.padding(end = 14.dp)) }
-                    LiveText(clock, size = 18.sp, weight = FontWeight.SemiBold, color = Color.White)
-                }
-                Spacer(Modifier.height(4.dp))
-                val channelLine = (if (showNumber) "${channel.number}  " else "") + channel.name
-                LiveText(listOf(channelLine, meta).filter { it.isNotBlank() }.joinToString("  ·  "), size = 14.sp, color = Color(0xFF9AA1AD), maxLines = 1)
-                description?.takeIf { it.isNotBlank() }?.let {
-                    Spacer(Modifier.height(6.dp))
-                    LiveText(it, size = 14.sp, color = Color(0xFFB9BFC9), maxLines = 2)
-                }
-                timeline?.let { t ->
-                    Spacer(Modifier.height(12.dp))
-                    PanelTimelineBar(t)
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    controls.forEach { c ->
-                        if (c == PanelControl.CC) Spacer(Modifier.weight(1f))
-                        PanelButton(c, focused == c, paused, captionsOn, audioLabel, sizeLabel, sleepLabel, mode)
-                    }
-                }
-            }
-        }
-        // The poster (or the channel logo when posters are off).
+    val colors = NuvioTheme.colors
+    val accent = colors.Secondary
+    val posterW = if (full) 104.dp else 72.dp
+    val posterH = if (full) 156.dp else 108.dp
+    // See-through like overlay mode: fades up from the bottom over the picture.
+    val scrim = androidx.compose.ui.graphics.Brush.verticalGradient(
+        0f to Color.Transparent, 0.35f to Color.Black.copy(alpha = 0.55f), 1f to Color.Black.copy(alpha = 0.78f)
+    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(scrim)
+            .padding(start = 36.dp, end = 36.dp, top = 40.dp, bottom = if (full) 18.dp else 22.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        // Poster (or the channel logo when posters are off).
         Box(
             modifier = Modifier
-                .padding(start = 40.dp)
-                .width(if (showPosters) 136.dp else 96.dp)
-                .height(if (showPosters) 204.dp else 96.dp)
-                .offset(y = if (showPosters) 0.dp else 70.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF2A2F38))
-                .border(1.dp, Color(0xFF3A404B), RoundedCornerShape(10.dp)),
+                .width(if (showPosters) posterW else 64.dp)
+                .height(if (showPosters) posterH else 64.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.BackgroundCard.copy(alpha = 0.85f))
+                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
             if (showPosters && !poster.isNullOrBlank()) {
@@ -167,36 +138,78 @@ internal fun LiveTvPlayerPanel(
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                ChannelLogo(channel.logo, if (showPosters) 72.dp else 64.dp)
+                ChannelLogo(channel.logo, if (showPosters) 56.dp else 48.dp)
+            }
+        }
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                LiveText(title, size = if (full) 20.sp else 18.sp, weight = FontWeight.Bold, maxLines = 1, marquee = true, modifier = Modifier.weight(1f), color = colors.TextPrimary)
+                Spacer(Modifier.width(12.dp))
+                timeline?.let {
+                    LiveText(it.status, size = 13.sp, color = if (it.statusLive) colors.Error else accent, modifier = Modifier.padding(end = 12.dp))
+                }
+                resolution?.let { LiveText(it, color = colors.TextSecondary, size = 12.sp, modifier = Modifier.padding(end = 12.dp)) }
+                LiveText(clock, size = 16.sp, weight = FontWeight.SemiBold, color = colors.TextPrimary)
+            }
+            Spacer(Modifier.height(2.dp))
+            val channelLine = (if (showNumber) "${channel.number}  " else "") + channel.name
+            LiveText(listOf(channelLine, meta).filter { it.isNotBlank() }.joinToString("  ·  "), size = 13.sp, color = colors.TextSecondary, maxLines = 1)
+            if (full) description?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(4.dp))
+                LiveText(it, size = 13.sp, color = colors.TextSecondary, maxLines = 2)
+            }
+            timeline?.let { t ->
+                Spacer(Modifier.height(if (full) 10.dp else 8.dp))
+                PanelTimelineBar(t, grabbed = focused == PanelControl.TIMELINE, compact = !full)
+            }
+            if (full) {
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    controls.filter { it != PanelControl.TIMELINE }.forEach { c ->
+                        if (c == PanelControl.CC) Spacer(Modifier.weight(1f))
+                        PanelButton(c, focused == c, paused, captionsOn, audioLabel, sizeLabel, sleepLabel, mode)
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun PanelTimelineBar(t: PanelTimeline) {
+private fun PanelTimelineBar(t: PanelTimeline, grabbed: Boolean, compact: Boolean) {
+    val colors = NuvioTheme.colors
+    val accent = colors.Secondary
     val span = (t.endMs - t.startMs).coerceAtLeast(1L).toFloat()
     fun frac(ms: Long) = ((ms - t.startMs) / span).coerceIn(0f, 1f)
+    val track = if (compact) 3.dp else 4.dp
     Column {
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(18.dp)) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(if (compact) 8.dp else 16.dp)) {
             val w = maxWidth
-            Box(Modifier.align(Alignment.CenterStart).fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF2A2F38)))
+            Box(Modifier.align(Alignment.CenterStart).fillMaxWidth().height(track).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.18f)))
             t.recordedUntilMs?.let { r ->
-                Box(Modifier.align(Alignment.CenterStart).width(w * frac(r)).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF4A5160)))
+                Box(Modifier.align(Alignment.CenterStart).width(w * frac(r)).height(track).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.35f)))
             }
-            Box(Modifier.align(Alignment.CenterStart).width(w * frac(t.positionMs)).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF5B9BF0)))
+            Box(Modifier.align(Alignment.CenterStart).width(w * frac(t.positionMs)).height(track).clip(RoundedCornerShape(2.dp)).background(accent))
             t.liveMs?.let { l ->
-                Box(Modifier.align(Alignment.CenterStart).offset(x = (w * frac(l)) - 1.dp).width(2.dp).fillMaxHeight().background(Color(0xFFE24B4A)))
+                Box(Modifier.align(Alignment.CenterStart).offset(x = (w * frac(l)) - 1.dp).width(2.dp).fillMaxHeight().background(colors.Error))
             }
-            Box(
-                Modifier.align(Alignment.CenterStart).offset(x = (w * frac(t.positionMs)) - 7.dp).size(14.dp)
-                    .clip(CircleShape).background(Color.White).border(2.dp, Color(0xFF5B9BF0), CircleShape)
-            )
+            if (!compact) {
+                // The handle: bigger, with a ring, while the timeline is grabbed.
+                val knob = if (grabbed) 18.dp else 12.dp
+                Box(
+                    Modifier.align(Alignment.CenterStart).offset(x = (w * frac(t.positionMs)) - knob / 2).size(knob)
+                        .clip(CircleShape).background(Color.White)
+                        .border(if (grabbed) 3.dp else 2.dp, if (grabbed) colors.FocusRing else accent, CircleShape)
+                )
+            }
         }
-        Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-            LiveText(t.leftLabel, size = 12.sp, color = Color(0xFF9AA1AD))
+        if (!compact) Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+            LiveText(t.leftLabel, size = 11.sp, color = colors.TextSecondary)
             Spacer(Modifier.weight(1f))
-            LiveText(t.rightLabel, size = 12.sp, color = if (t.liveMs != null) Color(0xFFF09595) else Color(0xFF9AA1AD))
+            if (grabbed) LiveText("◀ ▶ to move · OK to play/pause", size = 11.sp, color = colors.TextSecondary)
+            Spacer(Modifier.weight(1f))
+            LiveText(t.rightLabel, size = 11.sp, color = if (t.liveMs != null) colors.Error else colors.TextSecondary)
         }
     }
 }
@@ -212,8 +225,10 @@ private fun PanelButton(
     sleepLabel: String?,
     mode: PanelMode
 ) {
-    val ring = if (focused) Modifier.border(2.dp, Color(0xFF5B9BF0), CircleShape) else Modifier
+    val colors = NuvioTheme.colors
+    val idle = Color.White.copy(alpha = 0.12f)
     when (c) {
+        PanelControl.TIMELINE -> Unit
         PanelControl.BACK, PanelControl.FORWARD, PanelControl.PLAY -> {
             val big = c == PanelControl.PLAY
             val icon: ImageVector = when (c) {
@@ -223,27 +238,22 @@ private fun PanelButton(
             }
             Box(
                 modifier = Modifier
-                    .size(if (big) 46.dp else 38.dp)
-                    .then(ring)
-                    .padding(if (focused) 3.dp else 0.dp)
+                    .size(if (big) 40.dp else 34.dp)
                     .clip(CircleShape)
-                    .background(if (big || focused) Color.White else Color(0xFF2A2F38)),
+                    .background(if (focused) colors.FocusRing else if (big) Color.White.copy(alpha = 0.22f) else idle),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = if (big || focused) Color(0xFF0E1014) else Color(0xFFE6E8EC), modifier = Modifier.size(if (big) 24.dp else 20.dp))
+                Icon(icon, contentDescription = null, tint = if (focused) colors.Background else colors.TextPrimary, modifier = Modifier.size(if (big) 22.dp else 18.dp))
             }
         }
         PanelControl.LIVE -> Pill(
             text = if (mode == PanelMode.CATCHUP) "Back to live" else "Go live",
-            icon = null, focused = focused,
-            bg = Color(0xFF5A1D1D), fg = Color(0xFFF7C1C1), dot = true
+            icon = null, focused = focused, dot = true
         )
         PanelControl.CC -> Pill(
             text = if (captionsOn) "CC on" else "CC off",
             icon = if (captionsOn) Icons.Default.ClosedCaption else Icons.Default.ClosedCaptionDisabled,
-            focused = focused,
-            bg = if (captionsOn) Color(0xFF1D3A5C) else Color(0xFF2A2F38),
-            fg = if (captionsOn) Color(0xFFB5D4F4) else Color(0xFFE6E8EC)
+            focused = focused, active = captionsOn
         )
         PanelControl.AUDIO -> Pill(audioLabel, Icons.Default.VolumeUp, focused)
         PanelControl.SIZE -> Pill(sizeLabel, Icons.Default.AspectRatio, focused)
@@ -257,29 +267,34 @@ private fun Pill(
     text: String,
     icon: ImageVector?,
     focused: Boolean,
-    bg: Color = Color(0xFF2A2F38),
-    fg: Color = Color(0xFFE6E8EC),
+    active: Boolean = false,
     dot: Boolean = false
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val colors = NuvioTheme.colors
+    val shape = RoundedCornerShape(16.dp)
     Row(
         modifier = Modifier
-            .height(36.dp)
+            .height(32.dp)
             .clip(shape)
-            .background(if (focused) Color.White else bg)
-            .border(if (focused) 2.dp else 0.dp, if (focused) Color(0xFF5B9BF0) else Color.Transparent, shape)
-            .padding(horizontal = if (text.isEmpty()) 9.dp else 13.dp),
+            .background(
+                when {
+                    focused -> colors.FocusRing
+                    active -> colors.Secondary.copy(alpha = 0.30f)
+                    else -> Color.White.copy(alpha = 0.12f)
+                }
+            )
+            .padding(horizontal = if (text.isEmpty()) 8.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val color = if (focused) Color(0xFF0E1014) else fg
+        val color = if (focused) colors.Background else colors.TextPrimary
         if (dot) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFE24B4A)))
-            Spacer(Modifier.width(7.dp))
+            Box(Modifier.size(7.dp).clip(CircleShape).background(colors.Error))
+            Spacer(Modifier.width(6.dp))
         }
         icon?.let {
-            Icon(it, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+            Icon(it, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
             if (text.isNotEmpty()) Spacer(Modifier.width(6.dp))
         }
-        if (text.isNotEmpty()) LiveText(text, size = 13.sp, color = color, weight = FontWeight.Medium)
+        if (text.isNotEmpty()) LiveText(text, size = 12.sp, color = color, weight = FontWeight.Medium)
     }
 }

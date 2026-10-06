@@ -371,8 +371,11 @@ object LiveTvSearchBridge {
     private val episodeCode = Regex("""\b[Ss]\d{1,2}\s*[Ee]\d{1,3}\b""")
     private val trailingEpisode = Regex("""\s*[-:–]\s*(episode|ep\.?|part)\s*\d+.*$""", RegexOption.IGNORE_CASE)
 
+    /** "24/7", "24-7", "24/7:", "24x7", "(24/7)"… (marks a channel, never part of a show's name). */
+    private val twentyFourSeven = Regex("""(?i)[\[(]?\b24\s*[/\\|\-x]?\s*7\b[\])]?\s*[:|\-–]?""")
+
     internal fun cleanTitle(raw: String): String {
-        var t = raw
+        var t = raw.replace(twentyFourSeven, " ")
         repeat(2) { t = t.replace(leadingTags, "") }
         t = t.replace(bracketed, " ")
             .replace(episodeCode, " ")

@@ -190,6 +190,17 @@ class LiveTvPosterResolver @Inject constructor(
             if (hint?.kind == Kind.SERIES) shows.forEach { add(it to true) }
             add(query to false)
             if (hint?.kind != Kind.SERIES) shows.forEach { add(it to true) }
+            // 24/7 channels often put a brand in front ("OnePlay Paw Patrol"): if the full name
+            // finds nothing, try it without the first word, then the first two.
+            if (hint?.weight == SHOW_247_WEIGHT) {
+                val words = query.split(' ').filter { it.isNotBlank() }
+                for (drop in 1..2) {
+                    if (words.size - drop >= 1) {
+                        val rest = words.drop(drop).joinToString(" ")
+                        if (rest.length >= 3) add(rest to true)
+                    }
+                }
+            }
         }
         var poster: String? = null
         for ((q, isShowName) in attempts) {
@@ -356,7 +367,15 @@ class LiveTvPosterResolver @Inject constructor(
         if (key.length < 2 || key in aboutMisses) return null
         aboutCache[key]?.let { return it.meta }
         val hit = requestPermitsAware {
-            lookup(name, TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT), Clues(), Attempt())
+            val hint = TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT)
+            lookup(name, hint, Clues(), Attempt())
+                // A brand in front ("OnePlay Paw Patrol"): without the first word, then two.
+                ?: name.split(' ').filter { it.isNotBlank() }.let { w ->
+                    (1..2).asSequence()
+                        .filter { w.size - it >= 1 && w.drop(it).joinToString(" ").length >= 3 }
+                        .mapNotNull { lookup(w.drop(it).joinToString(" "), hint, Clues(), Attempt()) }
+                        .firstOrNull()
+                }
         }
         if (hit == null) aboutMisses += key else aboutCache[key] = hit
         return hit?.meta

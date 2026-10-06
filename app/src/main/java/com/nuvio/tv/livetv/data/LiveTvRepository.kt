@@ -1394,7 +1394,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
-        private const val CHANNELS_CACHE_VERSION = 3
+        private const val CHANNELS_CACHE_VERSION = 4
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(

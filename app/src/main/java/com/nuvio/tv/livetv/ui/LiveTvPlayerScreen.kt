@@ -131,6 +131,9 @@ fun LiveTvPlayerScreen(
 
     // The bottom panel's controls (Down while it's showing): which one is highlighted.
     var controlFocus by remember { mutableStateOf<PanelControl?>(null) }
+    // The full panel (OK): timeline, buttons and options. Changing channels shows the compact one.
+    var panelFull by remember { mutableStateOf(false) }
+    fun closeFull() { panelFull = false; controlFocus = null }
     val shiftStartedAt by viewModel.playback.shiftStartedAt.collectAsStateWithLifecycle()
     var captionsOn by remember { mutableStateOf(false) }
     LaunchedEffect(playback.channelKey, bannerVisible) { captionsOn = viewModel.playback.captionsOn() }
@@ -245,18 +248,43 @@ fun LiveTvPlayerScreen(
                     val list = panelControls(mode, paused, canSkip = archive || viewModel.playback.shiftCanSeek())
                     if (e.type == KeyEventType.KeyUp) return@onPreviewKeyEvent isOk || e.key == Key.Back
                     showBanner()
-                    val i = list.indexOf(cf).coerceAtLeast(0)
+                    val buttons = list.filter { it != PanelControl.TIMELINE }
+                    val onTimeline = cf == PanelControl.TIMELINE && PanelControl.TIMELINE in list
+                    val i = buttons.indexOf(cf).coerceAtLeast(0)
                     when {
-                        e.key == Key.DirectionLeft -> { controlFocus = list[(i - 1).coerceAtLeast(0)]; return@onPreviewKeyEvent true }
-                        e.key == Key.DirectionRight -> { controlFocus = list[(i + 1).coerceAtMost(list.lastIndex)]; return@onPreviewKeyEvent true }
-                        e.key == Key.DirectionUp || e.key == Key.Back -> {
-                            if (e.key == Key.Back) (context as? com.nuvio.tv.MainActivity)?.longPressBackHeld?.value = true
-                            controlFocus = null; return@onPreviewKeyEvent true
+                        // The timeline, grabbed: ◀ / ▶ move through the recording or show (faster
+                        // the longer you hold), OK plays/pauses, Down back to the buttons.
+                        onTimeline && (e.key == Key.DirectionLeft || e.key == Key.DirectionRight) -> {
+                            val forward = e.key == Key.DirectionRight
+                            if (archive) scrub(forward = forward, repeat = e.nativeKeyEvent.repeatCount)
+                            else {
+                                val r = e.nativeKeyEvent.repeatCount
+                                val step = when { r > 20 -> 120_000L; r > 8 -> 60_000L; r > 2 -> 30_000L; else -> 10_000L }
+                                viewModel.playback.shiftSeekBy(if (forward) step else -step)
+                            }
+                            return@onPreviewKeyEvent true
+                        }
+                        onTimeline && e.key == Key.DirectionDown -> { controlFocus = PanelControl.PLAY; return@onPreviewKeyEvent true }
+                        onTimeline && e.key == Key.DirectionUp -> return@onPreviewKeyEvent true
+                        onTimeline && isOk -> {
+                            if (e.nativeKeyEvent.repeatCount == 0) viewModel.playback.togglePause()
+                            return@onPreviewKeyEvent true
+                        }
+                        e.key == Key.DirectionLeft -> { controlFocus = buttons[(i - 1).coerceAtLeast(0)]; return@onPreviewKeyEvent true }
+                        e.key == Key.DirectionRight -> { controlFocus = buttons[(i + 1).coerceAtMost(buttons.lastIndex)]; return@onPreviewKeyEvent true }
+                        e.key == Key.DirectionUp -> {
+                            // Up from the buttons: grab the timeline (when it can be moved).
+                            if (PanelControl.TIMELINE in list) controlFocus = PanelControl.TIMELINE
+                            return@onPreviewKeyEvent true
+                        }
+                        e.key == Key.Back -> {
+                            (context as? com.nuvio.tv.MainActivity)?.longPressBackHeld?.value = true
+                            closeFull(); bannerVisible = false; return@onPreviewKeyEvent true
                         }
                         e.key == Key.DirectionDown -> return@onPreviewKeyEvent true
                         isOk -> {
                             if (e.nativeKeyEvent.repeatCount > 0) return@onPreviewKeyEvent true
-                            when (list.getOrNull(i)) {
+                            when (buttons.getOrNull(i)) {
                                 PanelControl.BACK -> if (archive) scrub(forward = false, repeat = 0) else viewModel.playback.shiftSeekBy(-30_000)
                                 PanelControl.FORWARD -> if (archive) scrub(forward = true, repeat = 0) else viewModel.playback.shiftSeekBy(30_000)
                                 PanelControl.PLAY -> viewModel.playback.togglePause()
@@ -272,7 +300,7 @@ fun LiveTvPlayerScreen(
                                 PanelControl.SIZE -> dialog = PlayerDialog.SCREEN_SIZE
                                 PanelControl.SLEEP -> dialog = PlayerDialog.SLEEP
                                 PanelControl.MORE -> dialog = PlayerDialog.OPTIONS
-                                null -> Unit
+                                PanelControl.TIMELINE, null -> Unit
                             }
                             return@onPreviewKeyEvent true
                         }
@@ -306,10 +334,8 @@ fun LiveTvPlayerScreen(
                             dialog = PlayerDialog.OPTIONS
                         } else when {
                             playback.error != null && playback.reconnectAttempt > 8 -> viewModel.playback.retry()
-                            // Catch-up / a recording / paused: OK pauses and resumes, and shows the panel.
-                            archive || shifting || (!playback.isPlaying && !playback.isBuffering) -> { viewModel.playback.togglePause(); showBanner() }
-                            // OK shows the info bar; OK again hides it.
-                            bannerVisible -> bannerVisible = false
+                            // OK: the full panel (timeline, buttons, options), on Play/Pause.
+                            current != null -> { panelFull = true; controlFocus = PanelControl.PLAY; showBanner() }
                             else -> showBanner()
                         }
                         return@onPreviewKeyEvent true
@@ -319,10 +345,6 @@ fun LiveTvPlayerScreen(
                 val code = e.nativeKeyEvent.keyCode
                 when {
                     e.key == Key.DirectionUp || e.key == Key.ChannelUp -> { zap(1); true }
-                    e.key == Key.DirectionDown && current != null &&
-                        (bannerVisible || (!playback.isPlaying && !playback.isBuffering)) -> {
-                        controlFocus = PanelControl.PLAY; showBanner(); true
-                    }
                     e.key == Key.DirectionDown || e.key == Key.ChannelDown -> { zap(-1); true }
                     e.key == Key.DirectionLeft -> {
                         when {
@@ -399,9 +421,12 @@ fun LiveTvPlayerScreen(
         // The bottom panel: poster, the show, its timeline (live, catch-up or a pause-and-rewind
         // recording), playback buttons and quick options. Stays up while paused.
         val pausedNow = !playback.isPlaying && !playback.isBuffering && current != null && playback.error == null
-        LaunchedEffect(bannerVisible, pausedNow) { if (!bannerVisible && !pausedNow) controlFocus = null }
+        // The full panel closes by itself after a while without a button press (not while paused).
+        LaunchedEffect(bannerToken, panelFull, pausedNow) {
+            if (panelFull && !pausedNow) { delay(10_000); closeFull(); bannerVisible = false }
+        }
         AnimatedVisibility(
-            visible = (bannerVisible || controlFocus != null || pausedNow) && current != null,
+            visible = (bannerVisible || panelFull || pausedNow) && current != null,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -465,6 +490,7 @@ fun LiveTvPlayerScreen(
                 LiveTvPlayerPanel(
                     channel = ch,
                     mode = mode,
+                    full = panelFull || pausedNow,
                     title = watchingTitle ?: ch.name,
                     meta = listOfNotNull(
                         showProgram?.episode,

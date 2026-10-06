@@ -56,7 +56,10 @@ object M3uParser {
                 line.startsWith("#EXTINF", ignoreCase = true) -> {
                     pendingInfo = line
                     pendingGroup = null
-                    pendingHeaders.clear()
+                    // Header lines (#EXTVLCOPT, #EXTHTTP) can come before or after #EXTINF; DRM
+                    // playlists usually put them before. They used to be thrown away here, so
+                    // those channels were requested without their User-Agent and refused.
+                    // They're cleared once the entry's link is read, instead.
                 }
                 line.startsWith("#EXTGRP:", ignoreCase = true) -> {
                     pendingGroup = line.substringAfter(':').trim().ifEmpty { null }
