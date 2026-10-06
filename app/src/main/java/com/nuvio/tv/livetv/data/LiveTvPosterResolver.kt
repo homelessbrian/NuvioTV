@@ -483,7 +483,12 @@ class LiveTvPosterResolver @Inject constructor(
 
         /** A 24/7 channel (by its name or its group). */
         fun is247(channel: LiveChannel): Boolean =
-            TWENTY_FOUR_SEVEN.containsMatchIn(channel.name) || TWENTY_FOUR_SEVEN.containsMatchIn(channel.group)
+            TWENTY_FOUR_SEVEN.containsMatchIn(channel.name) || TWENTY_FOUR_SEVEN.containsMatchIn(channel.group) ||
+                // The original names too: the channel name editor ("Add common") removes "24/7"
+                // from what's shown, and groups can be renamed. The playlist's own names are kept
+                // in the channel's key ("playlist|tvg-id|name"), its group id and its tvg-name.
+                TWENTY_FOUR_SEVEN.containsMatchIn(channel.key) || TWENTY_FOUR_SEVEN.containsMatchIn(channel.groupId) ||
+                (channel.tvgName?.let { TWENTY_FOUR_SEVEN.containsMatchIn(it) } ?: false)
 
         /** How much "it's a show" counts on 24/7 channels (enough to beat obscure same-named films). */
         const val SHOW_247_WEIGHT = 80.0

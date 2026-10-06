@@ -244,7 +244,7 @@ fun LiveTvPlayerScreen(
                 val cf = controlFocus
                 if (cf != null) {
                     val mode = if (archive) PanelMode.CATCHUP else if (shifting) PanelMode.SHIFT else PanelMode.LIVE
-                    val paused = !playback.isPlaying && !playback.isBuffering
+                    val paused = playback.userPaused
                     val list = panelControls(mode, paused, canSkip = archive || viewModel.playback.shiftCanSeek())
                     if (e.type == KeyEventType.KeyUp) return@onPreviewKeyEvent isOk || e.key == Key.Back
                     showBanner()
@@ -420,7 +420,8 @@ fun LiveTvPlayerScreen(
 
         // The bottom panel: poster, the show, its timeline (live, catch-up or a pause-and-rewind
         // recording), playback buttons and quick options. Stays up while paused.
-        val pausedNow = !playback.isPlaying && !playback.isBuffering && current != null && playback.error == null
+        // Only when you paused it (not while changing channel, loading or reconnecting).
+        val pausedNow = playback.userPaused && current != null && playback.error == null
         // The full panel closes by itself after a while without a button press (not while paused).
         LaunchedEffect(bannerToken, panelFull, pausedNow) {
             if (panelFull && !pausedNow) { delay(10_000); closeFull(); bannerVisible = false }
@@ -486,7 +487,7 @@ fun LiveTvPlayerScreen(
                         )
                     }
                 }
-                val paused = !playback.isPlaying && !playback.isBuffering
+                val paused = playback.userPaused
                 LiveTvPlayerPanel(
                     channel = ch,
                     mode = mode,

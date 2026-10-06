@@ -41,7 +41,12 @@ data class LivePlaybackState(
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
     /** Non-null while an archive (catch-up) program is playing instead of the live stream. */
-    val catchupTitle: String? = null
+    val catchupTitle: String? = null,
+    /**
+     * You paused it (play/pause), as opposed to it just not playing yet: between channels and
+     * while reconnecting it isn't playing either, and that must not count as paused.
+     */
+    val userPaused: Boolean = false
 )
 
 data class LiveTrackOption(
@@ -566,6 +571,10 @@ class LiveTvPlaybackController @Inject constructor(
     }
 
     private val listener = object : Player.Listener {
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            _state.value = _state.value.copy(userPaused = !playWhenReady)
+        }
+
         override fun onRenderedFirstFrame() {
             awaitingFrame = false
         }
