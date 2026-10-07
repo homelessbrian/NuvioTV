@@ -179,7 +179,8 @@ object M3uParser {
             CatchupInfo(
                 type = (catchupType ?: "default").lowercase(),
                 source = attrs["catchup-source"],
-                days = catchupDays ?: 1
+                days = catchupDays ?: 1,
+                correctionHours = attrs["catchup-correction"]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
             )
         } else null
 

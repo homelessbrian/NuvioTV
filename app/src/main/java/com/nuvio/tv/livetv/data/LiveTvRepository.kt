@@ -423,7 +423,7 @@ class LiveTvRepository @Inject constructor(
                     val headerCount = input.readInt()
                     val headers: Map<String, String> = if (headerCount == 0) emptyMap()
                     else HashMap<String, String>(headerCount * 2).apply { repeat(headerCount) { put(shared(), input.readUTF()) } }
-                    val catchup = if (input.readBoolean()) CatchupInfo(shared(), opt(), input.readInt()) else null
+                    val catchup = if (input.readBoolean()) CatchupInfo(shared(), opt(), input.readInt(), input.readDouble()) else null
                     val drm = if (input.readBoolean()) {
                         val scheme = shared()
                         val license = input.readUTF()
@@ -476,7 +476,7 @@ class LiveTvRepository @Inject constructor(
                     out.writeInt(c.headers.size)
                     c.headers.forEach { (k, v) -> out.writeInt(index.getValue(k)); out.writeUTF(v) }
                     out.writeBoolean(c.catchup != null)
-                    c.catchup?.let { cu -> out.writeInt(index.getValue(cu.type)); opt(cu.source); out.writeInt(cu.days) }
+                    c.catchup?.let { cu -> out.writeInt(index.getValue(cu.type)); opt(cu.source); out.writeInt(cu.days); out.writeDouble(cu.correctionHours) }
                     out.writeBoolean(c.drm != null)
                     c.drm?.let { d ->
                         out.writeInt(index.getValue(d.scheme)); out.writeUTF(d.license)
@@ -1394,7 +1394,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
-        private const val CHANNELS_CACHE_VERSION = 4
+        private const val CHANNELS_CACHE_VERSION = 5
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(

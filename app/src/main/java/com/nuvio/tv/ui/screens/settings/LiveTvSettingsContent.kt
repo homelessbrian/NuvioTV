@@ -549,6 +549,15 @@ fun LiveTvSettingsContent(
                         "Update guides every", "How often TV listings are downloaded again",
                         hoursLabel(s.epgRefreshHours), onClick = { dialog = LiveDialog.EpgRefresh }
                     )
+                    val clearContext = androidx.compose.ui.platform.LocalContext.current
+                    SettingsActionRow(
+                        "Clear posters and show info",
+                        "Forgets the posters and show info found for Live TV, so they're fetched fresh from your addons next time",
+                        onClick = {
+                            viewModel.clearPosterData()
+                            android.widget.Toast.makeText(clearContext, "Posters and show info cleared", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
                     SettingsActionRow(
                         "Days of listings ahead", "How far into the future the guide keeps shows",
                         if (s.epgFutureDays == 1) "1 day" else "${s.epgFutureDays} days", onClick = { dialog = LiveDialog.FutureDays }
@@ -570,19 +579,28 @@ fun LiveTvSettingsContent(
             item(key = "nuvio") {
                 SettingsGroupCard(title = "In the rest of Nuvio") {
                     // ---- Live TV row on the home screen
+                    // On or off for the Nuvio profile in use (each profile has its own choice).
+                    val homeProfileContext = androidx.compose.ui.platform.LocalContext.current
+                    val homeProfileId by remember {
+                        dagger.hilt.android.EntryPointAccessors.fromApplication(
+                            homeProfileContext.applicationContext, com.nuvio.tv.livetv.startup.LiveTvStartupEntryPoint::class.java
+                        ).profileManager()
+                    }.activeProfileId.collectAsStateWithLifecycle()
+                    val homeRowOn = homeProfileId !in s.homeRowHiddenProfiles
                     SettingsToggleRow(
                         "Live TV row on the home screen",
-                        "Your favorite channels with what's on now, near Continue watching",
-                        s.homeRowEnabled,
-                        { update { it.copy(homeRowEnabled = !it.homeRowEnabled) } }
+                        "For this profile. Tucked above your top row: press Up to show it.",
+                        homeRowOn,
+                        {
+                            update { st ->
+                                st.copy(
+                                    homeRowHiddenProfiles = if (homeProfileId in st.homeRowHiddenProfiles) st.homeRowHiddenProfiles - homeProfileId
+                                    else st.homeRowHiddenProfiles + homeProfileId
+                                )
+                            }
+                        }
                     )
-                    if (s.homeRowEnabled) {
-                        SettingsActionRow(
-                            title = "Home row position",
-                            subtitle = "Where it sits on the home screen",
-                            value = if (s.homeRowAboveContinueWatching) "Above Continue watching" else "Below Continue watching",
-                            onClick = { update { it.copy(homeRowAboveContinueWatching = !it.homeRowAboveContinueWatching) } }
-                        )
+                    if (homeRowOn) {
                         SettingsActionRow(
                             title = "Home row shows",
                             subtitle = "Favorites, Recently watched, or one of your own groups",
@@ -640,12 +658,6 @@ fun LiveTvSettingsContent(
                             { update { it.copy(homeRowCompact = !it.homeRowCompact) } }
                         )
                     }
-                    SettingsActionRow(
-                        title = "Start page",
-                        subtitle = "The page Nuvio opens on. Back still takes you to the menu.",
-                        value = startPageLabel(s.effectiveStartPage),
-                        onClick = { dialog = LiveDialog.StartPage }
-                    )
                     SettingsToggleRow(
                         "Hide from side menu",
                         "Removes Live TV from Nuvio's main menu. You can still reach it from Settings.",

@@ -1,5 +1,11 @@
 package com.nuvio.tv.livetv.home
 
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+
+import androidx.compose.foundation.layout.size
+
+import androidx.compose.foundation.focusable
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -74,9 +80,67 @@ fun rememberLiveTvHomeRowPosition(): Boolean? {
         ).liveTvPreferences()
     }
     val s by prefs.settings.collectAsStateWithLifecycle(initialValue = null)
+    val profiles = remember {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext, com.nuvio.tv.livetv.startup.LiveTvStartupEntryPoint::class.java
+        ).profileManager()
+    }
+    val profileId by profiles.activeProfileId.collectAsStateWithLifecycle()
     val settings = s ?: return null
-    if (!settings.homeRowEnabled || !settings.showInSidebar) return null
-    return settings.homeRowAboveContinueWatching
+    // On or off per Nuvio profile.
+    if (profileId in settings.homeRowHiddenProfiles || !settings.showInSidebar) return null
+    // Always above Continue watching (tucked away until you press Up from the top row).
+    return true
+}
+
+/**
+ * The Live TV row is tucked away until you press Up from the top row, and tucks itself away
+ * again when the highlight goes back down into your rows. [open] is that state; [available]
+ * says whether the row exists at all (so the hint by the top row's title knows to show).
+ */
+object LiveTvHomeReveal {
+    val open = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val available = kotlinx.coroutines.flow.MutableStateFlow(false)
+}
+
+/** Marks the top row's title: the "Live TV ▲" hint goes right after it. */
+val LocalLiveTvHintHere = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+/**
+ * The hint next to the top row's title (or in its place when titles are off): a small pill
+ * saying Live TV is one press of Up away. Shown while the row is tucked away.
+ */
+@Composable
+fun LiveTvHomeHint(modifier: Modifier = Modifier) {
+    if (!LocalLiveTvHintHere.current) return
+    val available by LiveTvHomeReveal.available.collectAsStateWithLifecycle()
+    val open by LiveTvHomeReveal.open.collectAsStateWithLifecycle()
+    androidx.compose.animation.AnimatedVisibility(
+        visible = available && !open,
+        enter = androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.fadeOut(),
+        modifier = modifier
+    ) {
+        val shape = androidx.compose.foundation.shape.RoundedCornerShape(50)
+        Row(
+            modifier = Modifier
+                .padding(start = 12.dp)
+                .clip(shape)
+                .background(Color.White.copy(alpha = 0.10f))
+                .border(1.dp, Color.White.copy(alpha = 0.18f), shape)
+                .padding(start = 8.dp, end = 9.dp, top = 3.dp, bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(7.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE24B4A)))
+            Spacer(Modifier.width(6.dp))
+            LiveText("Live TV", size = 12.sp, weight = FontWeight.Medium, color = NuvioTheme.colors.TextPrimary)
+            Spacer(Modifier.width(4.dp))
+            androidx.tv.material3.Icon(
+                androidx.compose.material.icons.Icons.Default.KeyboardArrowUp, contentDescription = null,
+                tint = NuvioTheme.colors.TextSecondary, modifier = Modifier.size(14.dp)
+            )
+        }
+    }
 }
 
 /**
@@ -106,7 +170,12 @@ fun LiveTvHomeRow(
     val s by prefs.settings.collectAsStateWithLifecycle(initialValue = null)
     val settings = s ?: return
     // Off, or not this spot: draw nothing (and don't load Live TV at all).
-    if (!settings.homeRowEnabled || !settings.showInSidebar || settings.homeRowAboveContinueWatching != above) return
+    val profileId by remember {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext, com.nuvio.tv.livetv.startup.LiveTvStartupEntryPoint::class.java
+        ).profileManager()
+    }.activeProfileId.collectAsStateWithLifecycle()
+    if (profileId in settings.homeRowHiddenProfiles || !settings.showInSidebar || !above) return
     if (!LocalLiveTvHomeActions.current.onHome) return
     if (HomeRowFocus.homeShownAt == 0L) HomeRowFocus.homeShownAt = android.os.SystemClock.uptimeMillis()
     LiveTvHomeRowContent(settings, takeInitialFocus = above, startPadding = startPadding, titleStyle = titleStyle, hideUnlessFocused = hideUnlessFocused && above)
@@ -150,7 +219,7 @@ object LiveTvHomeFocus {
      * highlight go back to it; otherwise Nuvio's own choice (the row you were on) stands.
      */
     fun menuClosed() {
-        if (restoreAfterMenu) request()
+        if (restoreAfterMenu) { LiveTvHomeReveal.open.value = true; request() }
         restoreAfterMenu = false
     }
 }
@@ -174,28 +243,30 @@ private fun LiveTvHomeRowContent(
     val entries by viewModel.homeRow.collectAsStateWithLifecycle()
     val now by viewModel.now.collectAsStateWithLifecycle()
     val playback by viewModel.playbackState.collectAsStateWithLifecycle()
+    // The hint by the top row's title shows only while there's a row to open.
+    androidx.compose.runtime.DisposableEffect(entries.isNotEmpty()) {
+        LiveTvHomeReveal.available.value = entries.isNotEmpty()
+        onDispose { LiveTvHomeReveal.available.value = false; LiveTvHomeReveal.open.value = false }
+    }
     if (entries.isEmpty()) return
-    // Row above Continue watching: the home screen opens here (Nuvio would otherwise jump down
-    // to Continue watching). Once per app start, so coming back keeps your place.
-    androidx.compose.runtime.LaunchedEffect(takeInitialFocus) {
-        if (!takeInitialFocus || HomeRowFocus.done) return@LaunchedEffect
-        HomeRowFocus.done = true
-        val claimedAt = android.os.SystemClock.uptimeMillis()
-        // "Untouched" = no button pressed since the home screen appeared (keys pressed on the
-        // profile picker don't count; any press on Home itself ends this at once).
-        val homeAt = HomeRowFocus.homeShownAt.takeIf { it > 0 } ?: claimedAt
-        // Nuvio puts the first highlight on Continue watching, sometimes several seconds in, as
-        // its rows finish loading. Until the remote is first used (for up to 15 seconds), the
-        // highlight is brought back to the Live TV row whenever that happens.
-        while (android.os.SystemClock.uptimeMillis() - claimedAt < 15_000) {
-            val untouched = LiveTvHomeFocus.lastKeyAt < homeAt
-            if (!untouched) break
-            if (!LiveTvHomeFocus.rowHasFocus) {
-                runCatching { listState.scrollToItem(0) }
-                runCatching { firstCard.requestFocus() }
-            }
-            kotlinx.coroutines.delay(300)
-        }
+    val open by LiveTvHomeReveal.open.collectAsStateWithLifecycle()
+    if (!open) {
+        // Tucked away: a one-pixel spot above the top row. Up from the top row lands here,
+        // which opens the row and moves the highlight onto its first channel.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .onFocusChanged { if (it.isFocused) LiveTvHomeReveal.open.value = true }
+                .focusable()
+        )
+        return
+    }
+    // Just opened: onto the first channel.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { listState.scrollToItem(0) }
+        runCatching { firstCard.requestFocus() }
     }
     // Home chosen from Nuvio's side menu: the row takes the highlight (after Nuvio's own).
     val focusRequests by LiveTvHomeFocus.requests.collectAsStateWithLifecycle()
@@ -215,7 +286,11 @@ private fun LiveTvHomeRowContent(
         modifier = Modifier
             .fillMaxWidth()
             .onFocusChanged {
-                if (rowHasFocus && !it.hasFocus) LiveTvHomeFocus.lostAt = android.os.SystemClock.uptimeMillis()
+                if (rowHasFocus && !it.hasFocus) {
+                    LiveTvHomeFocus.lostAt = android.os.SystemClock.uptimeMillis()
+                    // Highlight gone back into your rows (or anywhere else): tuck the row away.
+                    LiveTvHomeReveal.open.value = false
+                }
                 rowHasFocus = it.hasFocus
                 LiveTvHomeFocus.rowHasFocus = it.hasFocus
             }

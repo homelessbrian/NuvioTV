@@ -39,6 +39,9 @@ class LiveTvPosterStore @Inject constructor(@ApplicationContext context: Context
         }
     }.getOrNull()
 
+    /** Forgets everything (Settings: clear poster & show info). */
+    fun clear() { runCatching { writableDatabase.delete("posters", null, null) } }
+
     fun put(key: String, poster: String?) {
         runCatching {
             writableDatabase.insertWithOnConflict("posters", null, ContentValues().apply {

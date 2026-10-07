@@ -434,6 +434,7 @@ internal fun ModernHomeRowsList(
                 if (liveTvHere && (liveTvRowAbove == true || !hasContinueWatching)) {
                     com.nuvio.tv.livetv.home.LiveTvHomeRow(hideUnlessFocused = true, above = liveTvRowAbove == true, startPadding = 52.dp, titleStyle = androidx.tv.material3.MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
                 }
+                androidx.compose.runtime.CompositionLocalProvider(com.nuvio.tv.livetv.home.LocalLiveTvHintHere provides liveTvHere) {
                 ModernRowSection(
                     row = row,
                     isActiveRow = isActiveRowLambda,
@@ -490,6 +491,7 @@ internal fun ModernHomeRowsList(
                         StableRef(mutableMapOf())
                     }
                 )
+                }
                 if (liveTvHere && liveTvRowAbove == false && hasContinueWatching) {
                     com.nuvio.tv.livetv.home.LiveTvHomeRow(hideUnlessFocused = true, above = false, startPadding = 52.dp, titleStyle = androidx.tv.material3.MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
                 }

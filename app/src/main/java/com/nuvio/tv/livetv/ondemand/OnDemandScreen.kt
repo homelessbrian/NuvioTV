@@ -582,7 +582,7 @@ private fun VisibilityHelp(modifier: Modifier) {
 
 /** For titles none of your addons know: the provider's own details, and Play. */
 @Composable
-private fun ProviderDetailDialog(
+internal fun ProviderDetailDialog(
     item: VodItem,
     viewModel: OnDemandViewModel,
     onDismiss: () -> Unit,

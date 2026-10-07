@@ -106,6 +106,7 @@ class LiveTvPreferences @Inject constructor(
         val showPosters = booleanPreferencesKey("show_posters")
         val vodMergeDuplicates = booleanPreferencesKey("vod_merge_duplicates")
         val homeRowEnabled = booleanPreferencesKey("home_row_enabled")
+        val homeRowHiddenProfiles = stringSetPreferencesKey("home_row_hidden_profiles")
         val homeRowAboveContinueWatching = booleanPreferencesKey("home_row_above_cw")
         val homeRowSource = stringPreferencesKey("home_row_source")
         val homeRowTitle = stringPreferencesKey("home_row_title")
@@ -123,6 +124,8 @@ class LiveTvPreferences @Inject constructor(
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
         val vodHiddenCategories = stringSetPreferencesKey("vod_hidden_categories")
+        val vodGroupOrder = stringPreferencesKey("vod_group_order")
+        val vodGroupNames = stringPreferencesKey("vod_group_names")
         val onDemandImports = stringPreferencesKey("on_demand_imports")
         val channelOrder = stringPreferencesKey("channel_order")
         val channelCopies = stringPreferencesKey("channel_copies")
@@ -204,7 +207,11 @@ class LiveTvPreferences @Inject constructor(
             audioPassthrough = p[Keys.audioPassthrough] ?: d.audioPassthrough,
             showPosters = p[Keys.showPosters] ?: d.showPosters,
             vodMergeDuplicates = p[Keys.vodMergeDuplicates] ?: d.vodMergeDuplicates,
-            homeRowEnabled = p[Keys.homeRowEnabled] ?: d.homeRowEnabled,
+            // The row used to be on/off for the whole app. Turned off before (with no per-profile
+            // choice saved yet): that was done from the main profile, so it stays off there only.
+            homeRowEnabled = true,
+            homeRowHiddenProfiles = p[Keys.homeRowHiddenProfiles]?.mapNotNull { it.toIntOrNull() }?.toSet()
+                ?: if (p[Keys.homeRowEnabled] == false) setOf(1) else emptySet(),
             homeRowAboveContinueWatching = p[Keys.homeRowAboveContinueWatching] ?: d.homeRowAboveContinueWatching,
             homeRowSource = p[Keys.homeRowSource] ?: d.homeRowSource,
             homeRowTitle = p[Keys.homeRowTitle] ?: d.homeRowTitle,
@@ -244,7 +251,9 @@ class LiveTvPreferences @Inject constructor(
             lockedGroups = p[Keys.lockedGroups] ?: emptySet(),
             reminders = decodeReminders(p[Keys.reminders]),
             channelQuality = decodeStringMap(d[Keys.channelQuality] ?: p[Keys.channelQuality]),
-            vodHiddenCategories = p[Keys.vodHiddenCategories] ?: emptySet()
+            vodHiddenCategories = p[Keys.vodHiddenCategories] ?: emptySet(),
+            vodGroupOrder = decodeStringList(p[Keys.vodGroupOrder]),
+            vodGroupNames = decodeStringMap(p[Keys.vodGroupNames])
         )
     }.distinctUntilChanged()
 
@@ -322,6 +331,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.showPosters] = s.showPosters
         p[Keys.vodMergeDuplicates] = s.vodMergeDuplicates
         p[Keys.homeRowEnabled] = s.homeRowEnabled
+        p[Keys.homeRowHiddenProfiles] = s.homeRowHiddenProfiles.map { it.toString() }.toSet()
         p[Keys.homeRowAboveContinueWatching] = s.homeRowAboveContinueWatching
         p[Keys.homeRowSource] = s.homeRowSource
         p[Keys.homeRowTitle] = s.homeRowTitle
@@ -459,6 +469,15 @@ class LiveTvPreferences @Inject constructor(
             if (m[key] == quality && p[Keys.channelQuality] != null) return@edit
             m[key] = quality
             p[Keys.channelQuality] = encodeStringMap(m)
+        }
+    }
+
+    /** Manage VOD Groups: which groups show, their order and names, saved together (Done). */
+    suspend fun saveVodGroups(hidden: Set<String>, order: List<String>, names: Map<String, String>) {
+        store.edit { p ->
+            p[Keys.vodHiddenCategories] = hidden
+            p[Keys.vodGroupOrder] = encodeStringList(order)
+            p[Keys.vodGroupNames] = encodeStringMap(names.filterValues { it.isNotBlank() })
         }
     }
 

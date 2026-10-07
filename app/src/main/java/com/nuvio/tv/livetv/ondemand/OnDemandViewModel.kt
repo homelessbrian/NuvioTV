@@ -312,6 +312,163 @@ class OnDemandViewModel @Inject constructor(
     /** Hidden categories, plus locked ones (kept out of All, Recently added and search). */
     private fun excluded(): Set<String> = excludedNow
 
+    // ================================================================ the Nuvio-style page
+
+    private val _home = MutableStateFlow(VodHomeState())
+    /** Rows (your provider's groups) for the On Demand page in Nuvio's home layouts. */
+    val home: StateFlow<VodHomeState> = _home
+
+    private val homeItems = java.util.concurrent.ConcurrentHashMap<String, List<VodItem>>()
+    private val homeEnded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val homeMatched = java.util.concurrent.ConcurrentHashMap<String, com.nuvio.tv.domain.model.MetaPreview>()
+    private val homeTried = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var homeGroups: List<Pair<VodCategory, String>> = emptyList()
+    private var homeEnrichJob: kotlinx.coroutines.Job? = null
+
+    /** Builds the page: every group in your order, hidden and locked ones left out. */
+    fun loadHome() {
+        viewModelScope.launch {
+            val user = prefs.userState.first()
+            val cats = repository.categories(VodKind.MOVIE) + repository.categories(VodKind.SERIES)
+            val orderIndex = user.vodGroupOrder.withIndex().associate { (i, uid) -> uid to i }
+            val ordered = cats.withIndex()
+                .sortedWith(compareBy({ orderIndex[it.value.uid] ?: Int.MAX_VALUE }, { it.index }))
+                .map { it.value }
+            val entries = ordered.map { c ->
+                VodGroupEntry(
+                    uid = c.uid,
+                    defaultName = c.name,
+                    name = user.vodGroupNames[c.uid]?.takeIf { it.isNotBlank() } ?: c.name,
+                    visible = c.uid !in user.vodHiddenCategories,
+                    kind = c.kind
+                )
+            }
+            val visible = ordered.filter { c ->
+                c.uid !in user.vodHiddenCategories &&
+                    !ParentalControls.isLocked("vod:${c.uid}", c.name, settings.value, user.lockedGroups)
+            }
+            homeGroups = visible.map { it to (user.vodGroupNames[it.uid]?.takeIf { n -> n.isNotBlank() } ?: it.name) }
+            homeItems.clear(); homeEnded.clear()
+            // The first page of every group (each a quick read from the device's catalog).
+            for ((c, _) in homeGroups) {
+                val page = repository.items(c.kind, c, emptySet(), false, HOME_PAGE, 0, merge = settings.value.vodMergeDuplicates)
+                primePosters(page)
+                homeItems[c.uid] = page
+                if (page.size < HOME_PAGE) homeEnded += c.uid
+            }
+            _home.value = VodHomeState(rows = buildHomeRows(), groups = entries, loading = false)
+            enrichHome()
+        }
+    }
+
+    /** More titles for one group, as you scroll along it. */
+    fun loadMoreHome(uid: String) {
+        if (uid in homeEnded) return
+        val (c, _) = homeGroups.firstOrNull { it.first.uid == uid } ?: return
+        viewModelScope.launch {
+            val have = homeItems[uid].orEmpty()
+            val more = repository.items(c.kind, c, emptySet(), false, HOME_PAGE, have.size, merge = settings.value.vodMergeDuplicates)
+            if (more.size < HOME_PAGE) homeEnded += uid
+            primePosters(more)
+            homeItems[uid] = have + more
+            _home.value = _home.value.copy(rows = buildHomeRows())
+            enrichHome()
+        }
+    }
+
+    /** Posters already found in earlier visits (saved on the device): shown straight away. */
+    private suspend fun primePosters(items: List<VodItem>) {
+        for (item in items) {
+            if (posters[item.uid] != null) continue
+            repository.cachedPoster(item)?.first?.takeIf { it.isNotBlank() }?.let { posters[item.uid] = it }
+        }
+    }
+
+    private fun buildHomeRows(): List<com.nuvio.tv.domain.model.CatalogRow> = homeGroups.mapNotNull { (c, name) ->
+        val items = homeItems[c.uid].orEmpty()
+        if (items.isEmpty()) return@mapNotNull null
+        VodHomeIds.row(
+            uid = c.uid,
+            name = name,
+            kind = c.kind,
+            items = items.map { item ->
+                val matched = homeMatched[item.uid]
+                VodHomeIds.toMeta(item, matched, posters[item.uid], names[item.uid] ?: OnDemandDatabase.displayTitle(item.name))
+            },
+            hasMore = c.uid !in homeEnded,
+            page = (items.size + HOME_PAGE - 1) / HOME_PAGE
+        )
+    }
+
+    /**
+     * Fills in posters, backdrops, logos and details from your addons, a few rows at a time in
+     * the background (what's on screen first), so the hero and cards look like Nuvio's own.
+     */
+    private fun enrichHome() {
+        homeEnrichJob?.cancel()
+        homeEnrichJob = viewModelScope.launch {
+            var changed = 0
+            for ((c, _) in homeGroups) {
+                for (item in homeItems[c.uid].orEmpty().take(ENRICH_PER_ROW)) {
+                    if (!homeTried.add(item.uid)) continue
+                    enrichOne(item)
+                    if (++changed % 6 == 0) _home.value = _home.value.copy(rows = buildHomeRows())
+                }
+            }
+            if (changed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+        }
+    }
+
+    private suspend fun enrichOne(item: VodItem, urgent: Boolean = false) {
+        val hit = runCatching { matchAny(item, urgent = urgent) }.getOrNull() ?: return
+        homeMatched[item.uid] = hit.meta
+        hit.meta.poster?.let { posters[item.uid] = it; repository.cachePoster(item, it, hit.meta.name) }
+        hit.meta.name.takeIf { it.isNotBlank() }?.let { names[item.uid] = it }
+        hit.meta.genres.takeIf { it.isNotEmpty() }?.let { repository.fillGenres(item, it) }
+    }
+
+    /** A card was highlighted: its details right away (the hero), if not found yet. */
+    fun focusHome(metaId: String) {
+        val uid = VodHomeIds.uidOf(metaId) ?: return
+        if (homeMatched.containsKey(uid)) return
+        val item = homeItems.values.asSequence().flatten().firstOrNull { it.uid == uid } ?: return
+        homeTried += uid
+        viewModelScope.launch {
+            enrichOne(item, urgent = true)
+            if (homeMatched.containsKey(uid)) _home.value = _home.value.copy(rows = buildHomeRows())
+        }
+    }
+
+    /** The matching title in your addons behind a card (its real id: trailers, like on Home). */
+    fun matchedMeta(metaId: String): com.nuvio.tv.domain.model.MetaPreview? =
+        VodHomeIds.uidOf(metaId)?.let { homeMatched[it] }
+
+    /** The title behind a card (for opening it). */
+    fun homeItem(metaId: String): VodItem? {
+        val uid = VodHomeIds.uidOf(metaId) ?: return null
+        return homeItems.values.asSequence().flatten().firstOrNull { it.uid == uid }
+    }
+
+    /** Manage VOD Groups: save which groups show, their order and names, then rebuild. */
+    fun saveGroups(entries: List<VodGroupEntry>) {
+        viewModelScope.launch {
+            prefs.saveVodGroups(
+                hidden = entries.filter { !it.visible }.map { it.uid }.toSet(),
+                order = entries.map { it.uid },
+                names = entries.filter { it.name.isNotBlank() && it.name != it.defaultName }.associate { it.uid to it.name }
+            )
+            loadHome()
+        }
+    }
+
+    /** Manage VOD Groups → Reset to Default: every group shown, provider order and names. */
+    fun resetGroups() {
+        viewModelScope.launch {
+            prefs.saveVodGroups(hidden = emptySet(), order = emptyList(), names = emptyMap())
+            loadHome()
+        }
+    }
+
     private fun loadItems(reset: Boolean) {
         loadJob?.cancel()
         val state = _ui.value
@@ -336,6 +493,8 @@ class OnDemandViewModel @Inject constructor(
     }
 
     private companion object {
+        const val HOME_PAGE = 30
+        const val ENRICH_PER_ROW = 12
         /** The sort you picked, kept while the app is open. */
         @Volatile var lastSort: VodSort = VodSort.DEFAULT
         const val PAGE = 120

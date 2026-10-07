@@ -91,7 +91,9 @@ data class EpgSource(
 data class CatchupInfo(
     val type: String,
     val source: String?,
-    val days: Int
+    val days: Int,
+    /** "catchup-correction" from the playlist: hours to shift catch-up times by (TiviMate style). */
+    val correctionHours: Double = 0.0
 )
 
 data class LiveChannel(
@@ -239,6 +241,8 @@ data class LiveTvSettings(
     // ---- Live TV row on Nuvio's home screen
     /** Show the Live TV row on the home screen at all. */
     val homeRowEnabled: Boolean = true,
+    /** Nuvio profiles (by id) that have the Live TV home row turned off; on for every other profile. */
+    val homeRowHiddenProfiles: Set<Int> = emptySet(),
     /** Above (true) or below (false) Continue watching. */
     val homeRowAboveContinueWatching: Boolean = false,
     /** What it shows: "favorites", "recent", or a group id (e.g. one of your own groups). */
@@ -293,7 +297,10 @@ data class LiveUserState(
     /** Channel key -> picture quality seen when it last played ("4K", "FHD", "HD", "SD"). */
     val channelQuality: Map<String, String> = emptyMap(),
     /** On Demand categories you hid ("movie:<playlist>:<category>" / "series:…"). */
-    val vodHiddenCategories: Set<String> = emptySet()
+    val vodHiddenCategories: Set<String> = emptySet(),
+    /** On Demand page: your order of the provider's groups (category uids), and your names for them. */
+    val vodGroupOrder: List<String> = emptyList(),
+    val vodGroupNames: Map<String, String> = emptyMap()
 )
 
 /** "Remind me" on an upcoming show. */

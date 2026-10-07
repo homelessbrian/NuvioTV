@@ -220,12 +220,23 @@ internal fun PlayerRuntimeController.loadSourceStreams(forceRefresh: Boolean) {
             updateSourceChipsForFetchStart(type, vid, installedAddons)
         }
 
-        streamRepository.getStreamsFromAllAddons(
+        com.nuvio.tv.livetv.ondemand.OnDemandStreams.withOnDemand(
+            // Live TV fork: your provider's copy (📡 On Demand) here too, for source switching
+            // and the next episode.
+            context = context,
+            source = streamRepository.getStreamsFromAllAddons(
             type = type,
             videoId = vid,
             season = seasonArg,
             episode = episodeArg,
-            forceRefresh = forceRefresh
+            forceRefresh = forceRefresh,
+            ),
+            type = type,
+            videoId = vid,
+            season = seasonArg,
+            episode = episodeArg,
+            title = navigationArgs.contentName ?: navigationArgs.title,
+            year = navigationArgs.year
         ).collect { result ->
             when (result) {
                 is NetworkResult.Success -> {
@@ -1165,12 +1176,23 @@ internal fun PlayerRuntimeController.loadStreamsForEpisode(video: Video, forceRe
         // Initialize episode source chips with LOADING status
         updateEpisodeSourceChipsForFetchStart(type, video.id, installedAddons)
 
-        streamRepository.getStreamsFromAllAddons(
+        com.nuvio.tv.livetv.ondemand.OnDemandStreams.withOnDemand(
+            // Live TV fork: your provider's copy (📡 On Demand) here too, for source switching
+            // and the next episode.
+            context = context,
+            source = streamRepository.getStreamsFromAllAddons(
             type = type,
             videoId = video.id,
             season = video.season,
             episode = video.episode,
-            forceRefresh = forceRefresh
+            forceRefresh = forceRefresh,
+            ),
+            type = type,
+            videoId = video.id,
+            season = video.season,
+            episode = video.episode,
+            title = navigationArgs.contentName ?: navigationArgs.title,
+            year = navigationArgs.year
         ).collect { result ->
             when (result) {
                 is NetworkResult.Success -> {
@@ -1869,11 +1891,21 @@ internal fun PlayerRuntimeController.playNextEpisode(userInitiated: Boolean = fa
             val timeoutSeconds = playerSettings.streamAutoPlayTimeoutSeconds
 
             val innerJob = launch {
-                streamRepository.getStreamsFromAllAddons(
+                com.nuvio.tv.livetv.ondemand.OnDemandStreams.withOnDemand(
+                    // Live TV fork: your provider's next episode (📡 On Demand) is a candidate too.
+                    context = context,
+                    source = streamRepository.getStreamsFromAllAddons(
+                        type = type,
+                        videoId = nextVideo.id,
+                        season = nextVideo.season,
+                        episode = nextVideo.episode
+                    ),
                     type = type,
                     videoId = nextVideo.id,
                     season = nextVideo.season,
-                    episode = nextVideo.episode
+                    episode = nextVideo.episode,
+                    title = navigationArgs.contentName ?: navigationArgs.title,
+                    year = navigationArgs.year
                 ).collect { result ->
                     when (result) {
                         is NetworkResult.Success -> {

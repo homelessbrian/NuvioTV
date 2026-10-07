@@ -187,11 +187,15 @@ fun ContinueWatchingSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = title ?: stringResource(R.string.continue_watching),
-                style = MaterialTheme.typography.headlineMedium,
-                color = NuvioTheme.colors.TextPrimary
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title ?: stringResource(R.string.continue_watching),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = NuvioTheme.colors.TextPrimary
+                )
+                // Live TV fork: "Live TV ▲" hint when this is the top row.
+                com.nuvio.tv.livetv.home.LiveTvHomeHint()
+            }
         }
 
         val density = LocalDensity.current

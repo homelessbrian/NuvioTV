@@ -108,7 +108,7 @@ object NetworkModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
-                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                val version = BuildConfig.NUVIO_BASE_VERSION.ifBlank { BuildConfig.VERSION_NAME }.ifBlank { "dev" } // Live TV fork: identify as the Nuvio version it is built on
                 val request = chain.request().newBuilder()
                     .header("User-Agent", "Nuvio/$version")
                     .header("Accept-Language", buildAcceptLanguageHeader())
@@ -170,7 +170,7 @@ object NetworkModule {
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .addInterceptor { chain ->
-            val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+            val version = BuildConfig.NUVIO_BASE_VERSION.ifBlank { BuildConfig.VERSION_NAME }.ifBlank { "dev" } // Live TV fork: identify as the Nuvio version it is built on
             val request = chain.request().newBuilder()
                 .header("User-Agent", "Nuvio/$version")
                 .header("Accept-Language", buildAcceptLanguageHeader())
@@ -192,7 +192,7 @@ object NetworkModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
-                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                val version = BuildConfig.NUVIO_BASE_VERSION.ifBlank { BuildConfig.VERSION_NAME }.ifBlank { "dev" } // Live TV fork: identify as the Nuvio version it is built on
                 val request = chain.request().newBuilder()
                     .header("User-Agent", "Nuvio/$version")
                     .header("Accept-Language", buildAcceptLanguageHeader())
@@ -246,7 +246,7 @@ object NetworkModule {
     ): OkHttpClient = okHttpClient.newBuilder()
         .addInterceptor { chain ->
             val request = chain.request()
-            val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+            val version = BuildConfig.NUVIO_BASE_VERSION.ifBlank { BuildConfig.VERSION_NAME }.ifBlank { "dev" } // Live TV fork: identify as the Nuvio version it is built on
             val newRequest = request.newBuilder()
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "Nuvio/$version")

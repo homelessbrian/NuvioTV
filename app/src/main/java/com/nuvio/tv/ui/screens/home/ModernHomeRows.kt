@@ -2,6 +2,7 @@
 
 package com.nuvio.tv.ui.screens.home
 
+import androidx.compose.foundation.layout.Row
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 import android.view.KeyEvent as AndroidKeyEvent
@@ -537,12 +538,15 @@ internal fun ModernRowSection(
         val textModifier = remember(rowTitleBottom) {
             Modifier.padding(start = 52.dp, bottom = rowTitleBottom)
         }
-        Text(
-            text = rowTitle,
-            style = rowTitleStyle.copy(textDirection = rowTitle.contentTextDirection()),
-            color = textColor,
-            modifier = textModifier
-        )
+        Row(modifier = textModifier, verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = rowTitle,
+                style = rowTitleStyle.copy(textDirection = rowTitle.contentTextDirection()),
+                color = textColor
+            )
+            // Live TV fork: "Live TV ▲" hint when this is the top row.
+            com.nuvio.tv.livetv.home.LiveTvHomeHint()
+        }
 
         val rowListState = rowListStates.getOrPut(row.key) {
             // Resolved when the row is built, so a refresh that already moved the card is seen.

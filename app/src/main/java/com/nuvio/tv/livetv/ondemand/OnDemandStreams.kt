@@ -35,6 +35,9 @@ object OnDemandStreams {
     /** The label for the provider's copies in Nuvio's stream list. */
     const val GROUP_NAME = "📡 On Demand"
 
+    /** Binge group for every provider copy: the next episode is picked from your provider too. */
+    const val BINGE_GROUP = "nuvio-iptv-on-demand"
+
     /**
      * True while provider movies/series are imported and offered in Nuvio's stream list. Nuvio
      * greys out Play ("Playback unavailable") when none of your addons can stream a title (for
@@ -111,7 +114,9 @@ object OnDemandStreams {
                 externalUrl = null,
                 behaviorHints = StreamBehaviorHints(
                     notWebReady = if (s.headers.isEmpty()) null else true,
-                    bingeGroup = null,
+                    // The same for every episode from your provider: Nuvio's "next episode from the
+                    // same source" then carries on with your provider's copy automatically.
+                    bingeGroup = BINGE_GROUP,
                     countryWhitelist = null,
                     proxyHeaders = if (s.headers.isEmpty()) null else ProxyHeaders(request = s.headers, response = null),
                     videoSize = t?.estimatedBytes,

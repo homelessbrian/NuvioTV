@@ -344,6 +344,12 @@ android.defaultConfig.buildConfigField(
     "String", "GOOGLE_DRIVE_CLIENT_SECRET", "\"${localProperties.getProperty("GOOGLE_DRIVE_CLIENT_SECRET", "")}\""
 )
 
+// The Nuvio version this fork is built on ("1.1.0-beta.4"), before the fork's own build number is
+// added: addons and their proxies see exactly what official Nuvio sends ("Nuvio/1.1.0-beta.4").
+android.defaultConfig.buildConfigField(
+    "String", "NUVIO_BASE_VERSION", "\"${android.defaultConfig.versionName ?: ""}\""
+)
+
 val livetvBuildNumber = (findProperty("livetvBuildNumber") as String?)?.toIntOrNull() ?: 0
 android.defaultConfig.versionCode = (android.defaultConfig.versionCode ?: 1) * 100 + livetvBuildNumber
 (findProperty("livetvVersionName") as String?)?.takeIf { it.isNotBlank() }?.let {

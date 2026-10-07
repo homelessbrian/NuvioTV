@@ -659,7 +659,7 @@ class LiveTvViewModel @Inject constructor(
                     val nowMs = System.currentTimeMillis()
                     val p = programs.value[ch.key]?.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs } ?: continue
                     if (com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(p.title)) continue
-                    runCatching { posterFor(p.title, p, ch) }
+                    runCatching { posterFor(p.title, p, ch, urgent = false) }
                 }
             }
         }
@@ -716,7 +716,9 @@ class LiveTvViewModel @Inject constructor(
     suspend fun posterFor(
         programTitle: String,
         program: EpgProgram? = null,
-        channel: LiveChannel? = null
+        channel: LiveChannel? = null,
+        /** The show on screen (fast lane); false for fetching ahead of time (slow lane). */
+        urgent: Boolean = true
     ): String? = if (!settings.value.showPosters) null // "Show posters" off: logo only, no lookups
     else {
         // Details (year, cast, description) sharpen the match; fetch them if not loaded yet.
@@ -728,7 +730,8 @@ class LiveTvViewModel @Inject constructor(
                 year = full?.year,
                 people = full?.people.orEmpty(),
                 description = full?.description
-            )
+            ),
+            urgent = urgent
         )
     }
 

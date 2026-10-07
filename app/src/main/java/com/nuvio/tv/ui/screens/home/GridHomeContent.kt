@@ -534,6 +534,7 @@ fun GridHomeContent(
                             cwPendingScrollToStart.intValue = 0
                         }
                     }
+                    androidx.compose.runtime.CompositionLocalProvider(com.nuvio.tv.livetv.home.LocalLiveTvHintHere provides liveTvRowAbove == true) {
                     GridContinueWatchingSection(
                         modifier = Modifier.fillMaxWidth(),
                         fullWidth = gridWidth,
@@ -582,6 +583,7 @@ fun GridHomeContent(
                         cardStyle = uiState.continueWatchingCardStyle,
                         cornerRadius = posterCardStyle.cornerRadius
                     )
+                    }
                 }
             }
 

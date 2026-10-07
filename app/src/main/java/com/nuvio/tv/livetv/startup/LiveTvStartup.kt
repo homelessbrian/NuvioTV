@@ -17,6 +17,7 @@ interface LiveTvStartupEntryPoint {
     fun liveTvPreferences(): LiveTvPreferences
     fun onDemandRepository(): com.nuvio.tv.livetv.ondemand.OnDemandRepository
     fun liveTvRepository(): com.nuvio.tv.livetv.data.LiveTvRepository
+    fun profileManager(): com.nuvio.tv.core.profile.ProfileManager
 }
 
 /**

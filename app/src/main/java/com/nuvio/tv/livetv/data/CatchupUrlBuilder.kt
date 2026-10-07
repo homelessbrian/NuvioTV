@@ -30,23 +30,29 @@ object CatchupUrlBuilder {
         /** Xtream: the server's time zone (catch-up times are in server time). */
         serverTimezone: String? = null
     ): String? {
-        val start = startMs / 1000
-        val end = stopMs / 1000
+        // "catchup-correction": the playlist's own time fix for this channel, in hours.
+        val correctionMs = (catchup.correctionHours * 3_600_000).toLong()
+        val startMsC = startMs + correctionMs
+        val start = startMsC / 1000
+        val end = (stopMs + correctionMs) / 1000
         val now = nowMs / 1000
         val duration = (end - start).coerceAtLeast(60)
+        // Xtream-style links (server/user/pass/id) whose playlist doesn't say which kind of
+        // catch-up: they use Xtream's /timeshift/ links, like TiviMate assumes.
+        val xtreamGuess = { xtream(liveUrl, startMsC, duration, preferHls, serverTimezone) }
         return when (catchup.type) {
             "append" -> catchup.source?.let { liveUrl + fill(it, start, end, now, duration) }
             "default" -> {
                 val src = catchup.source
                 when {
-                    src.isNullOrBlank() -> shift(liveUrl, start, now)
+                    src.isNullOrBlank() -> xtreamGuess() ?: shift(liveUrl, start, now)
                     src.startsWith("http", ignoreCase = true) -> fill(src, start, end, now, duration)
                     else -> liveUrl + fill(src, start, end, now, duration)
                 }
             }
-            "shift", "timeshift" -> shift(liveUrl, start, now)
+            "shift", "timeshift" -> if (catchup.source.isNullOrBlank()) xtreamGuess() ?: shift(liveUrl, start, now) else shift(liveUrl, start, now)
             "flussonic", "flussonic-hls", "flussonic-ts", "fs" -> flussonic(liveUrl, start, duration)
-            "xc", "xtream" -> xtream(liveUrl, startMs, duration, preferHls, serverTimezone)
+            "xc", "xtream" -> xtream(liveUrl, startMsC, duration, preferHls, serverTimezone)
             else -> catchup.source?.let { fill(it, start, end, now, duration) }
         }
     }
@@ -72,15 +78,16 @@ object CatchupUrlBuilder {
 
     private fun xtream(url: String, startMs: Long, duration: Long, preferHls: Boolean, serverTimezone: String?): String? {
         // http://host:port/(live/)?user/pass/id(.ext)
-        val m = Regex("""^(https?://[^/]+)/(?:live/)?([^/]+)/([^/]+)/(\d+)(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
+        val m = Regex("""^(https?://[^/]+)/(?:live/)?([^/]+)/([^/]+)/(\d+)(\.[a-z0-9]+)?(\?.*)?$""", RegexOption.IGNORE_CASE)
             .find(url) ?: return null
+        val query = m.groupValues[6]
         val (host, user, pass, id) = m.destructured
         // HLS (.m3u8) replays come with a length, so the seek bar and skipping work properly.
         val ext = if (preferHls) ".m3u8" else m.groupValues[5].ifEmpty { ".ts" }
         val fmt = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US)
         serverTimezone?.takeIf { it.isNotBlank() }?.let { fmt.timeZone = java.util.TimeZone.getTimeZone(it) }
         val minutes = (duration / 60).coerceAtLeast(1)
-        return "$host/timeshift/$user/$pass/$minutes/${fmt.format(Date(startMs))}/$id$ext"
+        return "$host/timeshift/$user/$pass/$minutes/${fmt.format(Date(startMs))}/$id$ext$query"
     }
 
     /** The TS version of an Xtream HLS catch-up link, for panels that don't offer HLS. */

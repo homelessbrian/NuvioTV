@@ -1,5 +1,7 @@
 package com.nuvio.tv.ui.components
 
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Row
 import com.nuvio.tv.ui.screens.home.shuffleFocusKey
 
 import com.nuvio.tv.ui.theme.NuvioTheme
@@ -97,11 +99,15 @@ fun GridContinueWatchingSection(
                 .padding(top = NuvioTheme.spacing.xl, bottom = NuvioTheme.spacing.md)
         ) {
             Column {
-                Text(
-                    text = title ?: stringResource(R.string.continue_watching),
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = NuvioTheme.colors.TextPrimary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title ?: stringResource(R.string.continue_watching),
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = NuvioTheme.colors.TextPrimary
+                    )
+                    // Live TV fork: "Live TV ▲" hint when this is the top row.
+                    com.nuvio.tv.livetv.home.LiveTvHomeHint()
+                }
             }
         }
 

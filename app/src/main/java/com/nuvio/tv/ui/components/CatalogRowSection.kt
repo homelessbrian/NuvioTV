@@ -291,15 +291,19 @@ fun CatalogRowSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)) {
-                Text(
-                    text = catalogTitle.ifBlank { " " },
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        textDirection = catalogTitle.contentTextDirection()
-                    ),
-                    color = if (catalogTitle.isBlank()) Color.Transparent else NuvioTheme.colors.TextPrimary,
-                    maxLines = 3,
-                    overflow = TextOverflow.Clip
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = catalogTitle.ifBlank { " " },
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            textDirection = catalogTitle.contentTextDirection()
+                        ),
+                        color = if (catalogTitle.isBlank()) Color.Transparent else NuvioTheme.colors.TextPrimary,
+                        maxLines = 3,
+                        overflow = TextOverflow.Clip
+                    )
+                    // Live TV fork: "Live TV ▲" hint when this is the top row.
+                    com.nuvio.tv.livetv.home.LiveTvHomeHint()
+                }
                 if (showAddonName) {
                     val addonText = if (catalogTitle.isBlank()) " " else stringResource(R.string.catalog_from_addon, catalogRow.addonName)
                     Text(

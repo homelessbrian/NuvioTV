@@ -374,8 +374,14 @@ object LiveTvSearchBridge {
     /** "24/7", "24-7", "24/7:", "24x7", "(24/7)"… (marks a channel, never part of a show's name). */
     private val twentyFourSeven = Regex("""(?i)[\[(]?\b24\s*[/\\|\-x]?\s*7\b[\])]?\s*[:|\-–]?""")
 
+    /** "(2012)" or "[2018]" at the end of a title: its release year, not part of the name. */
+    private val trailingYear = Regex("""\s*[(\[]\s*((?:19|20)\d{2})\s*[)\]]\s*$""")
+
+    /** The release year a title ends with ("American Pie: Reunion (2012)" -> 2012), if any. */
+    internal fun yearInTitle(raw: String): Int? = trailingYear.find(raw.trim())?.groupValues?.get(1)?.toIntOrNull()
+
     internal fun cleanTitle(raw: String): String {
-        var t = raw.replace(twentyFourSeven, " ")
+        var t = raw.trim().replace(trailingYear, "").replace(twentyFourSeven, " ")
         repeat(2) { t = t.replace(leadingTags, "") }
         t = t.replace(bracketed, " ")
             .replace(episodeCode, " ")

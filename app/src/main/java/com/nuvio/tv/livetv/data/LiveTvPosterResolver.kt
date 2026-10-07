@@ -13,6 +13,7 @@ import com.nuvio.tv.livetv.model.EpgProgram
 import com.nuvio.tv.livetv.model.LiveChannel
 import com.nuvio.tv.livetv.ui.LiveTvSearchBridge
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
@@ -77,7 +78,7 @@ class LiveTvPosterResolver @Inject constructor(
         if (key in noMatch) return null
         // On Demand has its own small queue, so browsing movies never holds up the guide's posters.
         // Opening a title ([urgent]) doesn't wait behind poster lookups in the queue.
-        return (if (urgent) urgentPermits else vodPermits).withPermit {
+        return withContext(if (urgent) Urgency(true) else kotlin.coroutines.EmptyCoroutineContext) { (if (urgent) urgentPermits else vodPermits).withPermit {
             val attempt = Attempt()
             val hit = runCatching {
                 lookup(query, TypeHint(if (series) Kind.SERIES else Kind.MOVIE, strong = true), Clues(imdbId = imdbId, year = year), attempt)
@@ -87,7 +88,7 @@ class LiveTvPosterResolver @Inject constructor(
                 if (++failuresInARow >= 5) { pausedUntil = System.currentTimeMillis() + 60_000; failuresInARow = 0 }
             } else failuresInARow = 0
             hit
-        }
+        } }
     }
 
     /**
@@ -151,9 +152,38 @@ class LiveTvPosterResolver @Inject constructor(
     private val requestPermits = kotlinx.coroutines.sync.Semaphore(2)
     private val urgentPermits = kotlinx.coroutines.sync.Semaphore(2)
 
-    suspend fun posterFor(programTitle: String, hint: TypeHint? = null, clues: Clues = Clues()): String? {
+    /**
+     * Marks a lookup as for the show you're looking at right now (fast lane), as opposed to a
+     * background fetch ahead of time (slow lane, never in the way).
+     */
+    private class Urgency(val urgent: Boolean) : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+        companion object Key : kotlin.coroutines.CoroutineContext.Key<Urgency>
+    }
+
+    /** Fast lane: the highlighted show. More at once, and a shorter wait for slow addons. */
+    private val urgentTitlePermits = kotlinx.coroutines.sync.Semaphore(2)
+    private val urgentRequestPermits = kotlinx.coroutines.sync.Semaphore(6)
+    /** Slow lane: fetching ahead of time, one search at a time. */
+    private val backgroundRequestPermits = kotlinx.coroutines.sync.Semaphore(1)
+    private val inFlightUrgent = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<String?>>()
+
+    /** Forgets every Live TV poster and show info, so they're looked up again from your addons. */
+    fun clearAll() {
+        cache.clear()
+        matchCache.clear()
+        noMatch.clear()
+        aboutCache.clear()
+        aboutMisses.clear()
+        inFlight.clear()
+        inFlightUrgent.clear()
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { store.clear() }
+    }
+
+    suspend fun posterFor(programTitle: String, hint: TypeHint? = null, cluesIn: Clues = Clues(), urgent: Boolean = true): String? {
         // "Programming" and the like aren't shows: the channel logo is the right picture.
         if (LiveTvRepository.isPlaceholderTitle(programTitle)) return null
+        // A year in the title ("American Pie: Reunion (2012)") is used as the year clue.
+        val clues = if (cluesIn.year == null) LiveTvSearchBridge.yearInTitle(programTitle)?.let { cluesIn.copy(year = it) } ?: cluesIn else cluesIn
         val query = LiveTvSearchBridge.cleanTitle(programTitle).ifBlank { programTitle.trim() }
         if (query.length < 2) return null
         // One lookup per show (not per episode): the key is the title, kind and year.
@@ -167,11 +197,14 @@ class LiveTvPosterResolver @Inject constructor(
         }
         // One lookup per title at a time. Started only after it's registered, so a finished
         // lookup can never be left behind and answer "no poster" forever.
-        val fresh = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-            permits.withPermit { resolve(programTitle, query, hint, clues, key) }
+        // The show you're looking at gets its own lookup in the fast lane, even if a slower
+        // background fetch for the same title is already under way.
+        val lane = if (urgent) inFlightUrgent else inFlight
+        val fresh = scope.async(Urgency(urgent), start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            (if (urgent) urgentTitlePermits else permits).withPermit { resolve(programTitle, query, hint, clues, key) }
         }
-        val job = inFlight.putIfAbsent(key, fresh) ?: fresh.also { d ->
-            d.invokeOnCompletion { inFlight.remove(key, d) }
+        val job = lane.putIfAbsent(key, fresh) ?: fresh.also { d ->
+            d.invokeOnCompletion { lane.remove(key, d) }
             d.start()
         }
         if (job !== fresh) fresh.cancel()
@@ -272,13 +305,21 @@ class LiveTvPosterResolver @Inject constructor(
 
         // Ask every catalog at once (not one after another), so a slow addon costs a few seconds
         // instead of holding up the poster while each catalog is tried in turn.
+        val lane = kotlin.coroutines.coroutineContext[Urgency]
+        // Fast lane (the show on screen, a title being opened): several searches at once, and a
+        // slow addon is given up on sooner. Slow lane (Live TV fetching ahead): one at a time,
+        // never in the way. Everything else (On Demand's poster grid) as before.
+        val lanePermits = when (lane?.urgent) {
+            true -> urgentRequestPermits
+            false -> backgroundRequestPermits
+            null -> requestPermits
+        }
+        val waitMs = if (lane?.urgent == true) 3_000L else 6_000L
         val results = kotlinx.coroutines.coroutineScope {
             targets.map { (addon, catalog) ->
                 async {
-                    // At most two poster searches hit your addons at any moment, so Nuvio's own
-                    // searches and catalogs are never crowded out (or rate-limited) by posters.
-                    requestPermits.withPermit {
-                        withTimeoutOrNull(6_000) {
+                    lanePermits.withPermit {
+                        withTimeoutOrNull(waitMs) {
                             catalogRepository.getCatalog(
                                 addonBaseUrl = addon.baseUrl,
                                 addonId = addon.id,

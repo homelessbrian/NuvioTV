@@ -91,6 +91,9 @@ class LiveTvSettingsViewModel @Inject constructor(
     val posterTest = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     /** Settings → "Test poster lookup". */
+    /** Forgets every Live TV poster and show info, so they're fetched again from your addons. */
+    fun clearPosterData() = posterResolver.clearAll()
+
     fun testPoster(title: String) = viewModelScope.launch {
         posterTest.value = "Searching…"
         posterTest.value = runCatching { posterResolver.diagnose(title) }.getOrElse { "Test failed: ${it.message}" }
