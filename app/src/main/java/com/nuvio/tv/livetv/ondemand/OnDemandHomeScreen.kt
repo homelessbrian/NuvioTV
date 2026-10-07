@@ -51,7 +51,7 @@ import com.nuvio.tv.ui.components.PosterCardStyle
 import com.nuvio.tv.ui.screens.home.ClassicHomeContent
 import com.nuvio.tv.ui.screens.home.GridHomeContent
 import com.nuvio.tv.ui.screens.home.GridItem
-import com.nuvio.tv.ui.screens.home.HomeLayout
+import com.nuvio.tv.domain.model.HomeLayout
 import com.nuvio.tv.ui.screens.home.HomeRow
 import com.nuvio.tv.ui.screens.home.HomeScreenFocusState
 import com.nuvio.tv.ui.screens.home.HomeUiState
