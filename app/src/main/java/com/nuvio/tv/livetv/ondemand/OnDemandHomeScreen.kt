@@ -79,7 +79,8 @@ fun OnDemandHomeScreen(
     homeSettings: HomeUiState?,
     onOpenDetail: (itemId: String, itemType: String, addonBaseUrl: String?, onDemandUid: String) -> Unit,
     onPlay: (url: String, title: String, type: String, poster: String?) -> Unit,
-    onOpenBrowse: () -> Unit,
+    /** The search button: Nuvio's own search. */
+    onOpenSearch: () -> Unit,
     /** Home's own trailer lookup and results (trailers follow Nuvio's trailer settings). */
     trailers: OnDemandTrailers? = null,
     viewModel: OnDemandViewModel = hiltViewModel()
@@ -91,6 +92,8 @@ fun OnDemandHomeScreen(
 
     var showManage by remember { mutableStateOf(false) }
     var providerItem by remember { mutableStateOf<VodItem?>(null) }
+    // "See all" on a row: that row in Nuvio's See all grid, over this page.
+    var seeAllUid by remember { mutableStateOf<String?>(null) }
     var opening by remember { mutableStateOf(false) }
     var focusState by remember { mutableStateOf(HomeScreenFocusState()) }
     var gridFocusState by remember { mutableStateOf(HomeScreenFocusState()) }
@@ -245,6 +248,14 @@ fun OnDemandHomeScreen(
     }
     val requestTrailerForItem: (MetaPreview) -> Unit = { item -> if (trailersActive) viewModel.requestTrailer(item.id) }
 
+    // Back opens the menu, like on every other menu page. Added here because otherwise Back
+    // went to the page underneath (Home) on this one. The layouts' own Back handling (scroll a
+    // row back to its start, close a full screen trailer) and any open dialog still come first,
+    // and with the menu open Back is left to the app (exit).
+    val openSidebar = com.nuvio.tv.LocalOpenSidebar.current
+    val sidebarOpen = com.nuvio.tv.LocalSidebarExpanded.current
+    androidx.activity.compose.BackHandler(enabled = !sidebarOpen) { openSidebar() }
+
     androidx.compose.runtime.CompositionLocalProvider(com.nuvio.tv.core.player.LocalTrailerPlayerPool provides ownPool) {
     Box(
         modifier = Modifier
@@ -264,6 +275,19 @@ fun OnDemandHomeScreen(
                     size = 14.sp, color = NuvioTheme.colors.TextSecondary
                 )
             }
+            seeAllUid != null -> {
+                val seeAllRow = state.rows.firstOrNull { it.catalogId == seeAllUid }
+                LaunchedEffect(seeAllUid, seeAllRow?.items?.size) { seeAllUid?.let { viewModel.enrichSeeAll(it) } }
+                OnDemandSeeAll(
+                    row = seeAllRow,
+                    posterCardStyle = posterCardStyle,
+                    showLabels = ui.posterLabelsEnabled,
+                    onOpen = { open(it) },
+                    onFocus = onItemFocus,
+                    onLoadMore = { seeAllUid?.let { viewModel.loadMoreHome(it) } },
+                    onBack = { viewModel.stopSeeAll(); seeAllUid = null }
+                )
+            }
             else -> when (ui.homeLayout) {
                 HomeLayout.CLASSIC -> ClassicHomeContent(
                     uiState = ui,
@@ -276,7 +300,7 @@ fun OnDemandHomeScreen(
                     onContinueWatchingStartFromBeginning = {},
                     onContinueWatchingPlayManually = {},
                     showContinueWatchingManualPlayOption = false,
-                    onNavigateToCatalogSeeAll = { _, _, _ -> onOpenBrowse() },
+                    onNavigateToCatalogSeeAll = { catalogId, _, _ -> seeAllUid = catalogId },
                     onNavigateToFolderDetail = { _, _ -> },
                     onRemoveContinueWatching = { _, _, _, _ -> },
                     isCatalogItemWatched = notWatched,
@@ -303,7 +327,7 @@ fun OnDemandHomeScreen(
                     onContinueWatchingStartFromBeginning = {},
                     onContinueWatchingPlayManually = {},
                     showContinueWatchingManualPlayOption = false,
-                    onNavigateToCatalogSeeAll = { _, _, _ -> onOpenBrowse() },
+                    onNavigateToCatalogSeeAll = { catalogId, _, _ -> seeAllUid = catalogId },
                     onNavigateToFolderDetail = { _, _ -> },
                     onRemoveContinueWatching = { _, _, _, _ -> },
                     isCatalogItemWatched = notWatched,
@@ -350,8 +374,8 @@ fun OnDemandHomeScreen(
             }
         }
 
-        // Top right: search everything (the full On Demand browser) and Manage VOD Groups.
-        Row(
+        // Top right: Nuvio's search and Manage VOD Groups (not over See all).
+        if (seeAllUid == null) Row(
             modifier = Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 32.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -361,7 +385,7 @@ fun OnDemandHomeScreen(
                 KindTab("Series", selected = shownKind == VodKind.SERIES) { switchTo(VodKind.SERIES) }
                 Spacer(Modifier.size(6.dp))
             }
-            TopButton(Icons.Default.Search, onClick = onOpenBrowse)
+            TopButton(Icons.Default.Search, onClick = onOpenSearch)
             TopButton(Icons.Default.Tune, onClick = { showManage = true })
         }
     }

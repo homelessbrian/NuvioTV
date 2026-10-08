@@ -156,7 +156,6 @@ class OnDemandRepository @Inject constructor(
                 _version.value++
             }
             refresh(force = false)
-            startGenreFill()
         }
     }
 
@@ -198,11 +197,13 @@ class OnDemandRepository @Inject constructor(
         _hasContent.value = runCatching { db.hasAny() }.getOrDefault(_hasContent.value)
         // A problem stays visible in Settings → Live TV → On Demand (no more silent failures).
         _status.value = OnDemandStatus(false, lastProblem)
-        startGenreFill()
     }
 
     /**
-     * Fills in genres in the background, straight after an import, from TMDB, using the TMDB
+     * No longer used: nothing in On Demand shows genres any more, so they're not looked up
+     * (this used to run after every import, for every title). Kept for reference only.
+     *
+     * Fills in genres in the background from TMDB, using the TMDB
      * id most providers include for each title. Newest titles first, about 20 a second (well
      * within TMDB's limits), and each title only once. Runs while the app is open; picks up
      * where it left off next time.
@@ -213,6 +214,7 @@ class OnDemandRepository @Inject constructor(
         if (key.isBlank()) return
         genreJob = scope.launch {
             var added = 0
+            var shownOnce = false
             while (true) {
                 val batch = runCatching { db.needingGenres(40) }.getOrDefault(emptyList())
                 if (batch.isEmpty()) break
@@ -230,7 +232,8 @@ class OnDemandRepository @Inject constructor(
                 }
                 val left = runCatching { db.countNeedingGenres() }.getOrDefault(0)
                 _genreProgress.value = if (left > 0) "Adding genres… ${"%,d".format(left)} to go" else null
-                if (added >= 400) { _genreUpdates.value++; added = 0 }
+                // Show the first genres soon after you switch to By genre, then every few hundred.
+                if (added >= if (shownOnce) 400 else 40) { _genreUpdates.value++; added = 0; shownOnce = true }
             }
             _genreProgress.value = null
             _genreUpdates.value++

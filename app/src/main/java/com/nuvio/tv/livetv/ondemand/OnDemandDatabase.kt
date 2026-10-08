@@ -438,6 +438,17 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         fun normalize(s: String): String = normalizeWords(s).joinToString("")
 
         private val PREFIX = Regex("""^(\[[^\]]*\]|\|[^|]*\||[A-Z]{2,4}\s*[-|:]\s+)+""")
+        // Built once: building a pattern is slow, and these run for every title on screen.
+        private val YEAR_IN_BRACKETS_TRAIL = Regex("""\s*\((19|20)\d{2}\)""")
+        private val YEAR_AT_END = Regex("""\s*[-|]\s*(19|20)\d{2}\s*$""")
+        private val QUALITY_AT_END = Regex("""(?i)\s*[\[(]?\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|hdr|multi|multi-?sub|vostfr|dub|sub)\b[\])]?\s*$""")
+        private val YEAR_WORD = Regex("""(19|20)\d{2}""")
+        private val YEAR_ANYWHERE = Regex("""\b(19|20)\d{2}\b""")
+        private val YEAR_IN_BRACKETS = Regex("""\((19|20)\d{2}\)""")
+        private val NON_WORD = Regex("""[^\p{L}\p{N}]+""")
+
+        /** Cleaned titles already worked out, by provider title (the same names come up again and again). */
+        private val displayTitles = com.nuvio.tv.livetv.data.boundedCache<String, String>(5_000)
         private val NOISE = Regex("""\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|multi|sub|dub|vostfr)\b""")
 
         /**
@@ -447,6 +458,7 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
          */
         /** Every provider's learned title tags, lower case. */
         @Volatile var knownPrefixes: Set<String> = emptySet()
+            set(value) { field = value; displayTitles.clear() }
 
         private val SEGMENT = Regex("""^\s*(.{1,30}?)\s*(?:\s[-–—|]\s|\s?\|\s?|:\s)""")
 
@@ -483,10 +495,15 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
         }
 
         fun displayTitle(s: String): String {
+            displayTitles[s]?.let { return it }
+            return cleanTitle(s).also { displayTitles[s] = it }
+        }
+
+        private fun cleanTitle(s: String): String {
             val t = stripTags(s).replace(PREFIX, "")
-                .replace(Regex("""\s*\((19|20)\d{2}\)"""), "")
-                .replace(Regex("""\s*[-|]\s*(19|20)\d{2}\s*$"""), "")
-                .replace(Regex("""(?i)\s*[\[(]?\b(4k|uhd|fhd|hd|sd|1080p|720p|2160p|hdr|multi|multi-?sub|vostfr|dub|sub)\b[\])]?\s*$"""), "")
+                .replace(YEAR_IN_BRACKETS_TRAIL, "")
+                .replace(YEAR_AT_END, "")
+                .replace(QUALITY_AT_END, "")
                 .trim()
             return t.ifBlank { s.trim() }
         }
@@ -502,20 +519,20 @@ class OnDemandDatabase @Inject constructor(@ApplicationContext context: Context)
             val words = normalizeWords(displayTitle(name)).toMutableList()
             while (words.size > 1) {
                 val last = words.last()
-                if (last in TRAILING_EXTRA || Regex("""(19|20)\d{2}""").matches(last)) words.removeAt(words.lastIndex) else break
+                if (last in TRAILING_EXTRA || YEAR_WORD.matches(last)) words.removeAt(words.lastIndex) else break
             }
             return words.joinToString("")
         }
 
         /** A year in a provider title ("Big Brother UK 2023"), if any. */
-        fun yearInTitle(name: String): Int? = Regex("""\b(19|20)\d{2}\b""").findAll(name).lastOrNull()?.value?.toIntOrNull()
+        fun yearInTitle(name: String): Int? = YEAR_ANYWHERE.findAll(name).lastOrNull()?.value?.toIntOrNull()
 
         fun normalizeWords(s: String): List<String> =
             s.replace(PREFIX, "")
-                .replace(Regex("""\((19|20)\d{2}\)"""), " ")
+                .replace(YEAR_IN_BRACKETS, " ")
                 .lowercase()
                 .replace(NOISE, " ")
-                .split(Regex("""[^\p{L}\p{N}]+"""))
+                .split(NON_WORD)
                 .filter { it.isNotBlank() }
     }
 }

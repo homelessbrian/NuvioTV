@@ -1352,31 +1352,9 @@ private fun PlaybackNavHost(
                         )
                     )
                 },
-                onOpenBrowse = { navController.navigate(Screen.OnDemandBrowse.route) { launchSingleTop = true } }
-            )
-        }
-
-        composable(Screen.OnDemandBrowse.route) {
-            com.nuvio.tv.livetv.ondemand.OnDemandScreen(
-                onOpenDetail = { itemId, itemType, addonBaseUrl, onDemandUid ->
-                    navController.navigate(Screen.Detail.createRoute(itemId, itemType, addonBaseUrl))
-                    // Remember (on this details page only) that it was opened from On Demand.
-                    navController.currentBackStackEntry?.savedStateHandle?.set(
-                        com.nuvio.tv.livetv.ondemand.OnDemandPlay.KEY, onDemandUid
-                    )
-                },
-                onPlay = { url, title, type, poster ->
-                    navController.navigate(
-                        Screen.Player.createRoute(
-                            streamUrl = url,
-                            title = title,
-                            contentType = type,
-                            contentName = title,
-                            poster = poster,
-                            addonName = com.nuvio.tv.livetv.ondemand.OnDemandStreams.GROUP_NAME
-                        )
-                    )
-                }
+                // Search goes to Nuvio's own search (results open the usual details page, where
+                // your provider's copies are offered too).
+                onOpenSearch = { navController.navigate(Screen.Search.route) { launchSingleTop = true } }
             )
         }
 

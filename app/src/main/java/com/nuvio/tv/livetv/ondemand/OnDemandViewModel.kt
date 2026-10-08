@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -93,7 +94,7 @@ class OnDemandViewModel @Inject constructor(
      */
     private fun matchTitles(item: VodItem): List<String> {
         val clean = matchTitle(item)
-        val after = Regex("""^.{1,40}?\s(?:-|–|—|:)\s+(.+)$""").find(clean)?.groupValues?.get(1)?.trim()
+        val after = AFTER_SEPARATOR.find(clean)?.groupValues?.get(1)?.trim()
         return listOfNotNull(clean, after?.takeIf { it.length >= 2 }).distinct()
     }
 
@@ -367,7 +368,10 @@ class OnDemandViewModel @Inject constructor(
     fun loadMoreHome(uid: String) {
         if (uid in homeEnded) return
         val (c, _) = homeGroups.firstOrNull { it.first.uid == uid } ?: return
+        // One page at a time per group (scrolling asks again and again near the end).
+        if (!homeLoadingMore.add(uid)) return
         viewModelScope.launch {
+          try {
             val have = homeItems[uid].orEmpty()
             val more = repository.items(c.kind, c, emptySet(), false, HOME_PAGE, have.size, merge = settings.value.vodMergeDuplicates)
             if (more.size < HOME_PAGE) homeEnded += uid
@@ -375,8 +379,29 @@ class OnDemandViewModel @Inject constructor(
             homeItems[uid] = have + more
             _home.value = _home.value.copy(rows = buildHomeRows())
             enrichHome()
+          } finally { homeLoadingMore.remove(uid) }
         }
     }
+
+    private val homeLoadingMore = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var seeAllJob: kotlinx.coroutines.Job? = null
+
+    /** "See all" on a row: proper posters and names for every title in it, not just the first few. */
+    fun enrichSeeAll(uid: String) {
+        seeAllJob?.cancel()
+        seeAllJob = viewModelScope.launch {
+            var changed = 0
+            for (item in homeItems[uid].orEmpty()) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (!homeTried.add(item.uid)) continue
+                enrichOne(item)
+                if (++changed % 6 == 0) _home.value = _home.value.copy(rows = buildHomeRows())
+            }
+            if (changed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+        }
+    }
+
+    fun stopSeeAll() { seeAllJob?.cancel() }
 
     /** Posters already found in earlier visits (saved on the device): shown straight away. */
     private suspend fun primePosters(items: List<VodItem>) {
@@ -412,6 +437,7 @@ class OnDemandViewModel @Inject constructor(
             var changed = 0
             for ((c, _) in homeGroups) {
                 for (item in homeItems[c.uid].orEmpty().take(ENRICH_PER_ROW)) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (!homeTried.add(item.uid)) continue
                     enrichOne(item)
                     if (++changed % 6 == 0) _home.value = _home.value.copy(rows = buildHomeRows())
@@ -422,6 +448,7 @@ class OnDemandViewModel @Inject constructor(
             var detailed = 0
             for ((c, _) in homeGroups.take(3)) {
                 for (item in homeItems[c.uid].orEmpty().take(6)) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (!homeHits.containsKey(item.uid) || item.uid in homeDetailed) continue
                     fetchDetails(item.uid)
                     detailed++
@@ -450,7 +477,7 @@ class OnDemandViewModel @Inject constructor(
                 metaRepository.getMeta(addonBaseUrl = hit.addonBaseUrl, type = hit.type, id = hit.meta.id)
                     .first { it !is com.nuvio.tv.core.network.NetworkResult.Loading }
             }
-        }.getOrNull()
+        }.rethrowCancel().getOrNull()
         val meta = (full as? com.nuvio.tv.core.network.NetworkResult.Success<*>)?.data as? com.nuvio.tv.domain.model.Meta
         if (meta == null) { homeDetailed.remove(uid); return }
         val base = homeMatched[uid] ?: hit.meta
@@ -465,7 +492,7 @@ class OnDemandViewModel @Inject constructor(
     }
 
     private suspend fun enrichOne(item: VodItem, urgent: Boolean = false) {
-        val hit = runCatching { matchAny(item, urgent = urgent) }.getOrNull() ?: return
+        val hit = runCatching { matchAny(item, urgent = urgent) }.rethrowCancel().getOrNull() ?: return
         homeHits[item.uid] = hit
         homeMatched[item.uid] = hit.meta
         hit.meta.poster?.let { posters[item.uid] = it; repository.cachePoster(item, it, hit.meta.name) }
@@ -514,14 +541,14 @@ class OnDemandViewModel @Inject constructor(
             val uid = VodHomeIds.uidOf(cardId) ?: return@launch
             val hit = homeHits[uid] ?: return@launch
             val real = homeMatched[uid] ?: hit.meta
-            val year = Regex("""\b(19|20)\d{2}\b""").find(real.releaseInfo.orEmpty())?.value
+            val year = YEAR.find(real.releaseInfo.orEmpty())?.value
             val source = runCatching {
                 val tmdbId = runCatching { tmdb.ensureTmdbId(real.id, hit.type) }.getOrNull()
                 trailerService.getTrailerPlaybackSource(title = real.name, year = year, tmdbId = tmdbId, type = hit.type)
                     ?: real.trailerYtIds.firstOrNull()?.let { yt ->
                         trailerService.getTrailerPlaybackSourceFromYouTubeUrl("https://www.youtube.com/watch?v=$yt", real.name, year)
                     }
-            }.getOrNull()
+            }.rethrowCancel().getOrNull()
             if (source?.videoUrl.isNullOrBlank()) { trailerMisses += cardId; return@launch }
             trailerUrls[cardId] = source!!.videoUrl
             source.audioUrl?.takeIf { it.isNotBlank() }?.let { trailerAudioUrls[cardId] = it }
@@ -582,10 +609,21 @@ class OnDemandViewModel @Inject constructor(
 
     private companion object {
         const val HOME_PAGE = 30
+        private val AFTER_SEPARATOR = Regex("""^.{1,40}?\s(?:-|–|—|:)\s+(.+)$""")
+        private val YEAR = Regex("""\b(19|20)\d{2}\b""")
         const val ENRICH_PER_ROW = 12
         /** The sort you picked, kept while the app is open. */
         @Volatile var lastSort: VodSort = VodSort.DEFAULT
         const val PAGE = 120
         const val WEEK_MS = 7L * 24 * 60 * 60 * 1000
     }
+}
+
+/**
+ * Lets a closed page's work stop: [runCatching] also catches the "cancelled" signal, and work
+ * that carried on after it ran on the main thread until the app froze.
+ */
+private fun <T> Result<T>.rethrowCancel(): Result<T> {
+    exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+    return this
 }

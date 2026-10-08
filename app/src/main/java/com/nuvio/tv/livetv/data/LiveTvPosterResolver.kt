@@ -515,7 +515,7 @@ class LiveTvPosterResolver @Inject constructor(
     }
 
     private fun yearOf(item: MetaPreview): Int? =
-        Regex("""(19|20)\d{2}""").find(item.releaseInfo ?: item.released ?: "")?.value?.toIntOrNull()
+        YEAR_PATTERN.find(item.releaseInfo ?: item.released ?: "")?.value?.toIntOrNull()
 
     private val stopWords = setOf(
         "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "his", "her", "their", "is",
@@ -523,7 +523,7 @@ class LiveTvPosterResolver @Inject constructor(
     )
 
     private fun words(text: String?): Set<String> =
-        text.orEmpty().lowercase().split(Regex("""[^a-z0-9]+"""))
+        text.orEmpty().lowercase().split(NON_WORD_PATTERN)
             .filter { it.length > 3 && it !in stopWords }
             .toSet()
 
@@ -545,6 +545,8 @@ class LiveTvPosterResolver @Inject constructor(
     companion object {
         /** Catalogs searched per kind (movies / series) for one title. */
         private const val MAX_CATALOGS = 3
+        private val YEAR_PATTERN = Regex("""(19|20)\d{2}""")
+        private val NON_WORD_PATTERN = Regex("""[^a-z0-9]+""")
 
         /** " - ", " – ", " — " or " | " between a show name and an episode title. */
         private val SHOW_EPISODE_SEPARATOR = Regex("""\s+[-–—|]\s+""")

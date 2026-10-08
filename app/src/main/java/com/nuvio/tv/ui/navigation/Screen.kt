@@ -143,8 +143,6 @@ sealed class Screen(val route: String) {
     data object LiveTvPlayer : Screen("live_tv_player")
     data object LiveTvSettings : Screen("live_tv_settings")
     data object OnDemand : Screen("on_demand")
-    /** Live TV fork: the full On Demand browser (search, sorting, genres), from the On Demand page. */
-    data object OnDemandBrowse : Screen("on_demand_browse")
     data object Tracking : Screen("trakt")
     data object TmdbSettings : Screen("tmdb_settings")
     data object ThemeSettings : Screen("theme_settings")
