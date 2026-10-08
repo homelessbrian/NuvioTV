@@ -41,6 +41,9 @@ object M3uParser {
         val pendingHeaders = mutableMapOf<String, String>()
         // Kodi / TiviMate DRM lines ("#KODIPROP:inputstream.adaptive.license_type=…").
         val pendingProps = mutableMapOf<String, String>()
+        // Catch-up set once for the whole playlist on its #EXTM3U line (TiviMate supports this):
+        // used for every channel that doesn't set its own.
+        val headerCatchup = mutableMapOf<String, String>()
 
         reader.lineSequence().forEach { rawLine ->
             val line = rawLine.trim().removePrefix("\uFEFF")
@@ -48,6 +51,8 @@ object M3uParser {
             when {
                 line.startsWith("#EXTM3U", ignoreCase = true) -> {
                     val attrs = attributes(line)
+                    listOf("catchup", "catchup-type", "catchup-source", "catchup-days", "catchup-correction", "tvg-rec", "timeshift")
+                        .forEach { k -> attrs[k]?.takeIf { it.isNotBlank() }?.let { headerCatchup[k] = it } }
                     listOf("url-tvg", "x-tvg-url", "tvg-url").forEach { key ->
                         attrs[key]?.split(',')?.map { it.trim() }?.filter { it.startsWith("http") }
                             ?.let { epgUrls.addAll(it) }
@@ -99,7 +104,7 @@ object M3uParser {
                                     runCatching { java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8") }.getOrDefault(part.substringAfter('=', ""))
                             }
                         }
-                        entries.add(buildEntry(info, pendingGroup, line, pendingHeaders.toMap()).copy(drm = drmFrom(pendingProps)))
+                        entries.add(buildEntry(info, pendingGroup, line, pendingHeaders.toMap(), headerCatchup).copy(drm = drmFrom(pendingProps)))
                     }
                     pendingInfo = null
                     pendingGroup = null
@@ -152,9 +157,11 @@ object M3uParser {
         info: String,
         extGroup: String?,
         urlLine: String,
-        vlcHeaders: Map<String, String>
+        vlcHeaders: Map<String, String>,
+        playlistCatchup: Map<String, String> = emptyMap()
     ): M3uEntry {
-        val attrs = attributes(info)
+        // The channel's own attributes win over the playlist-wide catch-up defaults.
+        val attrs = playlistCatchup + attributes(info)
         // Display name follows the first comma that is outside quotes.
         val name = displayName(info).ifBlank { attrs["tvg-name"].orEmpty() }.ifBlank { "Channel" }
 

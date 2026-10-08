@@ -454,6 +454,32 @@ class LiveTvViewModel @Inject constructor(
         val catchup = channel.catchup ?: return false
         val now = System.currentTimeMillis()
         if (!CatchupUrlBuilder.isAvailable(catchup, program.startMs, now)) return false
+        // Server time zone not known yet (M3U from an Xtream server): learn it first (a second
+        // at most, once), then play, so the replay starts at the right time.
+        if (playlistZones.value[channel.sourceId].isNullOrBlank() && channel.sourceId !in zoneAsked &&
+            Regex("""/(?:live/)?[^/]+/[^/]+/\d+(\.[a-z0-9]+)?(\?.*)?$""", RegexOption.IGNORE_CASE).containsMatchIn(channel.url)
+        ) {
+            zoneAsked += channel.sourceId
+            viewModelScope.launch {
+                val tz = kotlinx.coroutines.withTimeoutOrNull(4_000) { repository.learnServerZone(channel) }
+                startCatchup(channel, catchup, program, offsetMs, tz)
+            }
+            return true
+        }
+        return startCatchup(channel, catchup, program, offsetMs, playlistZones.value[channel.sourceId])
+    }
+
+    /** Playlists whose server time zone has been asked for (once per session). */
+    private val zoneAsked = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private fun startCatchup(
+        channel: LiveChannel,
+        catchup: com.nuvio.tv.livetv.model.CatchupInfo,
+        program: EpgProgram,
+        offsetMs: Long,
+        zone: String?
+    ): Boolean {
+        val now = System.currentTimeMillis()
         val shift = settings.value.epgOffsetMinutes * 60_000L
         val start = program.startMs + offsetMs.coerceAtLeast(0)
         // Ask for more than the show itself: up to 3 hours past its end (but not past what has
@@ -462,9 +488,12 @@ class LiveTvViewModel @Inject constructor(
         val url = CatchupUrlBuilder.build(
             channel.url, catchup, start - shift, windowStop - shift, now,
             preferHls = settings.value.catchupPreferHls,
-            serverTimezone = playlistZones.value[channel.sourceId]
+            serverTimezone = zone
         ) ?: return false
-        playback.play(channel, overrideUrl = url, catchupTitle = program.title, fallback = CatchupUrlBuilder.tsFallback(url))
+        playback.play(
+            channel, overrideUrl = url, catchupTitle = program.title,
+            fallbacks = CatchupUrlBuilder.alternatives(url, zone)
+        )
         _catchup.value = CatchupSession(channel, program, offsetMs.coerceAtLeast(0))
         // Load this channel's full schedule, so catch-up can follow on into later shows.
         repository.ensureChannelSchedule(channel.key)

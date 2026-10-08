@@ -237,10 +237,16 @@ class LiveTvPlaybackController @Inject constructor(
         }
     }
 
-    /** A second link to try once if the first can't be played (HLS catch-up → TS). */
-    private var fallbackUrl: String? = null
+    /** Other links to try, in turn, if the current one can't be played (catch-up variants). */
+    private val fallbackUrls = ArrayDeque<String>()
 
-    fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
+    fun play(
+        channel: LiveChannel,
+        overrideUrl: String? = null,
+        catchupTitle: String? = null,
+        fallback: String? = null,
+        fallbacks: List<String> = emptyList()
+    ) {
         if (_shiftStartedAt.value != null) stopShift()
         if (currentChannel?.key != channel.key) captionsHandled = false
         val url = overrideUrl ?: channel.url
@@ -248,7 +254,10 @@ class LiveTvPlaybackController @Inject constructor(
             forcedMime = null
             formatGuess = 0
         }
-        fallbackUrl = fallback
+        fallbackUrls.clear()
+        fallback?.let { fallbackUrls += it }
+        fallbacks.forEach { if (it !in fallbackUrls) fallbackUrls += it }
+        if (catchupTitle != null) com.nuvio.tv.livetv.model.LiveTvLoadReport.add("Catch-up \"$catchupTitle\" on ${channel.name}: ${redact(url)}")
         startStallWatch()
         val p = _player ?: attach().also { attachCount-- }
         if (currentChannel?.key == channel.key && currentUrl == url && _state.value.error == null &&
@@ -620,10 +629,10 @@ class LiveTvPlaybackController @Inject constructor(
             if (_shiftStartedAt.value != null) { Log.w(TAG, "Recording playback failed", error); goLive(); return }
             val p = _player
             // The provider doesn't offer this as HLS: switch to the TS link once.
-            val fb = fallbackUrl
             val ch = currentChannel
+            val fb = fallbackUrls.removeFirstOrNull()
             if (fb != null && ch != null && p != null) {
-                fallbackUrl = null
+                com.nuvio.tv.livetv.model.LiveTvLoadReport.add("Catch-up failed (${error.errorCodeName}); trying ${redact(fb)}")
                 currentUrl = fb
                 p.setMediaSource(buildMediaSource(fb, ch.headers, isLive = _state.value.catchupTitle == null))
                 p.prepare()
@@ -663,6 +672,11 @@ class LiveTvPlaybackController @Inject constructor(
         }
         return error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
     }
+
+    /** A link for the start-up report, with the username and password hidden. */
+    private fun redact(url: String): String =
+        url.replace(Regex("""(/(?:timeshift|live)/)[^/]+/[^/]+/"""), "$1***/***/")
+            .replace(Regex("""(username|password)=[^&]*"""), "$1=***")
 
     private fun scheduleReconnect(reason: String) {
         val attempt = _state.value.reconnectAttempt + 1

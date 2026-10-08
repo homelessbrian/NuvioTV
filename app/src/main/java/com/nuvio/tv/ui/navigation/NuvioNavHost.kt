@@ -1330,15 +1330,6 @@ private fun PlaybackNavHost(
             val homeSettings = homeSettingsFlow?.collectAsStateWithLifecycle(initialValue = null)?.value
                 ?.also { com.nuvio.tv.livetv.ondemand.OnDemandHomeSettings.last = it }
                 ?: com.nuvio.tv.livetv.ondemand.OnDemandHomeSettings.last?.settingsOnly()
-            // Trailers, from Home's own trailer lookup (so they follow Nuvio's trailer settings).
-            val onDemandTrailers = homeVm?.let { vm ->
-                com.nuvio.tv.livetv.ondemand.OnDemandTrailers(
-                    urls = vm.trailerPreviewUrls,
-                    audioUrls = vm.trailerPreviewAudioUrls,
-                    requestById = { id, title, release, type -> vm.requestTrailerPreview(id, title, release, type) },
-                    requestItem = { item -> vm.requestTrailerPreview(item) }
-                )
-            }
             com.nuvio.tv.livetv.ondemand.OnDemandHomeScreen(
                 homeSettings = homeSettings,
                 onOpenDetail = { itemId, itemType, addonBaseUrl, onDemandUid ->
@@ -1359,8 +1350,7 @@ private fun PlaybackNavHost(
                         )
                     )
                 },
-                onOpenBrowse = { navController.navigate(Screen.OnDemandBrowse.route) { launchSingleTop = true } },
-                trailers = onDemandTrailers
+                onOpenBrowse = { navController.navigate(Screen.OnDemandBrowse.route) { launchSingleTop = true } }
             )
         }
 

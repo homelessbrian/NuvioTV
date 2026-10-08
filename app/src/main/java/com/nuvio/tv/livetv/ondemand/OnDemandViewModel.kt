@@ -68,7 +68,8 @@ class OnDemandViewModel @Inject constructor(
     private val prefs: LiveTvPreferences,
     private val resolver: LiveTvPosterResolver,
     private val tmdb: com.nuvio.tv.core.tmdb.TmdbService,
-    private val metaRepository: com.nuvio.tv.domain.repository.MetaRepository
+    private val metaRepository: com.nuvio.tv.domain.repository.MetaRepository,
+    private val trailerService: com.nuvio.tv.data.trailer.TrailerService
 ) : ViewModel() {
 
     private val imdbIds = com.nuvio.tv.livetv.data.boundedCache<String, String>(2_000)
@@ -491,6 +492,44 @@ class OnDemandViewModel @Inject constructor(
     /** The matching title in your addons behind a card (its real id: trailers, like on Home). */
     fun matchedMeta(metaId: String): com.nuvio.tv.domain.model.MetaPreview? =
         VodHomeIds.uidOf(metaId)?.let { homeMatched[it] }
+
+    // ------------------------------------------------------------ trailers (On Demand's own)
+
+    /**
+     * Trailers for the On Demand page, found with Nuvio's own trailer service but kept here,
+     * apart from Home's. (Borrowing Home's left Home holding On Demand's trailer: Home's hero
+     * kept its picture, and two trailer players ran at once until Android closed the app.)
+     * Keyed by the card's id.
+     */
+    val trailerUrls = androidx.compose.runtime.mutableStateMapOf<String, String>()
+    val trailerAudioUrls = androidx.compose.runtime.mutableStateMapOf<String, String>()
+    private val trailerMisses = java.util.Collections.synchronizedSet(HashSet<String>())
+    private var trailerJob: kotlinx.coroutines.Job? = null
+
+    fun requestTrailer(cardId: String) {
+        if (trailerUrls.containsKey(cardId) || cardId in trailerMisses) return
+        trailerJob?.cancel()
+        trailerJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(180) // wait for the highlight to settle
+            val uid = VodHomeIds.uidOf(cardId) ?: return@launch
+            val hit = homeHits[uid] ?: return@launch
+            val real = homeMatched[uid] ?: hit.meta
+            val year = Regex("""\b(19|20)\d{2}\b""").find(real.releaseInfo.orEmpty())?.value
+            val source = runCatching {
+                val tmdbId = runCatching { tmdb.ensureTmdbId(real.id, hit.type) }.getOrNull()
+                trailerService.getTrailerPlaybackSource(title = real.name, year = year, tmdbId = tmdbId, type = hit.type)
+                    ?: real.trailerYtIds.firstOrNull()?.let { yt ->
+                        trailerService.getTrailerPlaybackSourceFromYouTubeUrl("https://www.youtube.com/watch?v=$yt", real.name, year)
+                    }
+            }.getOrNull()
+            if (source?.videoUrl.isNullOrBlank()) { trailerMisses += cardId; return@launch }
+            trailerUrls[cardId] = source!!.videoUrl
+            source.audioUrl?.takeIf { it.isNotBlank() }?.let { trailerAudioUrls[cardId] = it }
+        }
+    }
+
+    /** Leaving the page: no trailer lookups carry on in the background. */
+    fun stopTrailers() { trailerJob?.cancel() }
 
     /** The title behind a card (for opening it). */
     fun homeItem(metaId: String): VodItem? {

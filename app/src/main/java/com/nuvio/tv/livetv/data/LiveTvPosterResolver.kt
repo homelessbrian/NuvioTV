@@ -360,8 +360,13 @@ class LiveTvPosterResolver @Inject constructor(
         if (exact.isNotEmpty()) {
             // Year, cast and description pick the best of several same-named titles; they never
             // throw away the only match (guides' years are often the airing, not the release).
+            // Several titles with the same name ("The Office": a 1981 title, the UK series, the US
+            // series): TMDB's vote counts say which one people actually know, a real measure of
+            // popularity. Strong, but a matching year from the guide still comes first.
+            val favourite = if (exact.size > 1) tmdbFavourite(query) else null
             return exact.entries.maxByOrNull { (id, hit) ->
-                score(hit.meta, clues) + popularity(hit, clues, rankOf[id] ?: 10, preferredType, preferredWeight)
+                score(hit.meta, clues) + popularity(hit, clues, rankOf[id] ?: 10, preferredType, preferredWeight) +
+                    (favourite?.let { fav -> tmdbBonus(hit, fav) } ?: 0.0)
             }!!.value
         }
         val close = closeMatch ?: return null
@@ -452,6 +457,61 @@ class LiveTvPosterResolver @Inject constructor(
             score += 60.0 * a.intersect(b).size / minOf(a.size, b.size)
         }
         return score
+    }
+
+    /** TMDB's best-known title with this exact name: its kind and year. */
+    private data class TmdbFavourite(val type: String, val year: Int?)
+
+    private val tmdbFavourites = boundedCache<String, TmdbFavourite>(1_000)
+    private val tmdbNoFavourite = boundedSet<String>(1_000)
+
+    /**
+     * Of the TV shows and movies on TMDB named exactly [query], the one with the most votes
+     * (remembered per name). Uses the TMDB key the app is built with; none, no answer.
+     */
+    private suspend fun tmdbFavourite(query: String): TmdbFavourite? {
+        val key = com.nuvio.tv.BuildConfig.TMDB_API_KEY
+        if (key.isBlank()) return null
+        val wanted = normalize(query)
+        tmdbFavourites[wanted]?.let { return it }
+        if (wanted in tmdbNoFavourite) return null
+        val best = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                var top: Pair<TmdbFavourite, Int>? = null
+                for ((path, type, nameKey, dateKey) in listOf(
+                    listOf("tv", "series", "name", "first_air_date"),
+                    listOf("movie", "movie", "title", "release_date")
+                )) {
+                    val url = java.net.URL(
+                        "https://api.themoviedb.org/3/search/$path?api_key=$key&query=" +
+                            java.net.URLEncoder.encode(query, "UTF-8")
+                    )
+                    val c = (url.openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 6_000; readTimeout = 6_000 }
+                    val body = c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                    val results = org.json.JSONObject(body).optJSONArray("results") ?: continue
+                    for (i in 0 until results.length()) {
+                        val r = results.optJSONObject(i) ?: continue
+                        if (normalize(r.optString(nameKey)) != wanted) continue
+                        val votes = r.optInt("vote_count", 0)
+                        if (top == null || votes > top!!.second) {
+                            top = TmdbFavourite(type, r.optString(dateKey).take(4).toIntOrNull()) to votes
+                        }
+                    }
+                }
+                // Only a clear favourite counts (a handful of votes says nothing).
+                top?.takeIf { it.second >= 50 }?.first
+            }.getOrNull()
+        }
+        if (best == null) tmdbNoFavourite += wanted else tmdbFavourites[wanted] = best
+        return best
+    }
+
+    /** How much TMDB's favourite counts for a candidate: same kind and (about) the same year. */
+    private fun tmdbBonus(hit: Hit, fav: TmdbFavourite): Double {
+        if (hit.type != fav.type) return 0.0
+        val y = yearOf(hit.meta) ?: return 40.0
+        val fy = fav.year ?: return 40.0
+        return if (kotlin.math.abs(y - fy) <= 1) 150.0 else 0.0
     }
 
     private fun yearOf(item: MetaPreview): Int? =

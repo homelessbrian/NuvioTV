@@ -15,7 +15,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class LiveTvPosterStore @Inject constructor(@ApplicationContext context: Context) :
-    SQLiteOpenHelper(context, "livetv_posters.db", null, 2) {
+    SQLiteOpenHelper(context, "livetv_posters.db", null, 3) {
 
     init { setWriteAheadLoggingEnabled(true) }
 

@@ -103,7 +103,10 @@ fun OnDemandHomeScreen(
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_PAUSE, androidx.lifecycle.Lifecycle.Event.ON_STOP -> trailersActive = false
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE, androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    trailersActive = false
+                    viewModel.stopTrailers()
+                }
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> trailersActive = true
                 else -> Unit
             }
@@ -214,30 +217,14 @@ fun OnDemandHomeScreen(
     val loadMore: (String, String, String) -> Unit = { catalogId, _, _ -> viewModel.loadMoreHome(catalogId) }
     val notWatched: (MetaPreview) -> Boolean = { false }
 
-    // Trailers, exactly as on Home: asked for with the matched title's real id, then handed to
-    // the layout under each card's own id. Titles your addons don't know have no trailer.
-    val trailerUrls: Map<String, String> = run {
-        if (!trailersActive) return@run emptyMap()
-        val found = trailers?.urls ?: return@run emptyMap()
-        if (found.isEmpty()) return@run emptyMap()
-        buildMap {
-            rows.forEach { r -> r.items.forEach { m -> viewModel.matchedMeta(m.id)?.id?.let { real -> found[real]?.let { put(m.id, it) } } } }
-        }
+    // Trailers: On Demand's own (found with Nuvio's trailer service), following Nuvio's trailer
+    // settings through the layout, and never shared with Home.
+    val trailerUrls: Map<String, String> = if (trailersActive) viewModel.trailerUrls else emptyMap()
+    val trailerAudioUrls: Map<String, String> = if (trailersActive) viewModel.trailerAudioUrls else emptyMap()
+    val requestTrailerById: (String, String, String?, String) -> Unit = { itemId, _, _, _ ->
+        if (trailersActive) viewModel.requestTrailer(itemId)
     }
-    val trailerAudioUrls: Map<String, String> = run {
-        if (!trailersActive) return@run emptyMap()
-        val found = trailers?.audioUrls ?: return@run emptyMap()
-        if (found.isEmpty()) return@run emptyMap()
-        buildMap {
-            rows.forEach { r -> r.items.forEach { m -> viewModel.matchedMeta(m.id)?.id?.let { real -> found[real]?.let { put(m.id, it) } } } }
-        }
-    }
-    val requestTrailerById: (String, String, String?, String) -> Unit = { itemId, title, releaseInfo, apiType ->
-        viewModel.matchedMeta(itemId)?.let { real -> trailers?.requestById?.invoke(real.id, title, releaseInfo, apiType) }
-    }
-    val requestTrailerForItem: (MetaPreview) -> Unit = { item ->
-        viewModel.matchedMeta(item.id)?.let { real -> trailers?.requestItem?.invoke(real) }
-    }
+    val requestTrailerForItem: (MetaPreview) -> Unit = { item -> if (trailersActive) viewModel.requestTrailer(item.id) }
 
     Box(
         modifier = Modifier

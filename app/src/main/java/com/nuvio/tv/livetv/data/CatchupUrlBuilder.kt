@@ -90,6 +90,37 @@ object CatchupUrlBuilder {
         return "$host/timeshift/$user/$pass/$minutes/${fmt.format(Date(startMs))}/$id$ext$query"
     }
 
+    /**
+     * Other ways to ask for the same catch-up, tried in turn if [url] fails, because Xtream
+     * panels differ: TS instead of HLS, the older timeshift.php form, the link in this device's
+     * time instead of the server's (or the other way round), and with/without "/live".
+     */
+    fun alternatives(url: String, serverTimezone: String?): List<String> {
+        val path = url.substringBefore('?')
+        val query = url.substring(path.length)
+        val m = Regex("""^(https?://[^/]+)/timeshift/([^/]+)/([^/]+)/(\d+)/([0-9-]+:[0-9-]+)/(\d+)(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
+            .find(path) ?: return listOfNotNull(tsFallback(url))
+        val (host, user, pass, minutes, stamp, id) = m.destructured
+        val ext = m.groupValues[7]
+        val out = LinkedHashSet<String>()
+        if (ext.equals(".m3u8", true)) out += "$host/timeshift/$user/$pass/$minutes/$stamp/$id.ts$query"
+        // timeshift.php form (some panels only answer this).
+        out += "$host/streaming/timeshift.php?username=$user&password=$pass&stream=$id&start=$stamp&duration=$minutes"
+        // Same request with the time written in the other clock (server vs device).
+        val fmt = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US)
+        val serverZone = serverTimezone?.takeIf { it.isNotBlank() }?.let { java.util.TimeZone.getTimeZone(it) }
+        fmt.timeZone = serverZone ?: java.util.TimeZone.getDefault()
+        val startMs = runCatching { fmt.parse(stamp)?.time }.getOrNull()
+        if (startMs != null) {
+            val other = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US).apply {
+                timeZone = if (serverZone != null) java.util.TimeZone.getDefault() else java.util.TimeZone.getTimeZone("UTC")
+            }.format(Date(startMs))
+            if (other != stamp) out += "$host/timeshift/$user/$pass/$minutes/$other/$id${ext.ifEmpty { ".ts" }}$query"
+        }
+        out.remove(url)
+        return out.toList()
+    }
+
     /** The TS version of an Xtream HLS catch-up link, for panels that don't offer HLS. */
     fun tsFallback(url: String): String? {
         val path = url.substringBefore('?')

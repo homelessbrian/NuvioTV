@@ -1366,6 +1366,33 @@ class LiveTvRepository @Inject constructor(
         }
     }
 
+    /** Playlists whose server time zone was already looked up this session. */
+    private val zoneTried = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /**
+     * M3U playlists from Xtream servers: the server's time zone, learned from the server the
+     * channel links point to (its player_api.php, with the username and password in the link),
+     * once. Catch-up links are in server time; without it, replays could start hours off or be
+     * refused. Xtream logins already learn it when they load.
+     */
+    suspend fun learnServerZone(channel: LiveChannel): String? = withContext(Dispatchers.IO) {
+        val pl = prefs.currentPlaylists().firstOrNull { it.id == channel.sourceId } ?: return@withContext null
+        pl.serverTimezone.takeIf { it.isNotBlank() }?.let { return@withContext it }
+        if (!zoneTried.add(pl.id)) return@withContext null
+        val m = Regex("""^(https?://[^/]+)/(?:live/)?([^/]+)/([^/]+)/(\d+)(\.[a-z0-9]+)?(\?.*)?$""", RegexOption.IGNORE_CASE)
+            .find(channel.url) ?: return@withContext null
+        val (host, user, pass) = m.destructured
+        val tz = runCatching {
+            val url = "$host/player_api.php?username=" + java.net.URLEncoder.encode(user, "UTF-8") +
+                "&password=" + java.net.URLEncoder.encode(pass, "UTF-8")
+            JSONObject(getText(url, pl.userAgent.ifBlank { DEFAULT_UA }))
+                .optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+        LIVE_REPORT.add(if (tz != null) "Server time zone for \"${pl.name}\": $tz" else "Server time zone for \"${pl.name}\": unknown")
+        if (tz != null) prefs.updatePlaylists { list -> list.map { if (it.id == pl.id) it.copy(serverTimezone = tz) else it } }
+        tz
+    }
+
     private fun getText(url: String, userAgent: String): String {
         val request = Request.Builder().url(url).header("User-Agent", userAgent.ifBlank { DEFAULT_UA }).build()
         http.newCall(request).execute().use { response ->
@@ -1400,7 +1427,7 @@ class LiveTvRepository @Inject constructor(
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
         private const val GUIDE_CACHE_VERSION = 1
-        private const val CHANNELS_CACHE_VERSION = 5
+        private const val CHANNELS_CACHE_VERSION = 6
         private const val MAX_SAVED_LISTINGS = 300_000
         /** Titles guides use when they have no real listing. */
         private val PLACEHOLDER_TITLES = Regex(
