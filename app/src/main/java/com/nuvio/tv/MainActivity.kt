@@ -1172,6 +1172,11 @@ open class MainActivity : ComponentActivity() {
                     val updateBannerState = updateState.copy(
                         showBanner = updateState.showBanner && currentRoute?.startsWith("player/") != true
                     )
+                    // Live TV fork: the Live TV row on Home lets Up through to the banner while it shows.
+                    LaunchedEffect(updateBannerState.showBanner, updateBannerState.update != null) {
+                        com.nuvio.tv.livetv.home.LiveTvHomeReveal.updateBannerShown.value =
+                            updateBannerState.showBanner && updateBannerState.update != null
+                    }
 
                     UpdateBannerHost(
                         state = updateBannerState,

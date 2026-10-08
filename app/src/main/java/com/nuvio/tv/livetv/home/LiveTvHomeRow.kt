@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -107,6 +108,8 @@ fun rememberLiveTvHomeRowPosition(): Boolean? {
 object LiveTvHomeReveal {
     val open = kotlinx.coroutines.flow.MutableStateFlow(false)
     val available = kotlinx.coroutines.flow.MutableStateFlow(false)
+    /** Nuvio's update banner is showing above the page (set by MainActivity). */
+    val updateBannerShown = kotlinx.coroutines.flow.MutableStateFlow(false)
 }
 
 /** Marks the top row's title: the "Live TV ▲" hint goes right after it. */
@@ -260,10 +263,16 @@ private fun LiveTvHomeRowContent(
     // opens the row. The highlight stays here while the row slides open, then moves onto the
     // first channel, so the page doesn't lurch while the row is still growing.
     var catcherFocused by remember { mutableStateOf(false) }
+    var rowHasFocus by remember { mutableStateOf(false) }
+    // With an update banner above the page, Up from the Live TV row goes on to the banner: the
+    // spot is skipped while the row has the highlight (it used to catch Up, so the banner could
+    // never be reached while the row was there).
+    val bannerShown by LiveTvHomeReveal.updateBannerShown.collectAsStateWithLifecycle()
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(1.dp)
+            .focusProperties { canFocus = !(bannerShown && rowHasFocus) }
             .onFocusChanged {
                 catcherFocused = it.isFocused
                 if (it.isFocused) LiveTvHomeReveal.open.value = true
@@ -286,7 +295,6 @@ private fun LiveTvHomeRowContent(
         val target = lastFocusedKey?.let { cardFocus[it] }
         runCatching { (target ?: firstCard).requestFocus() }.onFailure { runCatching { firstCard.requestFocus() } }
     }
-    var rowHasFocus by remember { mutableStateOf(false) }
     val alpha by androidx.compose.animation.core.animateFloatAsState(
         1f, label = "liveRowAlpha"
     )
@@ -305,9 +313,10 @@ private fun LiveTvHomeRowContent(
             modifier = Modifier
                 .fillMaxWidth()
                 // The Live TV row is the top of the page: Up stays put (instead of landing on the
-                // spot above it, which would close the row).
+                // spot above it, which would close the row), unless the update banner is there.
                 .onPreviewKeyEvent { e ->
-                    e.key == androidx.compose.ui.input.key.Key.DirectionUp &&
+                    !bannerShown &&
+                        e.key == androidx.compose.ui.input.key.Key.DirectionUp &&
                         e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown
                 }
                 .onFocusChanged {
