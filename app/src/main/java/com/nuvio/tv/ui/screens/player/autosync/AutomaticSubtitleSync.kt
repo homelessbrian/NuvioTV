@@ -30,6 +30,8 @@ import kotlin.math.roundToLong
  * transform and runs cue/group DP retiming.
  */
 internal object AutomaticSubtitleSync {
+    internal val autoSyncDispatcher = Dispatchers.Default.limitedParallelism(2)
+
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
     private const val MAX_PARALLEL_ALTERNATIVE_PARSES = 2
@@ -142,6 +144,7 @@ internal object AutomaticSubtitleSync {
                     loadSelectedSubtitle(
                         url = selectedSubtitleUrl,
                         headers = selectedSubtitleHeaders,
+                        languageHint = preferredLanguage,
                     )
                 }
             }
@@ -197,6 +200,7 @@ internal object AutomaticSubtitleSync {
                         loadSelectedSubtitle(
                             url = candidate.url,
                             headers = emptyMap(),
+                            languageHint = candidate.language,
                             downloadSemaphore = alternativeDownloadSemaphore,
                             parseSemaphore = alternativeParseSemaphore,
                         )
@@ -351,6 +355,7 @@ internal object AutomaticSubtitleSync {
                             loadSelectedSubtitle(
                                 url = candidate.url,
                                 headers = emptyMap(),
+                                languageHint = candidate.language,
                                 downloadSemaphore = alternativeDownloadSemaphore,
                                 parseSemaphore = alternativeParseSemaphore,
                             )
@@ -457,7 +462,7 @@ internal object AutomaticSubtitleSync {
 
             if (referenceTracks.size >= 3) {
                 val consistencyContext = currentCoroutineContext()
-                val outliers = withContext(Dispatchers.Default) {
+                val outliers = withContext(autoSyncDispatcher) {
                     AutoSyncReferenceConsistency.findOutliers(
                         references = referenceTracks.mapNotNull { track ->
                             preparedReferenceActivity(track, referenceActivityCache)?.let {
@@ -560,6 +565,7 @@ internal object AutomaticSubtitleSync {
                             loadSelectedSubtitle(
                                 url = candidate.url,
                                 headers = emptyMap(),
+                                languageHint = candidate.language,
                                 downloadSemaphore = alternativeDownloadSemaphore,
                                 parseSemaphore = alternativeParseSemaphore,
                             )
@@ -623,12 +629,12 @@ internal object AutomaticSubtitleSync {
                     return
                 }
 
-                val targetActivity = withContext(Dispatchers.Default) {
+                val targetActivity = withContext(autoSyncDispatcher) {
                     AutoSyncTimelineRetimer.prepareUnitActivity(loaded.cues)
                 }
 
                 val preflightResult = if (targetActivity != null) {
-                    withContext(Dispatchers.Default) {
+                    withContext(autoSyncDispatcher) {
                         AutoSyncDelayPreflight.evaluate(
                             referenceTracks = referenceTracks,
                             target = loaded.cues,
@@ -645,7 +651,7 @@ internal object AutomaticSubtitleSync {
                 }
                 val preflight = preflightResult.best
 
-                val rankedReferences = withContext(Dispatchers.Default) {
+                val rankedReferences = withContext(autoSyncDispatcher) {
                     rankReferenceCandidates(
                         target = loaded.cues,
                         referenceTracks = referenceTracks,
@@ -704,7 +710,7 @@ internal object AutomaticSubtitleSync {
 
                     val jobId = nextPairJobId++
                     activePairPriorities[jobId] = hypothesis.schedulingScore
-                    activePairJobs[jobId] = async(Dispatchers.Default) {
+                    activePairJobs[jobId] = async(autoSyncDispatcher) {
                         val representative = hypothesis.family.representative
                         val evaluation = evaluatePair(
                             label =
@@ -763,7 +769,7 @@ internal object AutomaticSubtitleSync {
                     val target = family.representative.loaded.cues
                     val preflightResult =
                         if (family.targetActivity != null) {
-                            withContext(Dispatchers.Default) {
+                            withContext(autoSyncDispatcher) {
                                 AutoSyncDelayPreflight.evaluate(
                                     referenceTracks = forcedFallbackTracks,
                                     target = target,
@@ -779,7 +785,7 @@ internal object AutomaticSubtitleSync {
                             )
                         }
                     val preflight = preflightResult.best
-                    val rankedReferences = withContext(Dispatchers.Default) {
+                    val rankedReferences = withContext(autoSyncDispatcher) {
                         rankReferenceCandidates(
                             target = target,
                             referenceTracks = forcedFallbackTracks,
@@ -1077,7 +1083,7 @@ internal object AutomaticSubtitleSync {
         preflightEvidence: AutoSyncTimelineRetimer.DelayOnlySearchEvidence? = null,
         allowPrecomputedDelayFastPath: Boolean = false,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
-    ): PairEvaluation = withContext(Dispatchers.Default) {
+    ): PairEvaluation = withContext(autoSyncDispatcher) {
         val evaluationContext = currentCoroutineContext()
         val targetActivity =
             preparedTargetActivity ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
@@ -1344,6 +1350,7 @@ internal object AutomaticSubtitleSync {
         url: String,
         headers: Map<String, String>,
         rawBodyOverride: String? = null,
+        languageHint: String? = null,
         downloadSemaphore: Semaphore? = null,
         parseSemaphore: Semaphore? = null,
     ): LoadedSubtitle? {
@@ -1365,10 +1372,10 @@ internal object AutomaticSubtitleSync {
             try {
                 if (downloadSemaphore != null) {
                     downloadSemaphore.withPermit {
-                        downloadSubtitleTextWithSingle429Retry(url, headers)
+                        downloadSubtitleTextWithSingle429Retry(url, headers, languageHint)
                     }
                 } else {
-                    downloadSubtitleTextWithSingle429Retry(url, headers)
+                    downloadSubtitleTextWithSingle429Retry(url, headers, languageHint)
                 }
             } catch (cancel: CancellationException) {
                 throw cancel
@@ -1378,7 +1385,7 @@ internal object AutomaticSubtitleSync {
         }
         val cues = try {
             val parseAndNormalize: suspend () -> List<SubtitleSyncCue> = {
-                withContext(Dispatchers.Default) {
+                withContext(autoSyncDispatcher) {
                     val parseContext = currentCoroutineContext()
                     val parsed = AutoSyncSubtitleCueParser.parse(
                         text = text,
@@ -1426,20 +1433,23 @@ internal object AutomaticSubtitleSync {
     internal suspend fun downloadSubtitleBody(
         url: String,
         headers: Map<String, String>,
+        languageHint: String? = null,
     ): String =
         downloadSubtitleTextWithSingle429Retry(
             url = url,
             headers = headers,
+            languageHint = languageHint,
         )
 
     private suspend fun downloadSubtitleTextWithSingle429Retry(
         url: String,
         headers: Map<String, String>,
+        languageHint: String?,
     ): String {
-        val first = requestSubtitle(url, headers)
+        val first = requestSubtitle(url, headers, languageHint)
         if (first.status == 429) {
             delay(HTTP_429_RETRY_DELAY_MS)
-            return validatedSubtitleBody(requestSubtitle(url, headers))
+            return validatedSubtitleBody(requestSubtitle(url, headers, languageHint))
         }
         return validatedSubtitleBody(first)
     }
@@ -1447,12 +1457,14 @@ internal object AutomaticSubtitleSync {
     private suspend fun requestSubtitle(
         url: String,
         headers: Map<String, String>,
+        languageHint: String?,
     ): AutoSyncRawHttpResponse =
         withTimeoutOrNull(SUBTITLE_DOWNLOAD_TIMEOUT_MS) {
             AutoSyncSubtitleHttp.get(
                 url = url,
                 headers = mapOf("Accept" to "*/*") + headers,
                 maxResponseBodyBytes = MAX_SUBTITLE_RESPONSE_BYTES,
+                languageHint = languageHint,
             )
         } ?: error("subtitle request timed out after ${SUBTITLE_DOWNLOAD_TIMEOUT_MS}ms")
 

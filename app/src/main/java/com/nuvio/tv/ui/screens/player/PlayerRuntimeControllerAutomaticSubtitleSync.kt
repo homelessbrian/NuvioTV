@@ -45,6 +45,8 @@ internal fun PlayerRuntimeController.autoSyncExtractorsFactory(
     url: String,
     headers: Map<String, String>,
 ): ExtractorsFactory {
+    AutoSyncPreferences.ensureLoaded(context)
+    if (!AutoSyncPreferences.isEnabled(context)) return delegate
     val factory = AutoSyncExtractorsFactory(delegate = delegate, sourceKey = url)
     prefetchAutoSyncIndex(url, headers)
     return factory
@@ -134,6 +136,7 @@ internal fun PlayerRuntimeController.maybeRunAutomaticSubtitleSync(
                 AutomaticSubtitleSync.downloadSubtitleBody(
                     url = selectedUrl,
                     headers = selectedSubtitle.headers.orEmpty(),
+                    languageHint = selectedSubtitle.lang,
                 )
             } catch (cancel: CancellationException) {
                 throw cancel
