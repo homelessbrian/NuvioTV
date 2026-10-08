@@ -13,11 +13,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import kotlin.system.exitProcess
 
 /**
- * Plain Android views only (no Compose, no Hilt), and it runs in its own process, so it still
- * works when the crash came from the app's own UI.
+ * Plain Android views only (no Compose, no Hilt), so it still works when the crash came from the
+ * app's own screens. It used to run in a separate process, but the app's start-up code doesn't
+ * cope with a second copy of itself running, so opening it closed the app on some boxes.
  */
 class CrashReportActivity : Activity() {
 
@@ -89,19 +89,20 @@ class CrashReportActivity : Activity() {
                 }
             }
         }
+        // Only offered after a crash, when this screen is all that's left of the app.
         val restart = Button(this).apply {
             text = "Restart app"
+            visibility = if (isTaskRoot) View.VISIBLE else View.GONE
             setOnClickListener {
                 packageManager.getLaunchIntentForPackage(packageName)?.let {
                     startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
                 }
                 finish()
-                exitProcess(0)
             }
         }
         val close = Button(this).apply {
             text = "Close"
-            setOnClickListener { finish(); exitProcess(0) }
+            setOnClickListener { finish() }
         }
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL

@@ -12,7 +12,6 @@
         <activity
             android:name="com.nuvio.tv.livetv.crash.CrashReportActivity"
             android:exported="false"
-            android:process=":crash"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
 
