@@ -127,6 +127,9 @@ jobs:
           # ratings services; without these the app has nowhere to ask, so no ratings show.
           IMDB_RATINGS_API_BASE_URL: ${{ secrets.IMDB_RATINGS_API_BASE_URL }}
           IMDB_TAPFRAME_API_BASE_URL: ${{ secrets.IMDB_TAPFRAME_API_BASE_URL }}
+          # Skip intro: IntroDB (introdb.app), a free and open timestamp service (no key needed to
+          # read). A secret can point it elsewhere; otherwise the public address is used.
+          INTRODB_API_URL: ${{ secrets.INTRODB_API_URL }}
         run: |
           : > keys.properties
           add() { if [ -n "$2" ]; then echo "$1=$2" >> keys.properties; fi; }
@@ -157,6 +160,7 @@ jobs:
           add PREMIUMIZE_CLIENT_ID "$PREMIUMIZE_CLIENT_ID"
           add IMDB_RATINGS_API_BASE_URL "$IMDB_RATINGS_API_BASE_URL"
           add IMDB_TAPFRAME_API_BASE_URL "$IMDB_TAPFRAME_API_BASE_URL"
+          add INTRODB_API_URL "${INTRODB_API_URL:-https://api.introdb.app/}"
           # The build reads some values from each file, so write both.
           cp keys.properties local.properties
           cp keys.properties local.dev.properties
