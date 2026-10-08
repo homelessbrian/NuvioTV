@@ -7,6 +7,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      test_build:
+        description: "Test build: installs next to your real app as \"Nuvio + IPTV Test\""
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -101,10 +107,20 @@ jobs:
             echo "NUVIO_RELEASE_STORE_PASSWORD=livetvfork"
           } >> "$GITHUB_ENV"
 
+      - name: Name the test build
+        if: ${{ inputs.test_build }}
+        run: |
+          # "Nuvio + IPTV" -> "Nuvio + IPTV Test" in every language, so the two apps are easy to
+          # tell apart on the home screen.
+          for f in app/src/full/res/values*/livetv_app_name.xml; do
+            sed -i 's#>\([^<]*\)</string>#>\1 Test</string>#' "$f"
+          done
+          grep -h "app_name" app/src/full/res/values/livetv_app_name.xml
+
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullRelease --stacktrace
+          ./gradlew :app:assembleFullRelease --stacktrace -PlivetvTestBuild=${{ inputs.test_build == true }}
 
       - name: Collect APKs
         run: |
@@ -115,9 +131,12 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nuvio-livetv-apks
+          name: ${{ inputs.test_build && 'nuvio-livetv-TEST-apks' || 'nuvio-livetv-apks' }}
           path: out/*.apk
           if-no-files-found: error
+          # Test builds are deleted after a day (the Actions tab of a public repo can be seen
+          # by any signed-in GitHub user); normal builds keep the usual 90 days.
+          retention-days: ${{ inputs.test_build && 1 || 90 }}
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
