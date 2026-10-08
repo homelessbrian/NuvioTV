@@ -32,11 +32,7 @@ object CrashCatcher {
                 val report = frozen.readText()
                 frozen.delete()
                 File(app.filesDir, FILE_NAME).writeText(report)
-                app.startActivity(
-                    Intent(app, CrashReportActivity::class.java)
-                        .putExtra(EXTRA_REPORT, report)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
+                showOnceOpen(app, report)
             }
         }
         startFreezeWatchdog(app)
@@ -60,6 +56,44 @@ object CrashCatcher {
     }
 
     private const val FREEZE_FILE = "pending_freeze.txt"
+
+    /**
+     * Opens the report once the app's own screen is up. Opening it straight away, while the app
+     * is still starting, made the app close again on some boxes.
+     */
+    private fun showOnceOpen(app: Context, report: String) {
+        val application = app as? android.app.Application ?: return
+        application.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: android.app.Activity) {
+                if (activity is CrashReportActivity) return
+                application.unregisterActivityLifecycleCallbacks(this)
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (!activity.isFinishing && !activity.isDestroyed) runCatching {
+                        activity.startActivity(
+                            Intent(activity, CrashReportActivity::class.java).putExtra(EXTRA_REPORT, report)
+                        )
+                    }
+                }, 2_000)
+            }
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
+            override fun onActivityStarted(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivityStopped(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
+    }
+
+    /** Opens the last saved crash or freeze report (developer tools in Live TV settings). */
+    fun openLastReport(context: Context) {
+        runCatching {
+            context.startActivity(
+                Intent(context, CrashReportActivity::class.java)
+                    .putExtra(EXTRA_REPORT, lastReport(context) ?: "No crash or freeze has been saved yet.")
+                    .apply { if (context !is android.app.Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            )
+        }
+    }
 
     /**
      * Notices when the app stops responding: every second it asks the main thread to answer;
