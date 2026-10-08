@@ -171,6 +171,8 @@ private fun PlaybackNavHost(
         }
 
         composable(Screen.Home.route) {
+            // Live TV fork: back from On Demand, Home starts from its own hero backdrop.
+            com.nuvio.tv.livetv.ondemand.OnDemandBackdropGuard.restoreForHome()
             // Live TV fork: keep Home's latest layout settings for the On Demand page.
             // Collected in the background, never read while drawing: reading it here made the
             // whole Home page rebuild on every change (scrolling, posters, trailers).

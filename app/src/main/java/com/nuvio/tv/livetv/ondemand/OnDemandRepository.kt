@@ -145,7 +145,8 @@ class OnDemandRepository @Inject constructor(
                 .collect { OnDemandStreams.offeredInStreams = it }
         }
         scope.launch {
-            _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
+            // A failed check (database busy) keeps the current answer instead of hiding On Demand.
+            _hasContent.value = runCatching { db.hasAny() }.getOrDefault(_hasContent.value)
             // Learn each provider's title tags (for catalogs imported before this existed).
             runCatching {
                 db.loadPrefixes()
@@ -194,7 +195,7 @@ class OnDemandRepository @Inject constructor(
             runCatching { db.learnPrefixes(pl.id) }
             _version.value++
         }
-        _hasContent.value = runCatching { db.hasAny() }.getOrDefault(false)
+        _hasContent.value = runCatching { db.hasAny() }.getOrDefault(_hasContent.value)
         // A problem stays visible in Settings → Live TV → On Demand (no more silent failures).
         _status.value = OnDemandStatus(false, lastProblem)
         startGenreFill()

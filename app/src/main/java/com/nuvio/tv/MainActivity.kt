@@ -1054,7 +1054,10 @@ open class MainActivity : ComponentActivity() {
                         buildSet {
                             add(Screen.Home.route)
                             if (liveTvInSidebar) add(Screen.LiveTv.route)
-                            if (onDemandInSidebar) add(Screen.OnDemand.route)
+                            // Live TV fork: On Demand is always a menu page (Back opens the menu
+                            // first, like every other page), even while its catalog is being
+                            // checked or updated; only its menu entry depends on having content.
+                            add(Screen.OnDemand.route)
                             add(Screen.Search.route)
                             add(Screen.Library.route)
                             add(Screen.Settings.route)

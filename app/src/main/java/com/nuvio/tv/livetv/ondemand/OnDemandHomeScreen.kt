@@ -99,6 +99,19 @@ fun OnDemandHomeScreen(
     // the switch animates. Tearing the trailer's player down mid-switch, while Home starts up its
     // own screen, made going back to Home lag.
     var trailersActive by remember { mutableStateOf(true) }
+    // On Demand's own trailer player. The app's shared one belongs to Home: sharing it meant the
+    // same player was attached to both pages while going back, and Android closed the app.
+    val ownPool = remember {
+        com.nuvio.tv.core.player.TrailerPlayerPool(
+            context.applicationContext,
+            dagger.hilt.android.EntryPointAccessors.fromApplication(context.applicationContext, OnDemandPlayerEntryPoint::class.java)
+                .playerSettingsDataStore()
+        )
+    }
+    androidx.compose.runtime.DisposableEffect(ownPool) { onDispose { runCatching { ownPool.release() } } }
+    // Home's hero backdrop, kept so it can be put back when you return to Home (the layout keeps
+    // one app-wide "last backdrop", and this page would otherwise leave its own there).
+    androidx.compose.runtime.LaunchedEffect(Unit) { OnDemandBackdropGuard.enter() }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -106,8 +119,14 @@ fun OnDemandHomeScreen(
                 androidx.lifecycle.Lifecycle.Event.ON_PAUSE, androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
                     trailersActive = false
                     viewModel.stopTrailers()
+                    // Free the video hardware before Home needs it.
+                    runCatching { ownPool.yield() }
+                    OnDemandBackdropGuard.leave()
                 }
-                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> trailersActive = true
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    runCatching { ownPool.reclaim() }
+                    trailersActive = true
+                }
                 else -> Unit
             }
         }
@@ -226,6 +245,7 @@ fun OnDemandHomeScreen(
     }
     val requestTrailerForItem: (MetaPreview) -> Unit = { item -> if (trailersActive) viewModel.requestTrailer(item.id) }
 
+    androidx.compose.runtime.CompositionLocalProvider(com.nuvio.tv.core.player.LocalTrailerPlayerPool provides ownPool) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -346,6 +366,8 @@ fun OnDemandHomeScreen(
         }
     }
 
+    }
+
     if (showManage) {
         ManageVodGroupsPanel(
             groups = state.groups,
@@ -425,5 +447,39 @@ private fun KindTab(label: String, selected: Boolean, onClick: () -> Unit) {
             label, size = 15.sp, weight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             color = if (focused) colors.Background else colors.TextPrimary
         )
+    }
+}
+
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+interface OnDemandPlayerEntryPoint {
+    fun playerSettingsDataStore(): com.nuvio.tv.data.local.PlayerSettingsDataStore
+}
+
+/**
+ * Home's hero keeps one app-wide "last backdrop shown" (for a seamless return to Home). This
+ * page uses the same layout, so it would leave its own backdrop there: Home then showed the On
+ * Demand picture. The backdrop Home had is kept on entering and put back on leaving.
+ */
+object OnDemandBackdropGuard {
+    @Volatile private var homeBackdrop: String? = null
+    @Volatile private var inside = false
+
+    fun enter() {
+        if (inside) return
+        inside = true
+        homeBackdrop = com.nuvio.tv.ui.screens.home.HeroBackdropState.lastDisplayedUrl
+    }
+
+    fun leave() {
+        if (!inside) return
+        com.nuvio.tv.ui.screens.home.HeroBackdropState.lastDisplayedUrl = homeBackdrop
+    }
+
+    /** Called as Home is shown: make sure it starts from its own backdrop. */
+    fun restoreForHome() {
+        if (!inside) return
+        inside = false
+        com.nuvio.tv.ui.screens.home.HeroBackdropState.lastDisplayedUrl = homeBackdrop
     }
 }

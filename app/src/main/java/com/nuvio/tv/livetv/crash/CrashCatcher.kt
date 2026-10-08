@@ -24,6 +24,22 @@ object CrashCatcher {
 
     fun install(context: Context) {
         val app = context.applicationContext
+        // A freeze the app died in last time (Android closes frozen apps without an error on
+        // many TV boxes): show what it was stuck on, like a crash.
+        runCatching {
+            val frozen = File(app.filesDir, FREEZE_FILE)
+            if (frozen.exists()) {
+                val report = frozen.readText()
+                frozen.delete()
+                File(app.filesDir, FILE_NAME).writeText(report)
+                app.startActivity(
+                    Intent(app, CrashReportActivity::class.java)
+                        .putExtra(EXTRA_REPORT, report)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        }
+        startFreezeWatchdog(app)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
@@ -41,6 +57,49 @@ object CrashCatcher {
                 previous?.uncaughtException(thread, error)
             }
         }
+    }
+
+    private const val FREEZE_FILE = "pending_freeze.txt"
+
+    /**
+     * Notices when the app stops responding: every second it asks the main thread to answer;
+     * if it hasn't for 4 seconds, what the main thread is stuck on is written down. If the app
+     * recovers, the note is thrown away; if Android closes it while frozen, the note is shown
+     * as a crash report next time the app opens.
+     */
+    private fun startFreezeWatchdog(app: Context) {
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread({
+            val answeredAt = java.util.concurrent.atomic.AtomicLong(android.os.SystemClock.uptimeMillis())
+            var askedAt = 0L
+            var written = false
+            var lastLoop = android.os.SystemClock.uptimeMillis()
+            while (true) {
+                try { Thread.sleep(1_000) } catch (_: InterruptedException) { return@Thread }
+                val now = android.os.SystemClock.uptimeMillis()
+                // The whole app was paused (in the background, device asleep): start over.
+                if (now - lastLoop > 3_000) { answeredAt.set(now); askedAt = 0L }
+                lastLoop = now
+                if (askedAt == 0L || answeredAt.get() >= askedAt) {
+                    if (written) { runCatching { File(app.filesDir, FREEZE_FILE).delete() }; written = false }
+                    askedAt = now
+                    main.post { answeredAt.set(android.os.SystemClock.uptimeMillis()) }
+                } else if (now - askedAt > 4_000 && !written) {
+                    written = true
+                    val mainThread = android.os.Looper.getMainLooper().thread
+                    val report = buildString {
+                        appendLine("Nuvio + IPTV ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                        appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}")
+                        appendLine()
+                        appendLine("APP FROZE (stopped responding for ${(now - askedAt) / 1000}s and was closed)")
+                        appendLine("Main thread was stuck at:")
+                        mainThread.stackTrace.take(40).forEach { appendLine("    at $it") }
+                    }
+                    runCatching { File(app.filesDir, FREEZE_FILE).writeText(report) }
+                    Log.e(TAG, report)
+                }
+            }
+        }, "FreezeWatchdog").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
     }
 
     fun lastReport(context: Context): String? =

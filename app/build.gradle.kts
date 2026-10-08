@@ -365,7 +365,10 @@ androidComponents {
     // Nuvio and update the fork's earlier builds in place.
     onVariants(selector().withBuildType("release")) { variant ->
         val isPlaystore = variant.productFlavors.any { it.second == "playstore" }
-        if (!isPlaystore) variant.applicationId.set("com.nuvio.livetv")
+        // Test builds (-PlivetvTestBuild=true) get their own ID, so they install next to the
+        // real app instead of replacing it.
+        val testBuild = (findProperty("livetvTestBuild") as String?)?.toBoolean() == true
+        if (!isPlaystore) variant.applicationId.set(if (testBuild) "com.nuvio.livetv.test" else "com.nuvio.livetv")
     }
 }
 
