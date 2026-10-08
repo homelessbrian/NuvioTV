@@ -95,8 +95,44 @@ fun OnDemandHomeScreen(
     var focusState by remember { mutableStateOf(HomeScreenFocusState()) }
     var gridFocusState by remember { mutableStateOf(HomeScreenFocusState()) }
 
+    // Leaving this page (Back, the menu, opening a title): stop the trailer straight away, before
+    // the switch animates. Tearing the trailer's player down mid-switch, while Home starts up its
+    // own screen, made going back to Home lag.
+    var trailersActive by remember { mutableStateOf(true) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE, androidx.lifecycle.Lifecycle.Event.ON_STOP -> trailersActive = false
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> trailersActive = true
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val base = homeSettings ?: HomeUiState()
-    val rows = state.rows
+    // Movies or Series: one at a time (mixed rows were confusing). Remembered while the app runs.
+    var kind by remember { mutableStateOf(OnDemandHomeTab.last) }
+    val hasMovies = state.rows.any { it.type == com.nuvio.tv.domain.model.ContentType.MOVIE }
+    val hasSeries = state.rows.any { it.type == com.nuvio.tv.domain.model.ContentType.SERIES }
+    // Only one kind available: show that one.
+    val shownKind = when {
+        kind == VodKind.SERIES && !hasSeries && hasMovies -> VodKind.MOVIE
+        kind == VodKind.MOVIE && !hasMovies && hasSeries -> VodKind.SERIES
+        else -> kind
+    }
+    val wantedType = if (shownKind == VodKind.SERIES) com.nuvio.tv.domain.model.ContentType.SERIES else com.nuvio.tv.domain.model.ContentType.MOVIE
+    val rows = remember(state.rows, wantedType) { state.rows.filter { it.type == wantedType } }
+    fun switchTo(k: VodKind) {
+        if (k == kind) return
+        kind = k
+        OnDemandHomeTab.last = k
+        // A fresh start in the other list (the saved position belongs to the old one).
+        focusState = HomeScreenFocusState()
+        gridFocusState = HomeScreenFocusState()
+    }
     val homeRows = remember(rows) { rows.map { HomeRow.Catalog(it) } }
     val gridItems = remember(rows) {
         buildList {
@@ -142,6 +178,8 @@ fun OnDemandHomeScreen(
         error = null,
         modernHomePresentation = modernPresentation,
         heroEnrichmentEnabled = false,
+        // No trailers while leaving the page (see trailersActive).
+        focusedPosterBackdropTrailerEnabled = base.focusedPosterBackdropTrailerEnabled && trailersActive,
         catalogAddonNameEnabled = false,
         catalogTypeSuffixEnabled = false
     )
@@ -179,6 +217,7 @@ fun OnDemandHomeScreen(
     // Trailers, exactly as on Home: asked for with the matched title's real id, then handed to
     // the layout under each card's own id. Titles your addons don't know have no trailer.
     val trailerUrls: Map<String, String> = run {
+        if (!trailersActive) return@run emptyMap()
         val found = trailers?.urls ?: return@run emptyMap()
         if (found.isEmpty()) return@run emptyMap()
         buildMap {
@@ -186,6 +225,7 @@ fun OnDemandHomeScreen(
         }
     }
     val trailerAudioUrls: Map<String, String> = run {
+        if (!trailersActive) return@run emptyMap()
         val found = trailers?.audioUrls ?: return@run emptyMap()
         if (found.isEmpty()) return@run emptyMap()
         buildMap {
@@ -306,8 +346,14 @@ fun OnDemandHomeScreen(
         // Top right: search everything (the full On Demand browser) and Manage VOD Groups.
         Row(
             modifier = Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 32.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            if (hasMovies && hasSeries) {
+                KindTab("Movies", selected = shownKind == VodKind.MOVIE) { switchTo(VodKind.MOVIE) }
+                KindTab("Series", selected = shownKind == VodKind.SERIES) { switchTo(VodKind.SERIES) }
+                Spacer(Modifier.size(6.dp))
+            }
             TopButton(Icons.Default.Search, onClick = onOpenBrowse)
             TopButton(Icons.Default.Tune, onClick = { showManage = true })
         }
@@ -360,3 +406,37 @@ class OnDemandTrailers(
     val requestById: (itemId: String, title: String, releaseInfo: String?, apiType: String) -> Unit,
     val requestItem: (MetaPreview) -> Unit
 )
+
+/** The Movies / Series choice, remembered while the app runs. */
+object OnDemandHomeTab {
+    @Volatile var last: VodKind = VodKind.MOVIE
+}
+
+@Composable
+private fun KindTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = NuvioTheme.colors
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(24.dp)
+    Box(
+        modifier = Modifier
+            .height(40.dp)
+            .clip(shape)
+            .background(
+                when {
+                    focused -> colors.FocusRing
+                    selected -> colors.Secondary.copy(alpha = 0.35f)
+                    else -> Color.Black.copy(alpha = 0.45f)
+                }
+            )
+            .border(1.dp, Color.White.copy(alpha = if (focused || selected) 0f else 0.18f), shape)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
+            .padding(horizontal = 20.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        LiveText(
+            label, size = 15.sp, weight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (focused) colors.Background else colors.TextPrimary
+        )
+    }
+}

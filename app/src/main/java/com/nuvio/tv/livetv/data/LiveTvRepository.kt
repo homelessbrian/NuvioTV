@@ -44,7 +44,9 @@ data class LiveTvStatus(
     val loading: Boolean = false,
     val message: String? = null,
     val error: String? = null,
-    val loadedOnce: Boolean = false
+    val loadedOnce: Boolean = false,
+    /** Busy, but nothing worth announcing (reading the saved channels at start-up). */
+    val quiet: Boolean = false
 )
 
 @Singleton
@@ -330,7 +332,10 @@ class LiveTvRepository @Inject constructor(
     }
 
     private suspend fun rebuildLocked() {
-        setStatus(loading = true, message = "Loading channels…")
+        // Reading the saved channels and guide takes a second or two and changes nothing, so no
+        // "Loading channels…" bubble for it (people took it for a full reload every time). The
+        // bubble only shows if the playlists really have to be read again.
+        setStatus(loading = true, message = null, quiet = true)
         // The channel list as it was last read, when no playlist has changed since: Live TV
         // (Favorites included) appears straight away instead of re-reading every playlist file.
         var t0 = System.currentTimeMillis()
@@ -338,6 +343,7 @@ class LiveTvRepository @Inject constructor(
         // checked against the channels afterwards), so the two waits overlap.
         val guidePreRead = scope.async(Dispatchers.IO) { preReadGuide() }
         if (!loadSavedChannels()) {
+            setStatus(loading = true, message = "Loading channels…")
             buildChannels()
             saveChannels()
             LIVE_REPORT.add("Channels re-read from playlists: ${_channels.value.size} in ${System.currentTimeMillis() - t0} ms")
@@ -859,8 +865,8 @@ class LiveTvRepository @Inject constructor(
         if (value != null) out.writeUTF(value)
     }
 
-    private fun setStatus(loading: Boolean, message: String?) {
-        _status.value = _status.value.copy(loading = loading, message = message)
+    private fun setStatus(loading: Boolean, message: String?, quiet: Boolean = false) {
+        _status.value = _status.value.copy(loading = loading, message = message, quiet = quiet)
     }
 
     private data class EpgTarget(

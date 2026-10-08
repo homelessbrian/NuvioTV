@@ -496,6 +496,12 @@ fun LiveTvSettingsContent(
                         { update { it.copy(catchupPreferHls = !it.catchupPreferHls) } }
                     )
                     SettingsToggleRow(
+                        "Closed captions on by default",
+                        "Turns captions on automatically when a channel has them. You can still switch them off with CC.",
+                        s.captionsByDefault,
+                        { update { it.copy(captionsByDefault = !it.captionsByDefault) } }
+                    )
+                    SettingsToggleRow(
                         "Pause and rewind live TV",
                         "On channels without catch-up, pausing records the channel to this device, so play carries on from where you paused",
                         s.timeshiftEnabled,

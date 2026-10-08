@@ -1,5 +1,11 @@
 package com.nuvio.tv.livetv.home
 
+import androidx.compose.ui.input.key.type
+
+import androidx.compose.ui.input.key.key
+
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 
 import androidx.compose.foundation.layout.size
@@ -250,21 +256,23 @@ private fun LiveTvHomeRowContent(
     }
     if (entries.isEmpty()) return
     val open by LiveTvHomeReveal.open.collectAsStateWithLifecycle()
-    if (!open) {
-        // Tucked away: a one-pixel spot above the top row. Up from the top row lands here,
-        // which opens the row and moves the highlight onto its first channel.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .onFocusChanged { if (it.isFocused) LiveTvHomeReveal.open.value = true }
-                .focusable()
-        )
-        return
-    }
-    // Just opened: onto the first channel.
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(60)
+    // A one-pixel spot above the top row (always there): Up from the top row lands here, which
+    // opens the row. The highlight stays here while the row slides open, then moves onto the
+    // first channel, so the page doesn't lurch while the row is still growing.
+    var catcherFocused by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .onFocusChanged {
+                catcherFocused = it.isFocused
+                if (it.isFocused) LiveTvHomeReveal.open.value = true
+            }
+            .focusable()
+    )
+    androidx.compose.runtime.LaunchedEffect(open, catcherFocused) {
+        if (!open || !catcherFocused) return@LaunchedEffect
+        kotlinx.coroutines.delay(OPEN_MS.toLong())
         runCatching { listState.scrollToItem(0) }
         runCatching { firstCard.requestFocus() }
     }
@@ -280,72 +288,90 @@ private fun LiveTvHomeRowContent(
     }
     var rowHasFocus by remember { mutableStateOf(false) }
     val alpha by androidx.compose.animation.core.animateFloatAsState(
-        if (!hideUnlessFocused || rowHasFocus) 1f else 0f, label = "liveRowAlpha"
+        1f, label = "liveRowAlpha"
     )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onFocusChanged {
-                if (rowHasFocus && !it.hasFocus) {
-                    LiveTvHomeFocus.lostAt = android.os.SystemClock.uptimeMillis()
-                    // Highlight gone back into your rows (or anywhere else): tuck the row away.
-                    LiveTvHomeReveal.open.value = false
-                }
-                rowHasFocus = it.hasFocus
-                LiveTvHomeFocus.rowHasFocus = it.hasFocus
-            }
-            .graphicsLayer { this.alpha = alpha }
-            .padding(vertical = 6.dp)
+    androidx.compose.animation.AnimatedVisibility(
+        visible = open,
+        enter = androidx.compose.animation.expandVertically(
+            animationSpec = androidx.compose.animation.core.tween(OPEN_MS, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            expandFrom = Alignment.Bottom
+        ) + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(OPEN_MS)),
+        exit = androidx.compose.animation.shrinkVertically(
+            animationSpec = androidx.compose.animation.core.tween(CLOSE_MS, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            shrinkTowards = Alignment.Bottom
+        ) + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(CLOSE_MS))
     ) {
-        Row(modifier = Modifier.padding(start = startPadding, end = startPadding, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            val title = settings.homeRowTitle.ifBlank { "Live TV" }
-            if (titleStyle != null) {
-                androidx.tv.material3.Text(text = title, style = titleStyle, color = NuvioTheme.colors.TextPrimary)
-            } else {
-                LiveText(title, size = 16.sp, weight = FontWeight.SemiBold)
-            }
-        }
-        LazyRow(
-            state = listState,
-            contentPadding = PaddingValues(start = startPadding, end = maxOf(startPadding, 24.dp)),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // The Live TV row is the top of the page: Up stays put (instead of landing on the
+                // spot above it, which would close the row).
+                .onPreviewKeyEvent { e ->
+                    e.key == androidx.compose.ui.input.key.Key.DirectionUp &&
+                        e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown
+                }
+                .onFocusChanged {
+                    if (rowHasFocus && !it.hasFocus) {
+                        LiveTvHomeFocus.lostAt = android.os.SystemClock.uptimeMillis()
+                        // Highlight gone back into your rows (or anywhere else): tuck the row away.
+                        LiveTvHomeReveal.open.value = false
+                    }
+                    rowHasFocus = it.hasFocus
+                    LiveTvHomeFocus.rowHasFocus = it.hasFocus
+                }
+                .graphicsLayer { this.alpha = alpha }
+                .padding(vertical = 6.dp)
         ) {
-            itemsIndexed(entries, key = { _, it -> it.channel.key }) { index, e ->
-                val requester = cardFocus.getOrPut(e.channel.key) { androidx.compose.ui.focus.FocusRequester() }
-                HomeCard(
-                    modifier = (if (index == 0) Modifier.focusRequester(firstCard) else Modifier).focusRequester(requester),
-                    // Keep the highlighted card fully on screen, and the very start of the row
-                    // in view at the first card.
-                    onFocused = {
-                        lastFocusedKey = e.channel.key
-                        scope.launch {
-                            val info = listState.layoutInfo
-                            val visible = info.visibleItemsInfo
-                            val fullyVisible = visible.filter {
-                                it.offset >= 0 && it.offset + it.size <= info.viewportEndOffset - info.afterContentPadding
-                            }.map { it.index }
-                            when {
-                                index == 0 -> listState.animateScrollToItem(0)
-                                fullyVisible.isEmpty() || index < fullyVisible.first() -> listState.animateScrollToItem(index)
-                                index > fullyVisible.last() ->
-                                    listState.animateScrollToItem((index - (fullyVisible.size - 1).coerceAtLeast(0)).coerceAtLeast(0))
+            Row(modifier = Modifier.padding(start = startPadding, end = startPadding, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val title = settings.homeRowTitle.ifBlank { "Live TV" }
+                if (titleStyle != null) {
+                    androidx.tv.material3.Text(text = title, style = titleStyle, color = NuvioTheme.colors.TextPrimary)
+                } else {
+                    LiveText(title, size = 16.sp, weight = FontWeight.SemiBold)
+                }
+            }
+            LazyRow(
+                state = listState,
+                contentPadding = PaddingValues(start = startPadding, end = maxOf(startPadding, 24.dp)),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(entries, key = { _, it -> it.channel.key }) { index, e ->
+                    val requester = cardFocus.getOrPut(e.channel.key) { androidx.compose.ui.focus.FocusRequester() }
+                    HomeCard(
+                        modifier = (if (index == 0) Modifier.focusRequester(firstCard) else Modifier).focusRequester(requester),
+                        // Keep the highlighted card fully on screen, and the very start of the row
+                        // in view at the first card.
+                        onFocused = {
+                            lastFocusedKey = e.channel.key
+                            scope.launch {
+                                val info = listState.layoutInfo
+                                val visible = info.visibleItemsInfo
+                                val fullyVisible = visible.filter {
+                                    it.offset >= 0 && it.offset + it.size <= info.viewportEndOffset - info.afterContentPadding
+                                }.map { it.index }
+                                when {
+                                    index == 0 -> listState.animateScrollToItem(0)
+                                    fullyVisible.isEmpty() || index < fullyVisible.first() -> listState.animateScrollToItem(index)
+                                    index > fullyVisible.last() ->
+                                        listState.animateScrollToItem((index - (fullyVisible.size - 1).coerceAtLeast(0)).coerceAtLeast(0))
+                                }
+                            }
+                        },
+                        entry = e,
+                        now = now,
+                        playing = e.channel.key == playback.channelKey,
+                        compact = settings.homeRowCompact,
+                        showNext = settings.homeRowShowNext,
+                        use24h = settings.use24HourClock,
+                        onClick = {
+                            viewModel.playFromHome(e.channel)
+                            if (settings.homeRowOpensGuide) actions.openGuide() else {
+                                viewModel.markFullscreenOpened()
+                                actions.openFullscreen()
                             }
                         }
-                    },
-                    entry = e,
-                    now = now,
-                    playing = e.channel.key == playback.channelKey,
-                    compact = settings.homeRowCompact,
-                    showNext = settings.homeRowShowNext,
-                    use24h = settings.use24HourClock,
-                    onClick = {
-                        viewModel.playFromHome(e.channel)
-                        if (settings.homeRowOpensGuide) actions.openGuide() else {
-                            viewModel.markFullscreenOpened()
-                            actions.openFullscreen()
-                        }
-                    }
-                )
+                    )
+                }
             }
         }
     }
@@ -430,3 +456,6 @@ private fun HomeCard(
     }
 }
 
+/** How long the Live TV row takes to slide open / closed on the home screen. */
+private const val OPEN_MS = 280
+private const val CLOSE_MS = 220

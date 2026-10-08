@@ -67,7 +67,8 @@ class OnDemandViewModel @Inject constructor(
     private val repository: OnDemandRepository,
     private val prefs: LiveTvPreferences,
     private val resolver: LiveTvPosterResolver,
-    private val tmdb: com.nuvio.tv.core.tmdb.TmdbService
+    private val tmdb: com.nuvio.tv.core.tmdb.TmdbService,
+    private val metaRepository: com.nuvio.tv.domain.repository.MetaRepository
 ) : ViewModel() {
 
     private val imdbIds = com.nuvio.tv.livetv.data.boundedCache<String, String>(2_000)
@@ -416,11 +417,55 @@ class OnDemandViewModel @Inject constructor(
                 }
             }
             if (changed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+            // Full details (clear logos) for the first few titles of the first rows.
+            var detailed = 0
+            for ((c, _) in homeGroups.take(3)) {
+                for (item in homeItems[c.uid].orEmpty().take(6)) {
+                    if (!homeHits.containsKey(item.uid) || item.uid in homeDetailed) continue
+                    fetchDetails(item.uid)
+                    detailed++
+                }
+            }
+            if (detailed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
         }
+    }
+
+    /** Titles whose full details (clear logo etc.) were already fetched. */
+    private val homeDetailed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Each match's addon and type, to fetch its full details. */
+    private val homeHits = java.util.concurrent.ConcurrentHashMap<String, com.nuvio.tv.livetv.data.LiveTvPosterResolver.Hit>()
+
+    /**
+     * The title's full details from your addons, the way Home gets them for its hero: search
+     * results only sometimes include the clear logo (and backdrop, description, rating), the
+     * full details almost always do.
+     */
+    private suspend fun fetchDetails(uid: String) {
+        if (!homeDetailed.add(uid)) return
+        val hit = homeHits[uid] ?: return
+        val full = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(5_000) {
+                // The addon the match came from (one request, not one per addon).
+                metaRepository.getMeta(addonBaseUrl = hit.addonBaseUrl, type = hit.type, id = hit.meta.id)
+                    .first { it !is com.nuvio.tv.core.network.NetworkResult.Loading }
+            }
+        }.getOrNull()
+        val meta = (full as? com.nuvio.tv.core.network.NetworkResult.Success<*>)?.data as? com.nuvio.tv.domain.model.Meta
+        if (meta == null) { homeDetailed.remove(uid); return }
+        val base = homeMatched[uid] ?: hit.meta
+        homeMatched[uid] = base.copy(
+            logo = meta.logo?.takeIf { it.isNotBlank() } ?: base.logo,
+            background = meta.background?.takeIf { it.isNotBlank() } ?: base.background,
+            description = meta.description?.takeIf { it.isNotBlank() } ?: base.description,
+            releaseInfo = meta.releaseInfo?.takeIf { it.isNotBlank() } ?: base.releaseInfo,
+            imdbRating = meta.imdbRating ?: base.imdbRating,
+            genres = meta.genres.takeIf { it.isNotEmpty() } ?: base.genres
+        )
     }
 
     private suspend fun enrichOne(item: VodItem, urgent: Boolean = false) {
         val hit = runCatching { matchAny(item, urgent = urgent) }.getOrNull() ?: return
+        homeHits[item.uid] = hit
         homeMatched[item.uid] = hit.meta
         hit.meta.poster?.let { posters[item.uid] = it; repository.cachePoster(item, it, hit.meta.name) }
         hit.meta.name.takeIf { it.isNotBlank() }?.let { names[item.uid] = it }
@@ -430,12 +475,16 @@ class OnDemandViewModel @Inject constructor(
     /** A card was highlighted: its details right away (the hero), if not found yet. */
     fun focusHome(metaId: String) {
         val uid = VodHomeIds.uidOf(metaId) ?: return
-        if (homeMatched.containsKey(uid)) return
+        if (uid in homeDetailed) return
         val item = homeItems.values.asSequence().flatten().firstOrNull { it.uid == uid } ?: return
         homeTried += uid
         viewModelScope.launch {
-            enrichOne(item, urgent = true)
-            if (homeMatched.containsKey(uid)) _home.value = _home.value.copy(rows = buildHomeRows())
+            if (!homeMatched.containsKey(uid)) enrichOne(item, urgent = true)
+            if (!homeMatched.containsKey(uid)) return@launch
+            _home.value = _home.value.copy(rows = buildHomeRows())
+            // Then the full details (clear logo…) for the hero.
+            fetchDetails(uid)
+            _home.value = _home.value.copy(rows = buildHomeRows())
         }
     }
 

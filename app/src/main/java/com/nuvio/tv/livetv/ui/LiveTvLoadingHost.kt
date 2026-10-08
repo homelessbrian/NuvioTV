@@ -67,7 +67,7 @@ fun LiveTvLoadingHost(navController: NavController) {
         if (route.startsWith("player/")) entry.liveTvPlayback().releaseNow()
     }
     val message = when {
-        live.loading -> live.message ?: "Updating Live TV…"
+        live.loading && !live.quiet -> live.message ?: "Updating Live TV…"
         vod.loading -> vod.message ?: "Importing movies and series…"
         else -> null
     }

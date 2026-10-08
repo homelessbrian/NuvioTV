@@ -120,6 +120,7 @@ class LiveTvPreferences @Inject constructor(
         val groupSort = stringPreferencesKey("group_sort")
         val timeshiftEnabled = booleanPreferencesKey("timeshift_enabled")
         val timeshiftMinutes = intPreferencesKey("timeshift_minutes")
+        val captionsByDefault = booleanPreferencesKey("captions_by_default")
         val lockedGroups = stringSetPreferencesKey("locked_groups")
         val reminders = stringPreferencesKey("reminders")
         val channelQuality = stringPreferencesKey("channel_quality")
@@ -224,7 +225,8 @@ class LiveTvPreferences @Inject constructor(
             bufferSize = p[Keys.bufferSize] ?: d.bufferSize,
             groupSort = p[Keys.groupSort] ?: d.groupSort,
             timeshiftEnabled = p[Keys.timeshiftEnabled] ?: d.timeshiftEnabled,
-            timeshiftMinutes = p[Keys.timeshiftMinutes] ?: d.timeshiftMinutes
+            timeshiftMinutes = p[Keys.timeshiftMinutes] ?: d.timeshiftMinutes,
+            captionsByDefault = p[Keys.captionsByDefault] ?: d.captionsByDefault
         )
     }.distinctUntilChanged()
 
@@ -345,6 +347,7 @@ class LiveTvPreferences @Inject constructor(
         p[Keys.groupSort] = s.groupSort
         p[Keys.timeshiftEnabled] = s.timeshiftEnabled
         p[Keys.timeshiftMinutes] = s.timeshiftMinutes
+        p[Keys.captionsByDefault] = s.captionsByDefault
     }
 
     // ---------- channel management ----------

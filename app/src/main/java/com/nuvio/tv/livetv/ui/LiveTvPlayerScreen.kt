@@ -451,13 +451,23 @@ fun LiveTvPlayerScreen(
                     PanelMode.CATCHUP -> cs?.let { session ->
                         val pos = scrubTargetMs ?: positionMs
                         val len = session.program.stopMs - session.program.startMs
+                        val watchingAt = session.program.startMs + pos
+                        // How far behind live you are: skip ahead (adverts) and watch it shrink.
+                        val behind = (tick - watchingAt).coerceAtLeast(0L)
+                        // A show still on air (watch from the beginning): the part that has aired
+                        // so far in its own colour, with the live point marked.
+                        val stillOn = tick < session.program.stopMs
                         PanelTimeline(
                             startMs = session.program.startMs,
                             endMs = session.program.stopMs,
-                            positionMs = session.program.startMs + pos,
+                            positionMs = watchingAt,
+                            liveMs = if (stillOn) tick else null,
+                            recordedUntilMs = if (stillOn) tick else session.program.stopMs,
                             leftLabel = formatClock(session.program.startMs, use24h),
                             rightLabel = formatClock(session.program.stopMs, use24h),
-                            status = formatDuration(pos) + " / " + formatDuration(len)
+                            status = formatDuration(pos) + " / " + formatDuration(len) +
+                                (if (behind < 12 * 3_600_000L) "  ·  " + formatDuration(behind) + " behind live" else ""),
+                            statusLive = stillOn
                         )
                     }
                     PanelMode.SHIFT -> {

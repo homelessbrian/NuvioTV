@@ -159,6 +159,7 @@ class LiveTvViewModel @Inject constructor(
                 playback.bufferSize = it.bufferSize
                 playback.timeshiftEnabled = it.timeshiftEnabled
                 playback.timeshiftMinutes = it.timeshiftMinutes
+                playback.captionsByDefault = it.captionsByDefault
             }
         }
         viewModelScope.launch {

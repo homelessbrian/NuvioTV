@@ -242,6 +242,7 @@ class LiveTvPlaybackController @Inject constructor(
 
     fun play(channel: LiveChannel, overrideUrl: String? = null, catchupTitle: String? = null, fallback: String? = null) {
         if (_shiftStartedAt.value != null) stopShift()
+        if (currentChannel?.key != channel.key) captionsHandled = false
         val url = overrideUrl ?: channel.url
         if (currentChannel?.key != channel.key || currentUrl != url) {
             forcedMime = null
@@ -427,8 +428,14 @@ class LiveTvPlaybackController @Inject constructor(
         return tracksOf(C.TRACK_TYPE_TEXT).any { it.selected }
     }
 
+    /** Settings: captions on automatically when a channel has them. */
+    var captionsByDefault: Boolean = false
+    /** Captions were already switched on (or you chose) for the channel now playing. */
+    private var captionsHandled = false
+
     /** One press: captions off if on; otherwise on, with the first available track. */
     fun toggleCaptions(): Boolean {
+        captionsHandled = true // your choice for this channel stands
         val tracks = tracksOf(C.TRACK_TYPE_TEXT)
         return if (captionsOn()) { selectTrack(C.TRACK_TYPE_TEXT, null); false }
         else {
@@ -573,6 +580,15 @@ class LiveTvPlaybackController @Inject constructor(
     private val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             _state.value = _state.value.copy(userPaused = !playWhenReady)
+        }
+
+        override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+            // "Captions on by default": once the channel's caption tracks are known, switch them
+            // on (once per channel, and not if you've turned them off yourself).
+            if (!captionsByDefault || captionsHandled) return
+            if (tracks.groups.none { it.type == C.TRACK_TYPE_TEXT && it.length > 0 }) return
+            captionsHandled = true
+            if (!captionsOn()) tracksOf(C.TRACK_TYPE_TEXT).firstOrNull()?.let { selectTrack(C.TRACK_TYPE_TEXT, it) }
         }
 
         override fun onRenderedFirstFrame() {

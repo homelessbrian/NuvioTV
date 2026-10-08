@@ -16,6 +16,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import com.nuvio.tv.livetv.ondemand.settingsOnly
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -168,6 +171,15 @@ private fun PlaybackNavHost(
         }
 
         composable(Screen.Home.route) {
+            // Live TV fork: keep Home's latest layout settings for the On Demand page.
+            // Collected in the background, never read while drawing: reading it here made the
+            // whole Home page rebuild on every change (scrolling, posters, trailers).
+            run {
+                val homeVmForSettings: com.nuvio.tv.ui.screens.home.HomeViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                androidx.compose.runtime.LaunchedEffect(homeVmForSettings) {
+                    homeVmForSettings.uiState.collect { com.nuvio.tv.livetv.ondemand.OnDemandHomeSettings.last = it }
+                }
+            }
             fun createContinueWatchingRoute(
                 item: ContinueWatchingItem,
                 manualSelection: Boolean = false,
@@ -1303,11 +1315,21 @@ private fun PlaybackNavHost(
         composable(Screen.OnDemand.route) {
             // Live TV fork: On Demand in Nuvio's own home layout (Classic, Grid or Modern, as set
             // for Home), with every layout option taken from Home itself.
-            val homeEntry = androidx.compose.runtime.remember(navController) {
-                runCatching { navController.getBackStackEntry(Screen.Home.route) }.getOrNull()
-            }
+            // Home's settings, read safely: Home may not be in the history (it's removed when the
+            // side menu switches pages and a profile picker is the start), and a removed Home
+            // must never be touched (that crashed the app, often on Back). Looked up afresh each
+            // time, used only while alive; otherwise the last settings Home had are used.
+            val homeEntry = runCatching { navController.getBackStackEntry(Screen.Home.route) }.getOrNull()
+                ?.takeIf { it.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.CREATED) }
             val homeVm: com.nuvio.tv.ui.screens.home.HomeViewModel? = homeEntry?.let { androidx.hilt.navigation.compose.hiltViewModel(it) }
-            val homeSettings = homeVm?.uiState?.collectAsStateWithLifecycle()?.value
+            // Only Home's settings (layout, poster size…), not its rows: Home loading or updating
+            // its own rows in the background must not rebuild this page.
+            val homeSettingsFlow = androidx.compose.runtime.remember(homeVm) {
+                homeVm?.uiState?.map { it.settingsOnly() }?.distinctUntilChanged()
+            }
+            val homeSettings = homeSettingsFlow?.collectAsStateWithLifecycle(initialValue = null)?.value
+                ?.also { com.nuvio.tv.livetv.ondemand.OnDemandHomeSettings.last = it }
+                ?: com.nuvio.tv.livetv.ondemand.OnDemandHomeSettings.last?.settingsOnly()
             // Trailers, from Home's own trailer lookup (so they follow Nuvio's trailer settings).
             val onDemandTrailers = homeVm?.let { vm ->
                 com.nuvio.tv.livetv.ondemand.OnDemandTrailers(

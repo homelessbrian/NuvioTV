@@ -268,7 +268,9 @@ data class LiveTvSettings(
     /** Pause and rewind live TV (channels without catch-up): record while paused. */
     val timeshiftEnabled: Boolean = true,
     /** How much to keep, in minutes. */
-    val timeshiftMinutes: Int = 30
+    val timeshiftMinutes: Int = 30,
+    /** Turn closed captions on automatically when a channel has them. */
+    val captionsByDefault: Boolean = false
 )
 
 data class LiveUserState(

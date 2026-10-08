@@ -307,16 +307,23 @@ fun LiveTvGuideScreen(
         val to = (row + 14).coerceAtMost(channels.size)
         viewModel.loadCatchupArchive(channels.subList(from, to))
     }
-    // Leaving full screen: back to where you were browsing (or the playing channel).
+    // Leaving full screen: the guide lands on the channel you were watching (in its group,
+    // at the current time), not where you'd been browsing before going full screen.
     LaunchedEffect(exitFullscreenTick) {
         if (exitFullscreenTick == 0) return@LaunchedEffect
         val spot = savedSpot
         savedSpot = null
-        if (spot != null) {
+        val playing = playback.channelKey
+        if (playing != null) {
+            // Stay in the group you were in if the channel's there; otherwise its own group.
+            if (channels.none { it.key == playing }) {
+                viewModel.displayChannels.value.firstOrNull { it.key == playing }?.groupId?.let { viewModel.selectGroup(it) }
+            }
+            highlightKey = playing
+            windowStart = floorSlot(System.currentTimeMillis())
+        } else if (spot != null) {
             viewModel.selectGroup(spot.first)
             spot.second?.let { highlightKey = it }
-        } else {
-            playback.channelKey?.let { highlightKey = it }
         }
         groupsOpen = false
         delay(80)
