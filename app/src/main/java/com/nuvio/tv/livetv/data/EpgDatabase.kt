@@ -57,6 +57,9 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         try {
+            db.execSQL("DROP INDEX IF EXISTS programs_ch_start")
+            db.execSQL("DROP INDEX IF EXISTS programs_stop")
+            db.execSQL("DROP INDEX IF EXISTS programs_start")
             db.delete("programs", null, null)
             db.delete("auto", null, null)
             val stmt = db.compileStatement(
@@ -83,6 +86,9 @@ class EpgDatabase @Inject constructor(@ApplicationContext context: Context) :
                     put("ch", ch); put("source", a.sourceId); put("xmltv", a.xmltvId)
                 }, SQLiteDatabase.CONFLICT_REPLACE)
             }
+            db.execSQL("CREATE INDEX IF NOT EXISTS programs_ch_start ON programs(ch, start)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS programs_stop ON programs(stop)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS programs_start ON programs(start)")
             db.insertWithOnConflict("meta", null, ContentValues().apply { put("k", "fingerprint"); put("v", fingerprint) },
                 SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()

@@ -25,7 +25,12 @@ data class PlaylistSource(
     /** Xtream live stream format: "auto" (what the provider allows), "ts" or "m3u8". */
     val streamFormat: String = "auto",
     /** Xtream: the server's time zone (from its account info), used for catch-up times. */
-    val serverTimezone: String = ""
+    val serverTimezone: String = "",
+    /**
+     * Where channel logos come from: "playlist" (the playlist's own, the guide's when the
+     * playlist has none) or "epg" (the guide's, the playlist's when the guide has none).
+     */
+    val logoSource: String = "playlist"
 ) {
     val isXtream: Boolean get() = xtreamServer.isNotBlank()
 
@@ -378,6 +383,28 @@ object ChannelNameEditor {
 
     @Volatile private var compiledFor: List<String> = emptyList()
     @Volatile private var compiled: List<Compiled> = emptyList()
+    @Volatile private var lowerFor: List<String> = emptyList()
+    @Volatile private var lowerTerms: List<String> = emptyList()
+
+    private fun lowered(terms: List<String>): List<String> {
+        if (terms == lowerFor) return lowerTerms
+        val l = terms.map { it.lowercase() }
+        lowerTerms = l
+        lowerFor = terms
+        return l
+    }
+
+    /**
+     * Whether any term sits at the very start or end of the name (ignoring brackets and spaces),
+     * the only places it can be removed from. Simply containing a term isn't enough: "us" is in
+     * "Music" and "Discovery", "hd" and "sd" in plenty of words, which sent nearly every channel
+     * through all the patterns and made channel lists with these terms slow to load.
+     */
+    private fun atEdge(lower: String, terms: List<String>): Boolean {
+        val start = lower.trimStart('[', '(', '|', ' ')
+        val end = lower.trimEnd(']', ')', '|', ' ')
+        return terms.any { t -> start.startsWith(t) || end.endsWith(t) }
+    }
 
     private fun compile(terms: List<String>): List<Compiled> {
         if (terms == compiledFor) return compiled
@@ -404,14 +431,16 @@ object ChannelNameEditor {
 
     fun clean(name: String, terms: List<String>): String {
         if (terms.isEmpty()) return name
-        // Fast path: most names contain none of the terms, so skip the patterns entirely.
-        val lower = name.lowercase()
-        if (terms.none { lower.contains(it.lowercase()) }) return name.trim()
+        // Fast path: most names have none of the terms at either end, so skip the patterns.
+        val lowerTerms = lowered(terms)
+        if (!atEdge(name.lowercase(), lowerTerms)) return name.trim()
         val patterns = compile(terms)
         var out = name.trim()
         var changed = true
         var guard = 0
         while (changed && guard++ < 6) {
+            // Nothing left at either end to remove: done.
+            if (guard > 1 && !atEdge(out.lowercase(), lowerTerms)) break
             changed = false
             for (c in patterns) {
                 val p = c.prefix.replace(out, "").trim()

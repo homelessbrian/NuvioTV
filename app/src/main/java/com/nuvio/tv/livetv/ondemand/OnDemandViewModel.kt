@@ -492,6 +492,8 @@ class OnDemandViewModel @Inject constructor(
     }
 
     private suspend fun enrichOne(item: VodItem, urgent: Boolean = false) {
+        // Poster and title lookups (addon searches) wait while Nuvio's player is open.
+        if (!urgent) com.nuvio.tv.livetv.data.BackgroundWork.awaitIdle()
         val hit = runCatching { matchAny(item, urgent = urgent) }.rethrowCancel().getOrNull() ?: return
         homeHits[item.uid] = hit
         homeMatched[item.uid] = hit.meta

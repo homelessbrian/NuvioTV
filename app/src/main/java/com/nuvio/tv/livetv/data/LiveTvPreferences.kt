@@ -786,7 +786,8 @@ class LiveTvPreferences @Inject constructor(
                     importVod = o.optBoolean("importVod", false),
                     importLive = o.optBoolean("importLive", true),
                     streamFormat = o.optString("streamFormat").ifBlank { "auto" },
-                    serverTimezone = o.optString("serverTimezone")
+                    serverTimezone = o.optString("serverTimezone"),
+                    logoSource = o.optString("logoSource").ifBlank { "playlist" }
                 )
             }
         }.getOrDefault(emptyList())
@@ -808,6 +809,7 @@ class LiveTvPreferences @Inject constructor(
                     .put("importLive", s.importLive)
                     .put("streamFormat", s.streamFormat)
                     .put("serverTimezone", s.serverTimezone)
+                    .put("logoSource", s.logoSource)
             )
         }
         return arr.toString()

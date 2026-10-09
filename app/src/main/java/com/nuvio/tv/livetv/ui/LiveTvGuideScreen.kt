@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Refresh
@@ -109,6 +110,14 @@ private data class GuideBlock(val startMs: Long, val stopMs: Long, val program: 
 private data class MenuTarget(val channel: LiveChannel, val block: GuideBlock?)
 
 private fun floorSlot(ms: Long) = ms - Math.floorMod(ms, SLOT_MS)
+
+/** The first midnight (device time) after [ms]. */
+private fun nextMidnight(ms: Long): Long = java.util.Calendar.getInstance().apply {
+    timeInMillis = ms
+    set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+    set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+    add(java.util.Calendar.DAY_OF_MONTH, 1)
+}.timeInMillis
 
 @Composable
 fun LiveTvGuideScreen(
@@ -651,6 +660,10 @@ fun LiveTvGuideScreen(
                 }
             }
     ) {
+        // A soft glow in the theme color behind the info panel and preview (fades into the guide).
+        if (settings.showProgramDetails || settings.showPreview) {
+            ThemeGlow(Modifier.fillMaxWidth().height(if (settings.smallHeader) 230.dp else 330.dp))
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -770,8 +783,8 @@ fun LiveTvGuideScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(26.dp)
-                            .padding(end = 24.dp),
+                            .height(34.dp)
+                            .padding(end = 24.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Date and time above the channels (like TiviMate), or the Unassigned filter.
@@ -780,15 +793,19 @@ fun LiveTvGuideScreen(
                                 if (epgUnassignedOnly) "Unassigned channels"
                                 else java.text.SimpleDateFormat("EEE, MMM d", java.util.Locale.getDefault()).format(java.util.Date(now)) +
                                     ", " + formatClock(now, settings.use24HourClock),
-                                color = NuvioTheme.colors.Secondary,
+                                color = NuvioTheme.colors.TextPrimary,
                                 size = 13.sp,
-                                weight = FontWeight.SemiBold
+                                weight = FontWeight.Bold
                             )
                         }
                         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             val w = maxWidth
+                            // The next day starts in view: a tag at midnight ("Tomorrow · Fri").
+                            val midnight = nextMidnight(windowStart)
+                            val showMidnight = midnight < windowStart + WINDOW_MS
                             for (i in 0 until (WINDOW_MS / SLOT_MS).toInt()) {
                                 val t = windowStart + i * SLOT_MS
+                                if (showMidnight && t == midnight) continue
                                 LiveText(
                                     text = formatDayClock(t, now, settings.use24HourClock),
                                     modifier = Modifier
@@ -797,6 +814,18 @@ fun LiveTvGuideScreen(
                                         .padding(start = 6.dp),
                                     color = NuvioTheme.colors.TextSecondary,
                                     size = 13.sp
+                                )
+                            }
+                            if (showMidnight) {
+                                val dayName = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault()).format(java.util.Date(midnight))
+                                val isTomorrow = midnight - now in 0..(24 * 3_600_000L)
+                                LiveTag(
+                                    if (isTomorrow) "TOMORROW · ${dayName.uppercase()}" else dayName.uppercase(),
+                                    NuvioTheme.colors.FocusBackground,
+                                    NuvioTheme.colors.FocusRing,
+                                    Modifier
+                                        .offset(x = w * ((midnight - windowStart) / WINDOW_MS.toFloat()) + 4.dp)
+                                        .align(Alignment.CenterStart)
                                 )
                             }
                         }
@@ -1021,7 +1050,9 @@ fun LiveTvGuideScreen(
                                             focusedBlock = if (index == row) focusedBlock else null,
                                             visible = if (visibilityMode) ch.key !in pendingHidden else null,
                                             moving = reorderKey == ch.key,
-                                            quality = if (settings.showQualityBadges) user.channelQuality[ch.key] else null
+                                            quality = if (settings.showQualityBadges) user.channelQuality[ch.key] else null,
+                                            reminderStarts = if (user.reminders.isEmpty()) emptySet()
+                                                else user.reminders.filter { it.channelKey == ch.key }.map { it.startMs }.toSet()
                                         )
                                     }
                                 }
@@ -1038,7 +1069,15 @@ fun LiveTvGuideScreen(
                                                 .offset(x = x)
                                                 .width(2.dp)
                                                 .fillMaxHeight()
-                                                .background(NuvioTheme.colors.FocusRing.copy(alpha = 0.85f))
+                                                .clip(RoundedCornerShape(1.dp))
+                                                .background(NuvioTheme.colors.Secondary.copy(alpha = 0.9f))
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .offset(x = x - 4.dp)
+                                                .size(10.dp)
+                                                .clip(RoundedCornerShape(50))
+                                                .background(NuvioTheme.colors.Secondary)
                                         )
                                     }
                                 }
@@ -1566,12 +1605,14 @@ private fun GuideHeader(
         }
         // Poster of the highlighted show (channel logo when there isn't one).
         if (settings.showProgramDetails && channel != null && settings.showPosters) {
+            val posterShape = RoundedCornerShape(if (small) 10.dp else 14.dp)
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
                     .aspectRatio(2f / 3f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(guideSurface()),
+                    .clip(posterShape)
+                    .background(guideSurface())
+                    .border(1.dp, Color.White.copy(alpha = 0.10f), posterShape),
                 contentAlignment = Alignment.Center
             ) {
                 if (!poster.isNullOrBlank()) {
@@ -1600,15 +1641,25 @@ private fun GuideHeader(
                             playlistName?.let { append("  ·  $it") }
                         }
                         LiveText(label, color = NuvioTheme.colors.TextSecondary, size = 14.sp, weight = FontWeight.Medium)
+                        // On now (red LIVE tag) and catch-up, as tags beside the channel.
+                        if (block != null && now in block.startMs until block.stopMs) {
+                            Spacer(Modifier.width(10.dp))
+                            LiveTag("LIVE", LIVE_RED, Color.White)
+                        }
+                        if (channel.catchup != null) {
+                            Spacer(Modifier.width(6.dp))
+                            LiveTag("CATCH-UP", Color.Transparent, NuvioTheme.colors.TextSecondary,
+                                Modifier.border(1.dp, NuvioTheme.colors.Border, RoundedCornerShape(5.dp)))
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                 }
                 val p = rememberShowDetails(channel.key, block?.program)
                 LiveText(
-                    text = p?.title ?: channel.name,
+                    text = p?.title?.let { titleMarks(it).title } ?: channel.name,
                     modifier = Modifier.fillMaxWidth(),
-                    size = if (small) 20.sp else 24.sp,
-                    weight = FontWeight.Bold,
+                    size = if (small) 22.sp else 28.sp,
+                    weight = FontWeight.ExtraBold,
                     maxLines = 1,
                     marquee = true
                 )
@@ -1619,7 +1670,8 @@ private fun GuideHeader(
                         if (now in block.startMs until block.stopMs) add(minutesLeftLabel(block.stopMs, now))
                         p?.episode?.let { add(it) }
                         p?.category?.let { add(it) }
-                        if (channel.catchup != null) add("Catch-up")
+                        // The standard panel shows catch-up as a tag; the small one has no room for it.
+                        if (small && channel.catchup != null) add("Catch-up")
                         // The small info panel has no channel line, so the playlist goes here.
                         if (small) playlistName?.let { add(it) }
                     }.joinToString("  ·  ")
@@ -1655,7 +1707,7 @@ private fun GuideHeader(
                 modifier = Modifier
                     .fillMaxHeight()
                     .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(if (small) 12.dp else 16.dp))
                     .background(Color.Black)
             ) {
                 // The video itself is drawn by the guide, over this spot (one view for the
@@ -1730,15 +1782,17 @@ private fun GuideRow(
     /** "Browse by channel name": this row's channel name has the highlight. */
     nameFocused: Boolean = false,
     /** Picture quality seen when this channel last played ("4K", "FHD", "HD", "SD"). */
-    quality: String? = null
+    quality: String? = null,
+    /** Start times of this channel's shows you've set a reminder for. */
+    reminderStarts: Set<Long> = emptySet()
 ) {
     val windowEnd = windowStart + WINDOW_MS
-    val cellShape = RoundedCornerShape(6.dp)
+    val cellShape = RoundedCornerShape(10.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(rowHeight)
-            .padding(vertical = 2.dp)
+            .padding(vertical = 3.dp)
             .graphicsLayer { alpha = if (visible == false) 0.45f else 1f }
     ) {
         // Channel cell
@@ -1750,7 +1804,7 @@ private fun GuideRow(
             modifier = Modifier
                 .width(channelColWidth)
                 .fillMaxHeight()
-                .padding(end = 3.dp)
+                .padding(end = 6.dp)
                 .clip(cellShape)
                 .background(cell.background)
                 .border(2.dp, cell.border, cellShape)
@@ -1844,13 +1898,18 @@ private fun GuideRow(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 1.dp)
+                        .padding(horizontal = 3.dp)
                         .clip(cellShape)
                         .background(guideSurface().copy(alpha = 0.55f))
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
-                    LiveText(channel.name, color = NuvioTheme.colors.TextTertiary, size = 14.sp)
+                    // With names hidden, the channel's name is the only way to tell which it is.
+                    LiveText(
+                        if (settings.showChannelNames) "No guide info" else channel.name,
+                        color = NuvioTheme.colors.TextTertiary,
+                        size = 14.sp
+                    )
                 }
             }
             visible.forEach { p ->
@@ -1868,14 +1927,20 @@ private fun GuideRow(
                     },
                     idleText = if (past) NuvioTheme.colors.TextSecondary else NuvioTheme.colors.TextPrimary
                 )
+                val marks = titleMarks(p.title)
                 ProgramBlock(
-                    title = p.title,
+                    title = marks.title,
                     subtitle = null,
                     x = x, width = w,
                     colors = colors,
                     focused = isFocused,
                     progress = if (live) p.progress(now) else null,
-                    continuesLeft = p.startMs < windowStart
+                    continuesLeft = p.startMs < windowStart,
+                    liveTag = marks.live && !past,
+                    newTag = marks.isNew,
+                    episode = p.episode?.takeIf { it.length <= 12 },
+                    reminder = p.startMs in reminderStarts,
+                    catchup = past && channel.catchup != null
                 )
             }
             // Highlight for an empty slot under the cursor.
@@ -1901,15 +1966,25 @@ private fun ProgramBlock(
     colors: LiveCellColors,
     focused: Boolean,
     progress: Float?,
-    continuesLeft: Boolean
+    continuesLeft: Boolean,
+    /** On live (sports, events): a red LIVE tag before the title. */
+    liveTag: Boolean = false,
+    /** A new episode: a NEW tag after the title. */
+    newTag: Boolean = false,
+    /** Short episode number ("S2 E14"), shown after the title when there's room. */
+    episode: String? = null,
+    /** You've set a reminder for it: a bell. */
+    reminder: Boolean = false,
+    /** Already shown, and the channel has catch-up: a replay symbol. */
+    catchup: Boolean = false
 ) {
-    val shape = RoundedCornerShape(6.dp)
+    val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = Modifier
             .offset(x = x)
             .width(width)
             .fillMaxHeight()
-            .padding(horizontal = 1.5.dp)
+            .padding(horizontal = 3.dp)
             .clip(shape)
             .background(colors.background)
             .border(2.dp, colors.border, shape)
@@ -1918,14 +1993,39 @@ private fun ProgramBlock(
             modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
             verticalArrangement = Arrangement.Center
         ) {
-            // The focused program scrolls when its title doesn't fit, like TiviMate.
-            LiveText(
-                (if (continuesLeft) "‹ " else "") + title,
-                modifier = Modifier.fillMaxWidth(),
-                color = colors.text,
-                size = 14.sp,
-                marquee = focused
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (liveTag && width > 90.dp) {
+                    LiveTag("LIVE", LIVE_RED, Color.White)
+                    Spacer(Modifier.width(6.dp))
+                }
+                // The focused program scrolls when its title doesn't fit, like TiviMate.
+                LiveText(
+                    (if (continuesLeft) "‹ " else "") + title,
+                    modifier = Modifier.weight(1f, fill = false),
+                    color = colors.text,
+                    size = 14.sp,
+                    marquee = focused
+                )
+                // Extras only where there's room, so short shows keep their title.
+                if (width > 150.dp) {
+                    episode?.let {
+                        Spacer(Modifier.width(6.dp))
+                        LiveText(it, color = colors.text.copy(alpha = 0.6f), size = 12.sp)
+                    }
+                    if (newTag) {
+                        Spacer(Modifier.width(6.dp))
+                        LiveTag("NEW", NuvioTheme.colors.Secondary, NuvioTheme.colors.OnSecondary)
+                    }
+                }
+                if (reminder && width > 60.dp) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.Notifications, contentDescription = "Reminder set", tint = colors.text, modifier = Modifier.size(13.dp))
+                }
+                if (catchup && width > 60.dp) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.History, contentDescription = "Catch-up", tint = colors.text.copy(alpha = 0.8f), modifier = Modifier.size(13.dp))
+                }
+            }
             subtitle?.let {
                 LiveText(
                     it,
@@ -1941,8 +2041,8 @@ private fun ProgramBlock(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .fillMaxWidth(it)
-                    .height(2.dp)
-                    .background(NuvioTheme.colors.Secondary.copy(alpha = 0.8f))
+                    .height(3.dp)
+                    .background(NuvioTheme.colors.Secondary.copy(alpha = 0.9f))
             )
         }
     }
@@ -2047,7 +2147,7 @@ private fun GroupColumn(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             fun groupItem(g: ChannelGroup) {
                 item(key = g.id) {
@@ -2149,15 +2249,15 @@ private fun PlaylistHeader(
 @Composable
 private fun GroupSearchButton(modifier: Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
-    val colors = liveCellColors(focused = focused, idle = Color.Transparent, idleText = NuvioTheme.colors.TextSecondary)
+    val shape = RoundedCornerShape(10.dp)
+    val colors = liveCellColors(focused = focused, idle = guideSurface(), idleText = NuvioTheme.colors.TextPrimary)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(30.dp)
             .clip(shape)
             .background(colors.background)
-            .border(2.dp, colors.border, shape)
+            .border(if (focused) 2.dp else 1.dp, if (focused) colors.border else NuvioTheme.colors.Border, shape)
             .onFocusChanged { focused = it.isFocused }
             .combinedClickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
@@ -2187,19 +2287,28 @@ private fun GroupItem(
     onLongClick: (() -> Unit)?
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(10.dp)
+    // Tiles like the channel rows; the group on screen is tinted, with a thin accent outline.
     val colors = liveCellColors(
         focused = focused,
-        idle = if (selected) guideSurfaceVariant() else Color.Transparent,
+        idle = if (selected) NuvioTheme.colors.FocusBackground else guideSurface(),
         idleText = if (selected) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary
     )
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .height(32.dp)
             .clip(shape)
             .background(colors.background)
-            .border(2.dp, colors.border, shape)
+            .border(
+                if (focused) 2.dp else 1.dp,
+                when {
+                    focused -> colors.border
+                    selected -> NuvioTheme.colors.Secondary.copy(alpha = 0.8f)
+                    else -> Color.Transparent
+                },
+                shape
+            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused()
@@ -2213,15 +2322,7 @@ private fun GroupItem(
             .padding(end = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Accent bar marks the group being shown, even when focus is elsewhere.
-        Box(
-            Modifier
-                .width(3.dp)
-                .fillMaxHeight()
-                .padding(vertical = 8.dp)
-                .background(if (selected) NuvioTheme.colors.Secondary else Color.Transparent)
-        )
-        Spacer(Modifier.width(9.dp))
+        Spacer(Modifier.width(12.dp))
         LiveText(
             group.title,
             modifier = Modifier.weight(1f),
@@ -2444,11 +2545,12 @@ private fun EpgSidePanel(
     val classic = style == LiveMenuStyle.CLASSIC
     val panelShape = if (classic) androidx.compose.ui.graphics.RectangleShape
     else RoundedCornerShape(com.nuvio.tv.ui.theme.NuvioComponents.tokens.sidebar.panelRadius)
+    // The theme's own surfaces (they carry its tint), like the rest of the guide.
     val panelBackground = when {
         classic -> NuvioTheme.colors.Background
         amoled -> Color.Black
-        style == LiveMenuStyle.MODERN_BLUR -> Color(0xFF161618).copy(alpha = 0.65f)
-        else -> Color(0xFF161618).copy(alpha = 0.97f)
+        style == LiveMenuStyle.MODERN_BLUR -> NuvioTheme.colors.BackgroundElevated.copy(alpha = 0.65f)
+        else -> NuvioTheme.colors.BackgroundElevated.copy(alpha = 0.97f)
     }
     val panelBlur = NuvioTheme.effects.blurPanel
 
@@ -2476,7 +2578,7 @@ private fun EpgSidePanel(
             )
             .background(panelBackground, panelShape)
             .then(
-                if (!classic && amoled && style != LiveMenuStyle.MODERN_BLUR) {
+                if (!classic) {
                     Modifier.border(1.dp, NuvioTheme.colors.Border.copy(alpha = 0.9f), panelShape)
                 } else Modifier
             )
@@ -2486,7 +2588,7 @@ private fun EpgSidePanel(
             )
     ) {
         // Header
-        LiveText("Assign EPG", modifier = Modifier.padding(start = 12.dp), size = 22.sp, weight = FontWeight.Bold)
+        LiveText("Assign EPG", modifier = Modifier.padding(start = 12.dp), size = 24.sp, weight = FontWeight.ExtraBold)
         val filterName = sources.firstOrNull { it.sourceId == sourceFilter }?.name
         // What the channel uses now: your pick, or the automatic match (handy when a channel shows
         // the wrong listings, e.g. a guide's "Programming" placeholder).
@@ -2600,7 +2702,7 @@ private fun EpgSidePanel(
                         else -> false
                     }
                 },
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(vertical = 4.dp)
         ) {
             // Some guides list the same channel id twice: index keeps the keys unique.
@@ -2685,50 +2787,62 @@ private fun menuItemShape(style: LiveMenuStyle): androidx.compose.ui.graphics.Sh
     if (style == LiveMenuStyle.CLASSIC) NuvioTheme.shapes.navItem
     else RoundedCornerShape(com.nuvio.tv.ui.theme.NuvioRadii.tokens.full)
 
+/** Assign EPG tiles: the guide's own look (theme surface, focus fill and ring). */
+@Composable
+private fun epgTileColors(focused: Boolean, selected: Boolean): LiveCellColors = liveCellColors(
+    focused = focused,
+    idle = if (selected) NuvioTheme.colors.FocusBackground else guideSurface(),
+    idleText = NuvioTheme.colors.TextPrimary
+)
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun EpgPanelRow(row: EpgRow, selected: Boolean, style: LiveMenuStyle, modifier: Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    val colors = menuItemColors(style, focused, selected)
-    val scale by androidx.compose.animation.core.animateFloatAsState(if (focused) 1.04f else 1f, label = "epgRowScale")
+    val colors = epgTileColors(focused, selected)
+    val shape = RoundedCornerShape(12.dp)
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(menuItemShape(style))
+            .clip(shape)
             .background(colors.background)
+            .border(
+                if (focused) 2.dp else 1.dp,
+                when {
+                    focused -> colors.border
+                    selected -> NuvioTheme.colors.Secondary.copy(alpha = 0.8f)
+                    else -> Color.Transparent
+                },
+                shape
+            )
             .onFocusChanged { focused = it.isFocused }
             .combinedClickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 18.dp, vertical = 9.dp),
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Radio: filled for the guide channel currently in use.
-        Box(
-            modifier = Modifier
-                .size(20.dp)
-                .border(2.dp, colors.content, RoundedCornerShape(50)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (selected) Box(Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(colors.content))
+        // The guide channel's logo first (or an empty space, so names line up).
+        Box(Modifier.width(52.dp), contentAlignment = Alignment.Center) {
+            if (!row.entry.icon.isNullOrBlank()) ChannelLogo(row.entry.icon, 26.dp)
         }
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             LiveText(
                 row.entry.displayName,
-                color = colors.content,
+                color = colors.text,
                 size = 15.sp,
-                weight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                weight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
                 marquee = focused
             )
-            LiveText(row.source.label, color = colors.secondary, size = 12.sp)
+            LiveText(row.source.label, color = focusedSecondaryTextColor(focused), size = 12.sp)
         }
-        if (!row.entry.icon.isNullOrBlank()) {
+        // The guide channel in use: a tag on the right.
+        if (selected) {
             Spacer(Modifier.width(8.dp))
-            ChannelLogo(row.entry.icon, 22.dp)
+            LiveTag("IN USE", NuvioTheme.colors.Secondary, NuvioTheme.colors.OnSecondary)
         }
     }
 }
@@ -2743,25 +2857,25 @@ private fun EpgPanelButton(
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-    val colors = menuItemColors(style, focused, selected = false)
-    val scale by androidx.compose.animation.core.animateFloatAsState(if (focused) 1.06f else 1f, label = "epgButtonScale")
+    val colors = epgTileColors(focused, selected = false)
+    val shape = RoundedCornerShape(12.dp)
     Column(
         modifier = modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(if (style == LiveMenuStyle.CLASSIC) NuvioTheme.shapes.navItem else RoundedCornerShape(18.dp))
+            .clip(shape)
             .background(colors.background)
+            .border(if (focused) 2.dp else 1.dp, if (focused) colors.border else NuvioTheme.colors.Border, shape)
             .onFocusChanged { focused = it.isFocused }
             .combinedClickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
-            .padding(vertical = 10.dp),
+            .padding(vertical = 10.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(icon, contentDescription = label, tint = colors.content, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = label, tint = colors.text, modifier = Modifier.size(20.dp))
         Spacer(Modifier.height(4.dp))
-        LiveText(label, color = colors.content, size = 12.sp)
+        LiveText(label, color = colors.text, size = 12.sp)
     }
 }
 

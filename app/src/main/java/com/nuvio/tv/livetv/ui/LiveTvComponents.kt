@@ -53,6 +53,11 @@ import androidx.media3.common.Player
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.scale
+import coil3.request.allowHardware
 import com.nuvio.tv.R
 import com.nuvio.tv.ui.theme.NuvioTheme
 import java.text.SimpleDateFormat
@@ -172,24 +177,129 @@ internal fun focusedSecondaryTextColor(focused: Boolean): Color =
     if (focused && LocalLiveSolidHighlight.current) NuvioTheme.colors.OnSecondary.copy(alpha = 0.8f)
     else NuvioTheme.colors.TextSecondary
 
+/** Logos already checked (by address): true = mostly dark, so it gets a light backing. */
+private val darkLogos = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+/**
+ * True when a see-through logo is mostly dark (black or navy lettering), which would disappear
+ * on the guide's dark background. Looks at a grid of points, counting only the visible ones.
+ */
+private fun isMostlyDark(bitmap: android.graphics.Bitmap?): Boolean {
+    if (bitmap == null || bitmap.width < 2 || bitmap.height < 2) return false
+    val steps = 24
+    var seen = 0
+    var lum = 0.0
+    var transparent = 0
+    for (yi in 0 until steps) for (xi in 0 until steps) {
+        val px = bitmap.getPixel(xi * (bitmap.width - 1) / (steps - 1), yi * (bitmap.height - 1) / (steps - 1))
+        val a = android.graphics.Color.alpha(px)
+        if (a < 64) { transparent++; continue }
+        seen++
+        lum += (0.2126 * android.graphics.Color.red(px) + 0.7152 * android.graphics.Color.green(px) + 0.0722 * android.graphics.Color.blue(px)) / 255.0
+    }
+    // Logos on their own solid background (no see-through parts) already show fine.
+    if (seen < 12 || transparent < steps) return false
+    return lum / seen < 0.30
+}
+
+/**
+ * A channel logo, fitted (not cropped) into a wide box: logos are usually see-through pictures
+ * of any shape. Dark ones get a soft light backing so they stay visible.
+ */
 @Composable
 internal fun ChannelLogo(url: String?, size: Dp, modifier: Modifier = Modifier) {
-    // No clipping: logos are scaled to fit inside the box with a little breathing room,
-    // so square and rounded logos keep their corners.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var dark by remember(url) { mutableStateOf(url?.let { darkLogos[it] } ?: false) }
     Box(
         modifier = modifier.size(width = size * 1.6f, height = size),
         contentAlignment = Alignment.Center
     ) {
         if (!url.isNullOrBlank()) {
+            // A plain (not hardware) picture, so its colors can be checked once.
+            val request = remember(url) {
+                coil3.request.ImageRequest.Builder(context).data(url).allowHardware(false).build()
+            }
             AsyncImage(
-                model = url,
+                model = request,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
+                onSuccess = { state ->
+                    if (darkLogos[url] == null) {
+                        val isDark = runCatching { isMostlyDark((state.result.image as? coil3.BitmapImage)?.bitmap) }.getOrDefault(false)
+                        darkLogos[url] = isDark
+                        dark = isDark
+                    }
+                },
                 modifier = Modifier
                     .fillMaxSize()
+                    .then(
+                        if (dark) Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.White.copy(alpha = 0.9f))
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                        else Modifier
+                    )
                     .padding(2.dp)
             )
         }
+    }
+}
+
+/**
+ * A soft glow in the theme's color behind the top of a screen (instead of show artwork, which
+ * isn't always right): strongest at the top right, fading out before the bottom edge. Follows
+ * the theme, kept fainter for the white theme (a white glow looks like grey haze).
+ */
+@Composable
+internal fun ThemeGlow(modifier: Modifier = Modifier) {
+    val accent = NuvioTheme.colors.Secondary
+    val top = NuvioTheme.colors.BackgroundElevated
+    val strength = if (accent.luminance() > 0.8f) 0.10f else 0.24f
+    Box(
+        modifier = modifier.drawBehind {
+            drawRect(Brush.verticalGradient(listOf(top.copy(alpha = 0.85f), Color.Transparent)))
+            val right = Offset(size.width * 0.80f, size.height * 0.04f)
+            val r1 = size.height * 0.94f
+            scale(scaleX = 2.4f, scaleY = 1f, pivot = right) {
+                drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength), Color.Transparent), center = right, radius = r1), radius = r1, center = right)
+            }
+            val left = Offset(size.width * 0.10f, 0f)
+            val r2 = size.height * 0.80f
+            scale(scaleX = 2.2f, scaleY = 1f, pivot = left) {
+                drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength * 0.4f), Color.Transparent), center = left, radius = r2), radius = r2, center = left)
+            }
+        }
+    )
+}
+
+/** What a show's title says about it: on live, or new. Many guides only mark these in the title. */
+internal data class TitleMarks(val title: String, val live: Boolean, val isNew: Boolean)
+
+private val LIVE_MARK = Regex("""^\s*live\s*[:\-–|]\s*""", RegexOption.IGNORE_CASE)
+private val NEW_MARK = Regex("""^\s*new\s*[:\-–|]\s*|\s*[(\[]\s*new\s*[)\]]\s*""", RegexOption.IGNORE_CASE)
+
+internal fun titleMarks(title: String): TitleMarks {
+    var t = title
+    val live = LIVE_MARK.containsMatchIn(t)
+    if (live) t = t.replace(LIVE_MARK, "")
+    val isNew = NEW_MARK.containsMatchIn(t)
+    if (isNew) t = t.replace(NEW_MARK, " ").trim()
+    return TitleMarks(t.ifBlank { title }, live, isNew)
+}
+
+/** The red of the LIVE tag (the same everywhere, whatever the theme). */
+internal val LIVE_RED = Color(0xFFE53935)
+
+/** A small rounded tag on a program or in the info panel (LIVE, NEW, HD…). */
+@Composable
+internal fun LiveTag(text: String, background: Color, color: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(background)
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    ) {
+        Text(text = text, color = color, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
     }
 }
 

@@ -211,6 +211,17 @@ object XmltvParser {
         }
     }
 
+    /** Days since 1970-01-01 for a calendar date (UTC), without creating a calendar. */
+    private fun daysFromCivil(year: Int, month: Int, day: Int): Long {
+        val y = (if (month <= 2) year - 1 else year).toLong()
+        val era = (if (y >= 0) y else y - 399) / 400
+        val yoe = y - era * 400
+        val mp = (month + 9) % 12
+        val doy = (153 * mp + 2) / 5 + day - 1
+        val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146_097 + doe - 719_468
+    }
+
     /** Parses "YYYYMMDDhhmmss +zzzz" (seconds and offset optional). */
     internal fun parseTime(value: String?): Long? {
         if (value.isNullOrBlank()) return null
@@ -223,10 +234,8 @@ object XmltvParser {
         val hour = digits.substring(8, 10).toInt()
         val minute = digits.substring(10, 12).toInt()
         val second = if (digits.length >= 14) digits.substring(12, 14).toInt() else 0
-        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
-        cal.clear()
-        cal.set(year, month - 1, day, hour, minute, second)
-        var ms = cal.timeInMillis
+        if (month !in 1..12 || day !in 1..31) return null
+        var ms = (daysFromCivil(year, month, day) * 86_400L + hour * 3_600L + minute * 60L + second) * 1_000L
         val offset = v.substring(digits.length).trim()
         if (offset.length >= 5 && (offset[0] == '+' || offset[0] == '-')) {
             val sign = if (offset[0] == '-') -1 else 1

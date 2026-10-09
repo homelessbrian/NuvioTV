@@ -7,6 +7,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
@@ -25,7 +27,39 @@ class LiveTvChannelStore @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Channels with the user's renames and renumbering applied. */
-    val displayChannels: StateFlow<List<LiveChannel>> = combine(repository.channels, prefs.userState, prefs.settings) { channels, user, s ->
+    val displayChannels: StateFlow<List<LiveChannel>> = combine(
+        repository.channels, prefs.userState, prefs.settings, repository.epgLogos,
+        // Only the playlists that prefer the guide's logos (not every saved playlist change).
+        prefs.playlists.map { list -> list.filter { it.logoSource == "epg" }.mapTo(HashSet()) { it.id } as Set<String> }
+            .distinctUntilChanged()
+    ) { channels, user, s, epgLogos, preferEpg ->
+        withLogos(named(channels, user, s), epgLogos, preferEpg)
+    }.flowOn(Dispatchers.Default).stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Each playlist's logo choice: "Prefer logos from playlist" keeps the playlist's own (the
+     * guide's when it has none); "Prefer logos from EPG" uses the guide's (the playlist's when
+     * the guide has none).
+     */
+    private fun withLogos(
+        channels: List<LiveChannel>,
+        epgLogos: Map<String, String>,
+        preferEpg: Set<String>
+    ): List<LiveChannel> {
+        if (epgLogos.isEmpty()) return channels
+        return channels.map { c ->
+            val fromGuide = epgLogos[c.key]
+            val logo = if (c.sourceId in preferEpg) fromGuide ?: c.logo
+            else c.logo?.takeIf { it.isNotBlank() } ?: fromGuide
+            if (logo == c.logo) c else c.copy(logo = logo)
+        }
+    }
+
+    private fun named(
+        channels: List<LiveChannel>,
+        user: com.nuvio.tv.livetv.model.LiveUserState,
+        s: com.nuvio.tv.livetv.model.LiveTvSettings
+    ): List<LiveChannel> = run {
         // Channel name editor: prefixes/suffixes removed from names you haven't renamed yourself.
         val terms = com.nuvio.tv.livetv.model.ChannelNameEditor.terms(s.nameRemovals)
         val cleaned = cleanedNames(channels, s.nameRemovals, terms)
@@ -50,7 +84,7 @@ class LiveTvChannelStore @Inject constructor(
                 )
             }
         }
-    }.flowOn(Dispatchers.Default).stateIn(scope, SharingStarted.Eagerly, emptyList())
+    }
 
     // Channel name editor results, kept until the channel list or the terms change. Cleaning
     // tens of thousands of names took long enough that renames seemed to take 20-30 seconds.

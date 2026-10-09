@@ -498,6 +498,10 @@ fun LiveTvPlayerScreen(
                     }
                 }
                 val paused = playback.userPaused
+                // What's on after the current show (live only).
+                val nextUp = if (mode == PanelMode.LIVE) {
+                    viewModel.nextProgram(ch.key, nowProgram?.stopMs ?: tick)
+                } else null
                 LiveTvPlayerPanel(
                     channel = ch,
                     mode = mode,
@@ -521,7 +525,10 @@ fun LiveTvPlayerScreen(
                     sleepLabel = sleepAt?.let { at -> "Sleep " + ((at - tick).coerceAtLeast(0) / 60_000 + 1) + "m" },
                     clock = formatClock(tick, use24h),
                     resolution = if (playback.videoHeight > 0) "${playback.videoHeight}p" else null,
-                    showNumber = settings.showChannelNumbers
+                    showNumber = settings.showChannelNumbers,
+                    nextTitle = nextUp?.title?.let { titleMarks(it).title },
+                    nextTime = nextUp?.let { formatRange(it.startMs, it.stopMs, use24h) },
+                    catchupAvailable = ch.catchup != null
                 )
             }
         }

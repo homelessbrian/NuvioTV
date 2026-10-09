@@ -66,6 +66,8 @@ class LiveTvSettingsViewModel @Inject constructor(
         onDemand.refreshSoon()
     }
     fun removePlaylist(id: String) = viewModelScope.launch { repository.removePlaylist(id) }
+    fun setPlaylistLogoSource(id: String, logoSource: String) =
+        viewModelScope.launch { repository.setPlaylistLogoSource(id, logoSource) }
     fun setPlaylistEnabled(id: String, enabled: Boolean) =
         viewModelScope.launch { repository.setPlaylistEnabled(id, enabled) }
     fun movePlaylist(id: String, delta: Int) = viewModelScope.launch { repository.movePlaylist(id, delta) }

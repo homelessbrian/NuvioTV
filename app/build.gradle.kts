@@ -274,7 +274,10 @@ android {
 
     splits {
         abi {
-            isEnable = !buildingAppBundle
+            // Live TV fork: test builds are one APK for every device (no per-processor copies),
+            // which is all a test needs and builds quicker.
+            isEnable = !buildingAppBundle &&
+                (findProperty("livetvTestBuild") as String?)?.toBoolean() != true
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = true

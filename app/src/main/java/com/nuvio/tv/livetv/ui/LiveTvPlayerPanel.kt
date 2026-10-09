@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -103,31 +104,39 @@ internal fun LiveTvPlayerPanel(
     clock: String,
     resolution: String?,
     showNumber: Boolean,
+    /** What's on next ("World Tonight") and when ("7:00 – 8:00 PM"), shown on the right. */
+    nextTitle: String? = null,
+    nextTime: String? = null,
+    /** The channel offers catch-up (a tag beside the channel). */
+    catchupAvailable: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = NuvioTheme.colors
     val accent = colors.Secondary
-    val posterW = if (full) 104.dp else 72.dp
-    val posterH = if (full) 156.dp else 108.dp
-    // See-through like overlay mode: fades up from the bottom over the picture.
+    val posterW = if (full) 116.dp else 110.dp
+    val posterH = if (full) 174.dp else 165.dp
+    // Fades up from the bottom over the picture, in the theme's background color.
     val scrim = androidx.compose.ui.graphics.Brush.verticalGradient(
-        0f to Color.Transparent, 0.35f to Color.Black.copy(alpha = 0.55f), 1f to Color.Black.copy(alpha = 0.78f)
+        0f to Color.Transparent,
+        0.38f to colors.Background.copy(alpha = 0.86f),
+        1f to colors.Background.copy(alpha = 0.97f)
     )
     Row(
         modifier = modifier
             .fillMaxWidth()
             .background(scrim)
-            .padding(start = 36.dp, end = 36.dp, top = 40.dp, bottom = if (full) 18.dp else 22.dp),
+            .padding(start = 48.dp, end = 48.dp, top = 64.dp, bottom = if (full) 18.dp else 24.dp),
         verticalAlignment = Alignment.Bottom
     ) {
-        // Poster (or the channel logo when posters are off).
+        // Poster (or the channel logo when posters are off or there isn't one).
+        val posterShape = RoundedCornerShape(12.dp)
         Box(
             modifier = Modifier
-                .width(if (showPosters) posterW else 64.dp)
-                .height(if (showPosters) posterH else 64.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .width(if (showPosters) posterW else 72.dp)
+                .height(if (showPosters) posterH else 72.dp)
+                .clip(posterShape)
                 .background(colors.BackgroundCard.copy(alpha = 0.85f))
-                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                .border(1.dp, Color.White.copy(alpha = 0.12f), posterShape),
             contentAlignment = Alignment.Center
         ) {
             if (showPosters && !poster.isNullOrBlank()) {
@@ -141,26 +150,64 @@ internal fun LiveTvPlayerPanel(
                 ChannelLogo(channel.logo, if (showPosters) 56.dp else 48.dp)
             }
         }
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(24.dp))
         Column(modifier = Modifier.weight(1f)) {
+            // Channel line: logo, number and name, tags, and the clock on the right.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                LiveText(title, size = if (full) 20.sp else 18.sp, weight = FontWeight.Bold, maxLines = 1, marquee = true, modifier = Modifier.weight(1f), color = colors.TextPrimary)
-                Spacer(Modifier.width(12.dp))
-                timeline?.let {
-                    LiveText(it.status, size = 13.sp, color = if (it.statusLive) colors.Error else accent, modifier = Modifier.padding(end = 12.dp))
+                if (!channel.logo.isNullOrBlank()) {
+                    ChannelLogo(channel.logo, 24.dp)
+                    Spacer(Modifier.width(10.dp))
                 }
-                resolution?.let { LiveText(it, color = colors.TextSecondary, size = 12.sp, modifier = Modifier.padding(end = 12.dp)) }
-                LiveText(clock, size = 16.sp, weight = FontWeight.SemiBold, color = colors.TextPrimary)
+                LiveText(
+                    (if (showNumber) "${channel.number} · " else "") + channel.name,
+                    size = 14.sp, weight = FontWeight.SemiBold, color = colors.TextSecondary
+                )
+                when (mode) {
+                    PanelMode.LIVE -> { Spacer(Modifier.width(10.dp)); LiveTag("LIVE", LIVE_RED, Color.White) }
+                    PanelMode.CATCHUP -> { Spacer(Modifier.width(10.dp)); LiveTag("ARCHIVE", accent, colors.OnSecondary) }
+                    PanelMode.SHIFT -> { Spacer(Modifier.width(10.dp)); LiveTag("PAUSED LIVE", accent, colors.OnSecondary) }
+                }
+                resolution?.let {
+                    Spacer(Modifier.width(6.dp))
+                    LiveTag(it.uppercase(), Color.Transparent, colors.TextSecondary,
+                        Modifier.border(1.dp, colors.Border, RoundedCornerShape(5.dp)))
+                }
+                if (catchupAvailable && mode == PanelMode.LIVE) {
+                    Spacer(Modifier.width(6.dp))
+                    LiveTag("CATCH-UP", Color.Transparent, colors.TextSecondary,
+                        Modifier.border(1.dp, colors.Border, RoundedCornerShape(5.dp)))
+                }
+                Spacer(Modifier.weight(1f))
+                if (full) timeline?.let {
+                    LiveText(it.status, size = 13.sp, color = if (it.statusLive) colors.Error else accent, modifier = Modifier.padding(end = 14.dp))
+                }
+                LiveText(clock, size = 18.sp, weight = FontWeight.Bold, color = colors.TextPrimary)
             }
-            Spacer(Modifier.height(2.dp))
-            val channelLine = (if (showNumber) "${channel.number}  " else "") + channel.name
-            LiveText(listOf(channelLine, meta).filter { it.isNotBlank() }.joinToString("  ·  "), size = 13.sp, color = colors.TextSecondary, maxLines = 1)
-            if (full) description?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(4.dp))
-                LiveText(it, size = 13.sp, color = colors.TextSecondary, maxLines = 2)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.weight(1f)) {
+                    LiveText(title, size = 30.sp, weight = FontWeight.ExtraBold, maxLines = 1, marquee = true, color = colors.TextPrimary)
+                    if (meta.isNotBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        LiveText(meta, size = 14.sp, color = colors.TextSecondary, maxLines = 1)
+                    }
+                    description?.takeIf { it.isNotBlank() }?.let {
+                        Spacer(Modifier.height(4.dp))
+                        LiveText(it, size = 14.sp, color = colors.TextSecondary, maxLines = if (full) 2 else 1)
+                    }
+                }
+                // What's on next, on the right.
+                if (nextTitle != null) {
+                    Spacer(Modifier.width(24.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        LiveText("NEXT", size = 11.sp, weight = FontWeight.Bold, color = colors.TextTertiary)
+                        LiveText(nextTitle, size = 15.sp, weight = FontWeight.Bold, color = colors.TextPrimary, modifier = Modifier.widthIn(max = 260.dp))
+                        nextTime?.let { LiveText(it, size = 13.sp, color = colors.TextSecondary) }
+                    }
+                }
             }
             timeline?.let { t ->
-                Spacer(Modifier.height(if (full) 10.dp else 8.dp))
+                Spacer(Modifier.height(if (full) 10.dp else 10.dp))
                 PanelTimelineBar(t, grabbed = focused == PanelControl.TIMELINE, compact = !full)
             }
             if (full) {
@@ -182,7 +229,29 @@ private fun PanelTimelineBar(t: PanelTimeline, grabbed: Boolean, compact: Boolea
     val accent = colors.Secondary
     val span = (t.endMs - t.startMs).coerceAtLeast(1L).toFloat()
     fun frac(ms: Long) = ((ms - t.startMs) / span).coerceIn(0f, 1f)
-    val track = if (compact) 3.dp else 4.dp
+    val track = if (compact) 4.dp else 4.dp
+    if (compact) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LiveText(t.leftLabel, size = 13.sp, color = colors.TextSecondary)
+            Spacer(Modifier.width(12.dp))
+            BoxWithConstraints(modifier = Modifier.weight(1f).height(8.dp)) {
+                val w = maxWidth
+                Box(Modifier.align(Alignment.CenterStart).fillMaxWidth().height(track).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.18f)))
+                t.recordedUntilMs?.let { r ->
+                    Box(Modifier.align(Alignment.CenterStart).width(w * frac(r)).height(track).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.35f)))
+                }
+                Box(Modifier.align(Alignment.CenterStart).width(w * frac(t.positionMs)).height(track).clip(RoundedCornerShape(2.dp)).background(accent))
+                t.liveMs?.let { l ->
+                    Box(Modifier.align(Alignment.CenterStart).offset(x = (w * frac(l)) - 1.dp).width(2.dp).fillMaxHeight().background(colors.Error))
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            LiveText(t.rightLabel, size = 13.sp, color = if (t.liveMs != null) colors.Error else colors.TextSecondary)
+            Spacer(Modifier.width(14.dp))
+            LiveText(t.status, size = 13.sp, color = if (t.statusLive) colors.Error else colors.TextSecondary)
+        }
+        return
+    }
     Column {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(if (compact) 8.dp else 16.dp)) {
             val w = maxWidth

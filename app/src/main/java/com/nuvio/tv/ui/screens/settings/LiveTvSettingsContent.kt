@@ -863,6 +863,12 @@ fun LiveTvSettingsContent(
                 "Update now" to { viewModel.savePlaylist(d.source); close() },
                 (if (d.source.enabled) "Disable" else "Enable") to { viewModel.setPlaylistEnabled(d.source.id, !d.source.enabled); close() },
                 "Delete playlist" to { dialog = LiveDialog.ConfirmDeletePlaylist(d.source) },
+                // Whose channel logos to show: the playlist's own or the guide's (each falls back
+                // to the other when it has none).
+                (if (d.source.logoSource == "epg") "Logos: Prefer logos from EPG" else "Logos: Prefer logos from playlist") to {
+                    viewModel.setPlaylistLogoSource(d.source.id, if (d.source.logoSource == "epg") "playlist" else "epg")
+                    close()
+                },
                 // Xtream: which stream format to ask for. Auto follows what the account allows.
                 *(if (d.source.isXtream) arrayOf<Pair<String, () -> Unit>>(
                     "Stream format: " + when (d.source.streamFormat) { "ts" -> "TS"; "m3u8" -> "HLS (m3u8)"; else -> "Auto" } to {

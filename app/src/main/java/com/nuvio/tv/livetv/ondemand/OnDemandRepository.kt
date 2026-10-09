@@ -178,11 +178,14 @@ class OnDemandRepository @Inject constructor(
         for (pl in playlists) {
             val last = stamps[pl.id] ?: 0L
             if (!force && now - last < REFRESH_MS) continue
+            // Automatic imports wait while a movie or episode is playing in Nuvio's player.
+            if (!force) com.nuvio.tv.livetv.data.BackgroundWork.awaitIdle()
             _status.value = OnDemandStatus(true, "Importing movies and series from ${pl.name}…")
             lastProblem = null
             // Movies and series import separately, so a problem with one keeps the other.
             val movies = runCatching { importKind(pl, VodKind.MOVIE) }
                 .onFailure { Log.w(TAG, "Movies for ${pl.name} failed", it); lastProblem = "Couldn't import movies from ${pl.name}: ${it.message ?: it.javaClass.simpleName}" }
+            if (!force) com.nuvio.tv.livetv.data.BackgroundWork.awaitIdle()
             val series = runCatching { importKind(pl, VodKind.SERIES) }
                 .onFailure { Log.w(TAG, "Series for ${pl.name} failed", it); lastProblem = "Couldn't import series from ${pl.name}: ${it.message ?: it.javaClass.simpleName}" }
             val ok = movies.isSuccess && series.isSuccess && lastProblem == null

@@ -250,7 +250,39 @@ class LiveTvRepository @Inject constructor(
     // ---------------------------------------------------------------- core
 
     private suspend fun loadFromCache() {
+        if (_epgLogos.value.isEmpty()) _epgLogos.value = withContext(Dispatchers.IO) { readEpgLogos() }
         mutex.withLock { rebuildLocked() }
+    }
+
+    // ---------------------------------------------------------------- logos from the guide
+
+    private val epgLogosFile get() = File(baseDir, "epg_logos.json")
+    private val _epgLogos = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** Channel key -> the logo its matched guide channel has (playlists can prefer these). */
+    val epgLogos: StateFlow<Map<String, String>> = _epgLogos.asStateFlow()
+
+    private fun readEpgLogos(): Map<String, String> = runCatching {
+        val f = epgLogosFile
+        if (!f.exists()) return@runCatching emptyMap<String, String>()
+        val o = org.json.JSONObject(f.readText())
+        val out = HashMap<String, String>(o.length())
+        o.keys().forEach { k -> o.optString(k).takeIf { it.isNotBlank() }?.let { out[k] = it } }
+        out
+    }.getOrDefault(emptyMap())
+
+    private fun saveEpgLogos(map: Map<String, String>) {
+        runCatching {
+            val o = org.json.JSONObject()
+            map.forEach { (k, v) -> o.put(k, v) }
+            baseDir.mkdirs()
+            epgLogosFile.writeText(o.toString())
+        }
+    }
+
+    /** "Prefer logos from playlist / EPG" for one playlist: only the logos change, nothing reloads. */
+    suspend fun setPlaylistLogoSource(id: String, logoSource: String) {
+        prefs.updatePlaylists { list -> list.map { if (it.id == id) it.copy(logoSource = logoSource) else it } }
     }
 
     private suspend fun rebuild() {
@@ -266,8 +298,12 @@ class LiveTvRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val playlists = prefs.currentPlaylists().filter { it.liveEnabled }
         var changed = false
+        // Automatic checks wait while a movie or episode is playing in Nuvio's player.
+        val automatic = !forcePlaylists && !forceEpg && forceIds.isEmpty()
+        suspend fun outOfTheWay() { if (automatic) BackgroundWork.awaitIdle() }
 
         for (pl in playlists) {
+            outOfTheWay()
             val file = playlistFile(pl.id)
             val stale = !file.exists() ||
                 now - file.lastModified() > settings.playlistRefreshHours.coerceAtLeast(1) * HOUR
@@ -300,6 +336,7 @@ class LiveTvRepository @Inject constructor(
 
         // Build channels first so EPG matching knows which channels exist.
         if (changed || _channels.value.isEmpty()) {
+            outOfTheWay()
             setStatus(loading = true, message = "Reading channels…")
             buildChannels()
             saveChannels() // so the next start uses it straight away
@@ -307,6 +344,7 @@ class LiveTvRepository @Inject constructor(
 
         val epgTargets = collectEpgTargets()
         for (target in epgTargets) {
+            outOfTheWay()
             val file = epgFile(target.fileId)
             val stale = !file.exists() ||
                 now - file.lastModified() > settings.epgRefreshHours.coerceAtLeast(1) * HOUR
@@ -325,6 +363,7 @@ class LiveTvRepository @Inject constructor(
         }
 
         if (changed || _programs.value.isEmpty()) {
+            outOfTheWay()
             setStatus(loading = true, message = "Matching guide data…")
             buildPrograms(settings, epgTargets)
         }
@@ -519,7 +558,7 @@ class LiveTvRepository @Inject constructor(
     @Volatile private var guideInDb = false
     private val rangeMutex = Mutex()
 
-    private fun defaultWindow(now: Long = System.currentTimeMillis()) = (now - 3 * HOUR) to (now + 12 * HOUR)
+    private fun defaultWindow(now: Long = System.currentTimeMillis()) = (now - 3 * HOUR) to (now + 12 * HOUR + RANGE_SLACK_MS)
 
     /**
      * Opening Live TV: if the guide database matches the current guide and channels, read just
@@ -650,7 +689,11 @@ class LiveTvRepository @Inject constructor(
             // Read without holding the lock (a big read used to make everything else wait for it,
             // like a group you just opened); only the merge is locked.
             val from = minOf(fromMs, loadedFrom)
-            val to = maxOf(toMs, loadedTo)
+            // A few hours extra ahead: the guide asks for "12 hours from now" every 30 seconds,
+            // and without slack each ask went past what was loaded by 30 seconds, so every
+            // channel's listings were read from the database again, twice a minute, all day
+            // (also while Live TV wasn't even open, and while watching in Nuvio's player).
+            val to = maxOf(toMs + RANGE_SLACK_MS, loadedTo)
             val loaded = runCatching { guideDb.range(from, to, light = lightPrograms) }.getOrNull() ?: return@launch
             rangeMutex.withLock {
                 if (fromMs >= loadedFrom && toMs <= loadedTo) return@withLock
@@ -1067,6 +1110,15 @@ class LiveTvRepository @Inject constructor(
         }
         _autoMatches.value = auto
         _epgSources.value = sourceLists
+        // Each channel's logo in the guide it's matched to (or assigned), for playlists that
+        // prefer the guide's logos, and for channels whose playlist has none.
+        val iconsBySource = sourceMeta.associate { (target, _, entries) ->
+            target.fileId to entries.mapNotNull { e -> e.icon?.takeIf { it.isNotBlank() }?.let { e.id to it } }.toMap()
+        }
+        val logos = HashMap<String, String>()
+        (auto + overrides).forEach { (key, a) -> iconsBySource[a.sourceId]?.get(a.xmltvId)?.let { logos[key] = it } }
+        _epgLogos.value = logos
+        saveEpgLogos(logos)
         _programs.value = result
         epgDetailsPending = false
         // Store the whole guide in the database and keep only the hours around now in memory.
@@ -1426,6 +1478,8 @@ class LiveTvRepository @Inject constructor(
     companion object {
         private const val TAG = "LiveTvRepository"
         private const val HOUR = 60L * 60L * 1000L
+        /** Extra guide hours read ahead, so the window moves along a few times a day, not constantly. */
+        private const val RANGE_SLACK_MS = 3 * HOUR
         private const val GUIDE_CACHE_VERSION = 1
         private const val CHANNELS_CACHE_VERSION = 6
         private const val MAX_SAVED_LISTINGS = 300_000
@@ -1448,11 +1502,12 @@ class LiveTvRepository @Inject constructor(
 
         private val qualityTokens = Regex("""\b(fhd|uhd|hd|sd|4k|8k|hevc|h265|h264|1080p|720p|backup|raw)\b""")
         private val prefixToken = Regex("""^[a-z]{2,3}\s*[:|]\s*""")
+        private val bracketed = Regex("""\[.*?]|\(.*?\)""")
 
         internal fun normalize(name: String): String {
             var n = name.lowercase().trim()
             n = n.replace(prefixToken, "")
-            n = n.replace(Regex("""\[.*?]|\(.*?\)"""), " ")
+            n = n.replace(bracketed, " ")
             n = n.replace(qualityTokens, " ")
             return n.filter { it.isLetterOrDigit() }
         }

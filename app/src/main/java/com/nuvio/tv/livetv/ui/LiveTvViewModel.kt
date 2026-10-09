@@ -146,6 +146,8 @@ class LiveTvViewModel @Inject constructor(
         repository.ensureLoaded()
         viewModelScope.launch {
             while (true) {
+                // Nothing to keep up to date while a movie or episode plays in Nuvio's player.
+                com.nuvio.tv.livetv.data.BackgroundWork.awaitIdle()
                 _now.value = System.currentTimeMillis()
                 // Keep the hours around now loaded from the guide database as time passes.
                 repository.ensureRange(_now.value - 3 * 3_600_000L, _now.value + 12 * 3_600_000L)
@@ -592,21 +594,26 @@ class LiveTvViewModel @Inject constructor(
     data class HomeRowEntry(val channel: LiveChannel, val now: EpgProgram?, val next: EpgProgram?)
 
     /**
-     * The home screen row's channels (Favorites, Recently watched or a group), worked out off
-     * the main thread and kept up to date as shows change.
+     * The home row's channels (which group, in what order). Worked out only when channels, your
+     * favorites or settings change, not every time the clock or the guide moves on (it used to
+     * sort through every channel twice a minute while Home was open).
      */
-    val homeRow: StateFlow<List<HomeRowEntry>> = combine(
-        combine(displayChannels, userState, settings) { a, b, c -> Triple(a, b, c) },
-        programs,
-        now
-    ) { (channels, user, s), progs, nowMs ->
-        if (!s.homeRowEnabled || channels.isEmpty()) return@combine emptyList()
+    private val homeRowChannels = combine(displayChannels, userState, settings) { channels, user, s ->
+        if (!s.homeRowEnabled || channels.isEmpty()) return@combine emptyList<LiveChannel>() to s
         val groupId = when (s.homeRowSource) {
             "favorites", "" -> ChannelGroup.FAVORITES
             "recent" -> ChannelGroup.RECENT
             else -> s.homeRowSource
         }
-        val list = buildUi(channels, user, s, groupId, "", true).channels
+        buildUi(channels, user, s, groupId, "", true).channels to s
+    }.flowOn(Dispatchers.Default).distinctUntilChanged()
+
+    val homeRow: StateFlow<List<HomeRowEntry>> = combine(
+        homeRowChannels,
+        programs,
+        now
+    ) { (list, s), progs, nowMs ->
+        if (list.isEmpty()) return@combine emptyList()
         var entries = list.map { ch ->
             val l = progs[ch.key].orEmpty()
             val cur = l.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs }

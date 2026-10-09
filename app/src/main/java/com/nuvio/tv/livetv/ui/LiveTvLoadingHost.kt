@@ -65,6 +65,8 @@ fun LiveTvLoadingHost(navController: NavController) {
     // Live TV player has let go of the audio first, so the two never hold it at once.
     androidx.compose.runtime.LaunchedEffect(route) {
         if (route.startsWith("player/")) entry.liveTvPlayback().releaseNow()
+        // Heavy Live TV / On Demand background work waits while Nuvio's player is open.
+        com.nuvio.tv.livetv.data.BackgroundWork.nuvioPlaying.value = route.startsWith("player/")
     }
     val message = when {
         live.loading && !live.quiet -> live.message ?: "Updating Live TV…"
