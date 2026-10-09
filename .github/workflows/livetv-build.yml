@@ -148,6 +148,69 @@ jobs:
           # GitHub user).
           retention-days: 1
 
+      # Test build: also copied to your Google Drive, in "Nuvio + IPTV test builds" (private,
+      # only you can see it). Set up once with the "Connect Google Drive (test builds)"
+      # workflow. Test builds in that folder older than a day are removed, like here.
+      # If anything goes wrong here the build itself still counts as done.
+      - name: Copy test APK to Google Drive
+        if: ${{ inputs.test_build }}
+        continue-on-error: true
+        env:
+          CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          REFRESH: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REFRESH" ]; then
+            echo "Google Drive not connected (run \"Connect Google Drive (test builds)\" once); skipping."
+            exit 0
+          fi
+          resp=$(curl -s https://oauth2.googleapis.com/token \
+            -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
+            -d "refresh_token=$REFRESH" -d "grant_type=refresh_token")
+          token=$(jq -r '.access_token // empty' <<<"$resp")
+          if [ -z "$token" ]; then
+            echo "::warning::Couldn't sign in to Google Drive ($(jq -r '.error // "unknown"' <<<"$resp")). Run \"Connect Google Drive (test builds)\" again."
+            exit 0
+          fi
+          echo "::add-mask::$token"
+          auth="Authorization: Bearer $token"
+          api=https://www.googleapis.com/drive/v3/files
+          folder_name="Nuvio + IPTV test builds"
+
+          # The folder (made the first time).
+          folder=$(curl -s -G -H "$auth" "$api" \
+            --data-urlencode "q=name='$folder_name' and mimeType='application/vnd.google-apps.folder' and trashed=false" \
+            --data-urlencode "fields=files(id)" | jq -r '.files[0].id // empty')
+          if [ -z "$folder" ]; then
+            folder=$(curl -s -X POST -H "$auth" -H "Content-Type: application/json" "$api" \
+              -d "{\"name\":\"$folder_name\",\"mimeType\":\"application/vnd.google-apps.folder\"}" | jq -r '.id // empty')
+          fi
+          if [ -z "$folder" ]; then echo "::warning::Couldn't make the Drive folder."; exit 0; fi
+
+          # Upload (resumable, for a file this size).
+          apk=$(ls out/Nuvio-IPTV-Test-*.apk | head -n 1)
+          name=$(basename "$apk")
+          location=$(curl -s -D - -o /dev/null -X POST -H "$auth" \
+            -H "Content-Type: application/json; charset=UTF-8" \
+            -H "X-Upload-Content-Type: application/vnd.android.package-archive" \
+            -d "{\"name\":\"$name\",\"parents\":[\"$folder\"]}" \
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable" \
+            | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+          if [ -z "$location" ]; then echo "::warning::Google Drive didn't accept the upload."; exit 0; fi
+          id=$(curl -s -X PUT -H "$auth" -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @"$apk" "$location" | jq -r '.id // empty')
+          if [ -z "$id" ]; then echo "::warning::The upload to Google Drive didn't finish."; exit 0; fi
+          echo "::notice title=Copied to Google Drive::$name is in \"$folder_name\" in your Drive."
+
+          # Older test builds in that folder (more than a day old) are removed.
+          cutoff=$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%S)
+          curl -s -G -H "$auth" "$api" \
+            --data-urlencode "q='$folder' in parents and trashed=false and createdTime < '$cutoff'" \
+            --data-urlencode "fields=files(id,name)" | jq -r '.files[]?.id' | while read -r old; do
+              [ -n "$old" ] && curl -s -X DELETE -H "$auth" "$api/$old" > /dev/null || true
+            done
+
       - name: Upload build artifact
         if: ${{ !inputs.test_build }}
         uses: actions/upload-artifact@v4
