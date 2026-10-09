@@ -128,15 +128,34 @@ jobs:
           find app/build/outputs/apk/full/release -name "*.apk" -exec cp {} out/ \;
           ls -la out
 
+      # Test build: the single APK as it is (no zip to open), named so it's easy to spot.
+      - name: Name the test APK
+        if: ${{ inputs.test_build }}
+        run: |
+          apk=$(ls out/*.apk | head -n 1)
+          mv "$apk" "out/Nuvio-IPTV-Test-$(date -u +%Y%m%d-%H%M).apk"
+          ls -la out
+
+      - name: Upload test APK
+        if: ${{ inputs.test_build }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: out/Nuvio-IPTV-Test-*.apk
+          # Downloads as the .apk itself instead of a zip.
+          archive: false
+          if-no-files-found: error
+          # Deleted after a day (the Actions tab of a public repo can be seen by any signed-in
+          # GitHub user).
+          retention-days: 1
+
       - name: Upload build artifact
+        if: ${{ !inputs.test_build }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.test_build && 'nuvio-livetv-TEST-apks' || 'nuvio-livetv-apks' }}
+          name: nuvio-livetv-apks
           path: out/*.apk
           if-no-files-found: error
-          # Test builds are deleted after a day (the Actions tab of a public repo can be seen
-          # by any signed-in GitHub user); normal builds keep the usual 90 days.
-          retention-days: ${{ inputs.test_build && 1 || 90 }}
+          retention-days: 90
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
