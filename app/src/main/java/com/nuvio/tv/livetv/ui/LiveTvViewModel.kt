@@ -694,8 +694,12 @@ class LiveTvViewModel @Inject constructor(
                 if (!settings.value.showPosters) return@collectLatest
                 for (ch in channels) {
                     val nowMs = System.currentTimeMillis()
-                    val p = programs.value[ch.key]?.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs } ?: continue
-                    if (com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(p.title)) continue
+                    val p = programs.value[ch.key]?.firstOrNull { nowMs >= it.startMs && nowMs < it.stopMs }
+                    if (com.nuvio.tv.livetv.data.LiveTvPosterResolver.isChannelFiller(ch, p)) {
+                        runCatching { channelPoster(ch, p) }
+                        continue
+                    }
+                    if (p == null || com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(p.title)) continue
                     runCatching { posterFor(p.title, p, ch, urgent = false) }
                 }
             }
@@ -749,6 +753,17 @@ class LiveTvViewModel @Inject constructor(
         epgChangesPending = true
     }
 
+    /**
+     * "Unassign" in Assign EPG: the channel shows no guide at all (it used to only undo a
+     * hand-picked guide, so automatically matched channels didn't change). Pressed again on an
+     * unassigned channel, it goes back to automatic matching.
+     */
+    fun unassignChannelEpg(channel: LiveChannel) = viewModelScope.launch {
+        val cur = prefs.userState.first().epgOverrides[channel.key]
+        prefs.setEpgOverride(channel.key, if (cur?.isNone == true) null else com.nuvio.tv.livetv.model.EpgAssignment.None)
+        epgChangesPending = true
+    }
+
     /** The poster Nuvio's catalogs would show for this program, or null if there's no good match. */
     suspend fun posterFor(
         programTitle: String,
@@ -757,7 +772,11 @@ class LiveTvViewModel @Inject constructor(
         /** The show on screen (fast lane); false for fetching ahead of time (slow lane). */
         urgent: Boolean = true
     ): String? = if (!settings.value.showPosters) null // "Show posters" off: logo only, no lookups
-    else {
+    else if (channel != null && com.nuvio.tv.livetv.data.LiveTvPosterResolver.isChannelFiller(channel, program)) {
+        // A 24/7 channel whose "listing" is just the channel ("24/7 South Park" all day, or no
+        // guide at all): the show's poster, by the channel's name.
+        channelPoster(channel, program)
+    } else {
         // Details (year, cast, description) sharpen the match; fetch them if not loaded yet.
         val full = if (program != null && channel != null) details(channel.key, program) else program
         posterResolver.posterFor(
@@ -769,7 +788,7 @@ class LiveTvViewModel @Inject constructor(
                 description = full?.description
             ),
             urgent = urgent
-        )
+        ) ?: channel?.let { channelPoster(it) } // 24/7 channel, episode not found: the show's poster
     }
 
     // ------------------------------------------------------------ show details on demand
@@ -801,25 +820,27 @@ class LiveTvViewModel @Inject constructor(
 
     // ------------------------------------------------------------ 24/7 channels
 
-    private val TWENTY_FOUR_SEVEN = Regex("""(?i)\b24\s*[/\\|\-x]?\s*7\b""")
-
     /**
      * For 24/7 channels (one show, or one star's films, all day, usually with no guide): what
      * the channel plays, from your addons, by the channel's name. "24/7 Seinfeld" -> Seinfeld's
      * description. Only for channels marked 24/7 (in the name or group), never for others.
+     * If the channel's name finds nothing, the name of its one long listing is tried
+     * ("24/7 South Park" as the show's title), then the playlist's original channel name.
      */
-    suspend fun channelAbout(channel: LiveChannel): com.nuvio.tv.domain.model.MetaPreview? {
+    suspend fun channelAbout(channel: LiveChannel, programTitle: String? = null): com.nuvio.tv.domain.model.MetaPreview? {
         if (!com.nuvio.tv.livetv.data.LiveTvPosterResolver.is247(channel)) return null
-        val name = channel.name
-            .replace(TWENTY_FOUR_SEVEN, " ")
-            .replace(Regex("""(?i)^\s*[A-Z]{2,3}\s*[:|\-]\s*"""), " ") // "US: …"
-            .replace(Regex("""(?i)\b(fhd|uhd|hd|sd|4k|hevc|h265|live|tv|channel)\b"""), " ")
-            .replace(Regex("""[\[\](){}|:•·\-]+"""), " ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-        if (name.length < 2) return null
-        return posterResolver.aboutTitle(name)
+        val names = listOfNotNull(channel.name, programTitle?.takeIf { !LiveTvRepository.isPlaceholderTitle(it) }, channel.tvgName)
+            .map { com.nuvio.tv.livetv.data.LiveTvPosterResolver.showNameOf(it) }
+            .filter { it.length >= 2 }
+            .distinctBy { LiveTvRepository.normalize(it) }
+        for (name in names) posterResolver.aboutTitle(name)?.let { return it }
+        return null
     }
+
+    /** A 24/7 channel's show poster (by the channel's name), or null for other channels. */
+    suspend fun channelPoster(channel: LiveChannel, program: EpgProgram? = null): String? =
+        if (!settings.value.showPosters) null
+        else channelAbout(channel, program?.title)?.let { it.poster ?: it.background }
 
     /** Remembers which channels to fill in first next time (the group on screen, favorites). */
     fun rememberPriority(keys: List<String>) = repository.rememberPriority(keys)

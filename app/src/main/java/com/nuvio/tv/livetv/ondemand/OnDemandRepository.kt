@@ -306,6 +306,9 @@ class OnDemandRepository @Inject constructor(
                     )
                 )
                 if (problem != null) failedCategories++
+                // "Too many requests": stop here instead of asking for every remaining category
+                // (that kept the provider refusing, including when you then pressed play).
+                if (problem?.message?.contains("429") == true) break
             }
         }
         val total = db.replace(pl.id, kind, categories, byCategory)

@@ -340,13 +340,7 @@ fun LiveTvSettingsContent(
                     )
                     // Hidden developer tool: only shown after typing the secret word into the
                     // channel name editor (see NameEditor below).
-                    val crashContext = androidx.compose.ui.platform.LocalContext.current
                     if (developerToolsOn) {
-                        SettingsActionRow(
-                            "Last crash report",
-                            "Developer tool: the last time the app crashed or froze",
-                            onClick = { com.nuvio.tv.livetv.crash.CrashCatcher.openLastReport(crashContext) }
-                        )
                         SettingsActionRow(
                             "Test poster lookup",
                             "Developer tool: what your addons return for a title",
@@ -775,6 +769,18 @@ fun LiveTvSettingsContent(
                         "Set from a show's info in the guide. You get a message a minute before it starts.",
                         "${user.reminders.size}",
                         onClick = { dialog = LiveDialog.Reminders }
+                    )
+                }
+            }
+
+            // ------------------------------------------------------------ help
+            item(key = "help") {
+                val crashContext = androidx.compose.ui.platform.LocalContext.current
+                SettingsGroupCard(title = "Help") {
+                    SettingsActionRow(
+                        "Crash report",
+                        "The last time the app crashed, froze or was closed. Scan the code with your phone to send it.",
+                        onClick = { com.nuvio.tv.livetv.crash.CrashCatcher.openLastReport(crashContext) }
                     )
                 }
             }

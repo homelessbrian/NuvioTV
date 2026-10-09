@@ -219,11 +219,13 @@ fun LiveTvPlayerScreen(
     // so it's ready when the info bar opens).
     val nowProgram = rememberShowDetails(current?.key, current?.let { ch -> programs[ch.key]?.firstOrNull { now >= it.startMs && now < it.stopMs } })
     val watchingTitle = playback.catchupTitle ?: nowProgram?.title
-    val poster by androidx.compose.runtime.produceState<String?>(initialValue = null, watchingTitle) {
+    val poster by androidx.compose.runtime.produceState<String?>(initialValue = null, watchingTitle, current?.key) {
         value = null
         // In archive playback the guide entry isn't the live one, so no movie/series hint.
         val hintProgram = if (playback.catchupTitle == null) nowProgram else null
         value = watchingTitle?.let { viewModel.posterFor(it, hintProgram, current) }
+            // A 24/7 channel with no guide: the show's poster, by the channel's name.
+            ?: current?.takeIf { playback.catchupTitle == null }?.let { viewModel.channelPoster(it, hintProgram) }
             ?: hintProgram?.takeIf { !LiveTvRepository.isPlaceholderTitle(it.title) }?.icon
     }
 

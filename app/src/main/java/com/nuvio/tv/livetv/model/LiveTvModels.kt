@@ -319,7 +319,15 @@ data class Reminder(
 )
 
 /** A channel's guide, picked by hand: which EPG source, and which channel inside it. */
-data class EpgAssignment(val sourceId: String, val xmltvId: String)
+data class EpgAssignment(val sourceId: String, val xmltvId: String) {
+    /** "Unassign" in Assign EPG: the channel gets no guide at all (not even an automatic match). */
+    val isNone: Boolean get() = sourceId == NONE
+
+    companion object {
+        const val NONE = "__none__"
+        val None = EpgAssignment(NONE, "none")
+    }
+}
 
 /** One loaded EPG source and its channel list, for the "Change EPG" picker. */
 data class EpgSourceChannels(

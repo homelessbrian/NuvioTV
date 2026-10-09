@@ -270,10 +270,18 @@ class LiveTvPlaybackController @Inject constructor(
         currentChannel = channel
         currentUrl = url
         _state.value = LivePlaybackState(channelKey = channel.key, isBuffering = true, catchupTitle = catchupTitle)
+        archiveStartPending = catchupTitle != null
         p.setMediaSource(buildMediaSource(url, channel.headers, isLive = catchupTitle == null))
         p.prepare()
         p.playWhenReady = true
     }
+
+    /**
+     * Catch-up just started: begin at the start of what we asked for. Some providers send a
+     * show that's still airing as a growing "live" stream, and the player starts those at the
+     * live edge (so "Watch from start" landed near now, and you had to rewind by hand).
+     */
+    @Volatile private var archiveStartPending = false
 
     /** Plain words for playback errors, with the provider's HTTP status when there is one. */
     private fun describe(error: PlaybackException): String {
@@ -377,6 +385,7 @@ class LiveTvPlaybackController @Inject constructor(
         val archive = _state.value.catchupTitle != null
         val resumeAt = if (archive) pos else C_TIME_UNSET
         p.stop()
+        archiveStartPending = false
         p.setMediaSource(buildMediaSource(url, ch.headers, isLive = !archive))
         p.prepare()
         if (resumeAt > 0) p.seekTo(resumeAt)
@@ -574,6 +583,7 @@ class LiveTvPlaybackController @Inject constructor(
             val archive = _state.value.catchupTitle != null
             val pos = p.currentPosition
             p.stop()
+            archiveStartPending = false
             p.prepare()
             if (archive && pos > 0) p.seekTo(pos)
             p.playWhenReady = true
@@ -602,6 +612,20 @@ class LiveTvPlaybackController @Inject constructor(
 
         override fun onRenderedFirstFrame() {
             awaitingFrame = false
+        }
+
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            if (!archiveStartPending || timeline.isEmpty) return
+            val p = _player ?: return
+            archiveStartPending = false
+            if (_state.value.catchupTitle == null) return
+            // A replay sent as a growing live stream: the player would start it at the live
+            // edge. Go to the start of the window (the start of the show we asked for).
+            val window = timeline.getWindow(p.currentMediaItemIndex.coerceIn(0, timeline.windowCount - 1), androidx.media3.common.Timeline.Window())
+            if (window.isDynamic || window.isLive()) {
+                com.nuvio.tv.livetv.model.LiveTvLoadReport.add("Catch-up came as a live stream; starting from the beginning")
+                p.seekTo(0L)
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -634,6 +658,7 @@ class LiveTvPlaybackController @Inject constructor(
             if (fb != null && ch != null && p != null) {
                 com.nuvio.tv.livetv.model.LiveTvLoadReport.add("Catch-up failed (${error.errorCodeName}); trying ${redact(fb)}")
                 currentUrl = fb
+                archiveStartPending = _state.value.catchupTitle != null
                 p.setMediaSource(buildMediaSource(fb, ch.headers, isLive = _state.value.catchupTitle == null))
                 p.prepare()
                 p.playWhenReady = true

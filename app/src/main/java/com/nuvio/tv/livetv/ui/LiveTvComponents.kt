@@ -103,19 +103,21 @@ internal fun LiveText(
 }
 
 /**
- * Guide cell greys. Follows the theme's surface colors, but when "pure black surfaces" is on
- * (surfaces are black) it falls back to fixed greys so program blocks stay visible.
+ * Guide tiles. The theme's raised and card surfaces, which carry its tint (warm for Amber, cool
+ * for Ocean…), instead of its plain neutral greys, which looked flat. When "pure black surfaces"
+ * makes them black, fixed dark greys keep the tiles visible.
  */
 @Composable
 internal fun guideSurface(): Color {
-    val c = NuvioTheme.colors.Surface
-    return if (c.luminance() < 0.01f) Color(0xFF1C1C1F) else c
+    val c = NuvioTheme.colors.BackgroundElevated
+    return if (c.luminance() < 0.003f) Color(0xFF1C1C1F) else c
 }
 
+/** Shows on now, and the group on screen: a step lighter than [guideSurface]. */
 @Composable
 internal fun guideSurfaceVariant(): Color {
-    val c = NuvioTheme.colors.SurfaceVariant
-    return if (c.luminance() < 0.01f) Color(0xFF2B2B30) else c
+    val c = NuvioTheme.colors.BackgroundCard
+    return if (c.luminance() < 0.003f) Color(0xFF26262B) else c
 }
 
 /** Background / border / text colors for a focused or unfocused guide cell. */
@@ -254,22 +256,29 @@ internal fun ChannelLogo(url: String?, size: Dp, modifier: Modifier = Modifier) 
 internal fun ThemeGlow(modifier: Modifier = Modifier) {
     val accent = NuvioTheme.colors.Secondary
     val top = NuvioTheme.colors.BackgroundElevated
-    val strength = if (accent.luminance() > 0.8f) 0.10f else 0.24f
-    Box(
-        modifier = modifier.drawBehind {
-            drawRect(Brush.verticalGradient(listOf(top.copy(alpha = 0.85f), Color.Transparent)))
-            val right = Offset(size.width * 0.80f, size.height * 0.04f)
-            val r1 = size.height * 0.94f
-            scale(scaleX = 2.4f, scaleY = 1f, pivot = right) {
-                drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength), Color.Transparent), center = right, radius = r1), radius = r1, center = right)
-            }
-            val left = Offset(size.width * 0.10f, 0f)
-            val r2 = size.height * 0.80f
-            scale(scaleX = 2.2f, scaleY = 1f, pivot = left) {
-                drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength * 0.4f), Color.Transparent), center = left, radius = r2), radius = r2, center = left)
-            }
-        }
+    Box(modifier = modifier.drawBehind { drawThemeGlow(accent, top, size.width, size.height) })
+}
+
+/**
+ * The glow itself, for an area [w] x [h] from the top left. Also used to paint the preview's
+ * rounded corners in exactly the colors behind them.
+ */
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawThemeGlow(accent: Color, top: Color, w: Float, h: Float) {
+    val strength = if (accent.luminance() > 0.8f) 0.08f else 0.16f
+    drawRect(
+        Brush.verticalGradient(listOf(top.copy(alpha = 0.85f), Color.Transparent), startY = 0f, endY = h),
+        size = androidx.compose.ui.geometry.Size(w, h)
     )
+    val right = Offset(w * 0.80f, h * 0.04f)
+    val r1 = h * 0.94f
+    scale(scaleX = 2.4f, scaleY = 1f, pivot = right) {
+        drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength), Color.Transparent), center = right, radius = r1), radius = r1, center = right)
+    }
+    val left = Offset(w * 0.10f, 0f)
+    val r2 = h * 0.80f
+    scale(scaleX = 2.2f, scaleY = 1f, pivot = left) {
+        drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = strength * 0.4f), Color.Transparent), center = left, radius = r2), radius = r2, center = left)
+    }
 }
 
 /** What a show's title says about it: on live, or new. Many guides only mark these in the title. */
@@ -455,7 +464,7 @@ internal fun rememberShowDetails(channelKey: String?, program: EpgProgram?): Epg
 }
 
 /** Looks up what a 24/7 channel plays (see LiveTvViewModel.channelAbout). */
-internal val LocalChannelAbout = androidx.compose.runtime.staticCompositionLocalOf<suspend (com.nuvio.tv.livetv.model.LiveChannel) -> com.nuvio.tv.domain.model.MetaPreview?> { { null } }
+internal val LocalChannelAbout = androidx.compose.runtime.staticCompositionLocalOf<suspend (com.nuvio.tv.livetv.model.LiveChannel, String?) -> com.nuvio.tv.domain.model.MetaPreview?> { { _, _ -> null } }
 
 /**
  * What a 24/7 channel plays (description, year, genres), when the channel has no real listing
@@ -464,10 +473,9 @@ internal val LocalChannelAbout = androidx.compose.runtime.staticCompositionLocal
 @Composable
 internal fun rememberChannelAbout(channel: com.nuvio.tv.livetv.model.LiveChannel?, program: EpgProgram?): com.nuvio.tv.domain.model.MetaPreview? {
     val loader = LocalChannelAbout.current
-    val noListing = program == null || com.nuvio.tv.livetv.data.LiveTvRepository.isPlaceholderTitle(program.title) ||
-        program.description.isNullOrBlank() && channel != null && program.title.equals(channel.name, ignoreCase = true)
-    val state = androidx.compose.runtime.produceState<com.nuvio.tv.domain.model.MetaPreview?>(null, channel?.key, noListing) {
-        value = if (channel != null && noListing) loader(channel) else null
+    val noListing = channel != null && com.nuvio.tv.livetv.data.LiveTvPosterResolver.isChannelFiller(channel, program)
+    val state = androidx.compose.runtime.produceState<com.nuvio.tv.domain.model.MetaPreview?>(null, channel?.key, noListing, program?.title) {
+        value = if (channel != null && noListing) loader(channel, program?.title) else null
     }
     return state.value
 }

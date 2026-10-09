@@ -48,10 +48,9 @@ object CrashCatcher {
 
     fun install(context: Context) {
         val app = context.applicationContext
-        (app as? Application)?.registerActivityLifecycleCallbacks(Tracker)
-
         // Reports from last time (freeze, or Android closing the app) are put together off the
-        // main thread and shown once the app's own screen is up.
+        // main thread and saved. Nothing pops up: the report waits in Settings › Live TV ›
+        // Help › Crash report, for when someone is asked to send it.
         Thread({
             runCatching {
                 val parts = mutableListOf<String>()
@@ -65,8 +64,6 @@ object CrashCatcher {
                     val report = parts.joinToString("\n\n")
                     File(app.filesDir, FILE_NAME).writeText(report)
                     Log.e(TAG, report)
-                    pendingReport = report
-                    main.post { showPending() }
                 }
             }
         }, "CrashCatcherStart").apply { isDaemon = true }.start()
@@ -78,21 +75,12 @@ object CrashCatcher {
             try {
                 val report = buildReport(thread, error)
                 val file = File(app.filesDir, FILE_NAME)
-                // Crashed again within a few seconds of the last crash (for example while the
-                // app starts): don't open the report screen, or it would crash in a loop.
-                val looping = file.exists() && System.currentTimeMillis() - file.lastModified() < 6_000
+                // Saved for Settings › Live TV › Help › Crash report (no screen pops up).
                 runCatching { file.writeText(report) }
                 Log.e(TAG, report)
                 runCatching {
                     app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                         .putLong(KEY_SELF_KILL, System.currentTimeMillis()).commit()
-                }
-                if (!looping) {
-                    app.startActivity(
-                        Intent(app, CrashReportActivity::class.java)
-                            .putExtra(EXTRA_REPORT, report)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                    )
                 }
                 Process.killProcess(Process.myPid())
                 exitProcess(10)

@@ -377,7 +377,7 @@ class OnDemandViewModel @Inject constructor(
             if (more.size < HOME_PAGE) homeEnded += uid
             primePosters(more)
             homeItems[uid] = have + more
-            _home.value = _home.value.copy(rows = buildHomeRows())
+            updateHomeRows()
             enrichHome()
           } finally { homeLoadingMore.remove(uid) }
         }
@@ -395,9 +395,9 @@ class OnDemandViewModel @Inject constructor(
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (!homeTried.add(item.uid)) continue
                 enrichOne(item)
-                if (++changed % 6 == 0) _home.value = _home.value.copy(rows = buildHomeRows())
+                if (++changed % 6 == 0) updateHomeRows()
             }
-            if (changed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+            if (changed > 0) updateHomeRows()
         }
     }
 
@@ -411,7 +411,21 @@ class OnDemandViewModel @Inject constructor(
         }
     }
 
-    private fun buildHomeRows(): List<com.nuvio.tv.domain.model.CatalogRow> = homeGroups.mapNotNull { (c, name) ->
+    /** The rows rebuilt off the main thread, then shown. */
+    private suspend fun updateHomeRows() {
+        val rows = buildHomeRows()
+        _home.value = _home.value.copy(rows = rows)
+    }
+
+    /**
+     * The page's rows, worked out off the main thread: cleaning up thousands of provider titles
+     * (tags like "EN -", "4K") on the main thread froze slower devices (Fire TV Stick 4K) long
+     * enough for Android to close the app.
+     */
+    private suspend fun buildHomeRows(): List<com.nuvio.tv.domain.model.CatalogRow> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { buildHomeRowsNow() }
+
+    private fun buildHomeRowsNow(): List<com.nuvio.tv.domain.model.CatalogRow> = homeGroups.mapNotNull { (c, name) ->
         val items = homeItems[c.uid].orEmpty()
         if (items.isEmpty()) return@mapNotNull null
         VodHomeIds.row(
@@ -440,10 +454,10 @@ class OnDemandViewModel @Inject constructor(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (!homeTried.add(item.uid)) continue
                     enrichOne(item)
-                    if (++changed % 6 == 0) _home.value = _home.value.copy(rows = buildHomeRows())
+                    if (++changed % 6 == 0) updateHomeRows()
                 }
             }
-            if (changed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+            if (changed > 0) updateHomeRows()
             // Full details (clear logos) for the first few titles of the first rows.
             var detailed = 0
             for ((c, _) in homeGroups.take(3)) {
@@ -454,7 +468,7 @@ class OnDemandViewModel @Inject constructor(
                     detailed++
                 }
             }
-            if (detailed > 0) _home.value = _home.value.copy(rows = buildHomeRows())
+            if (detailed > 0) updateHomeRows()
         }
     }
 
@@ -511,10 +525,10 @@ class OnDemandViewModel @Inject constructor(
         viewModelScope.launch {
             if (!homeMatched.containsKey(uid)) enrichOne(item, urgent = true)
             if (!homeMatched.containsKey(uid)) return@launch
-            _home.value = _home.value.copy(rows = buildHomeRows())
+            updateHomeRows()
             // Then the full details (clear logo…) for the hero.
             fetchDetails(uid)
-            _home.value = _home.value.copy(rows = buildHomeRows())
+            updateHomeRows()
         }
     }
 

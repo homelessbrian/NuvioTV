@@ -64,7 +64,10 @@ fun LiveTvLoadingHost(navController: NavController) {
     // Nuvio's own player is opening (a movie, an episode, Watch On Demand): make sure the
     // Live TV player has let go of the audio first, so the two never hold it at once.
     androidx.compose.runtime.LaunchedEffect(route) {
-        if (route.startsWith("player/")) entry.liveTvPlayback().releaseNow()
+        // Also when the stream list opens: the provider gets a few seconds to close the Live TV
+        // connection before the movie asks for one (accounts with one connection otherwise
+        // refuse the movie with "too many requests" / HTTP 429).
+        if (route.startsWith("player/") || route.startsWith("stream/")) entry.liveTvPlayback().releaseNow()
         // Heavy Live TV / On Demand background work waits while Nuvio's player is open.
         com.nuvio.tv.livetv.data.BackgroundWork.nuvioPlaying.value = route.startsWith("player/")
     }

@@ -329,7 +329,10 @@ class LiveTvRepository @Inject constructor(
                         if (it.id == pl.id) it.copy(lastUpdatedMs = if (err == null) now else it.lastUpdatedMs, lastError = err) else it
                     }
                 }
-                if (err != null) Log.w(TAG, "Playlist ${pl.name} failed: $err")
+                if (err != null) {
+                    Log.w(TAG, "Playlist ${pl.name} failed: $err")
+                    LIVE_REPORT.add("Playlist \"${pl.name}\" failed: $err" + if (pl.isXtream) " (Xtream login: server ${if (pl.xtreamServer.isBlank()) "missing" else "set"}, user ${if (pl.xtreamUsername.isBlank()) "missing" else "set"}, password ${if (pl.xtreamPassword.isBlank()) "missing" else "set"})" else "")
+                }
                 if (result.getOrNull() == true || (before == null && file.exists())) changed = true
             }
         }
@@ -358,7 +361,10 @@ class LiveTvRepository @Inject constructor(
                         list.map { if (it.id == target.sourceId) it.copy(lastUpdatedMs = if (err == null) now else it.lastUpdatedMs, lastError = err) else it }
                     }
                 }
-                if (err != null) Log.w(TAG, "EPG ${target.name} failed: $err")
+                if (err != null) {
+                    Log.w(TAG, "EPG ${target.name} failed: $err")
+                    LIVE_REPORT.add("Guide \"${target.name}\" failed: $err")
+                }
             }
         }
 
@@ -719,6 +725,7 @@ class LiveTvRepository @Inject constructor(
     /** Channels whose archive listings were already fetched this session. */
     private val archiveFetched = java.util.Collections.synchronizedSet(HashSet<String>())
     private val archivePermits = kotlinx.coroutines.sync.Semaphore(3)
+    @Volatile private var archivePausedUntil = 0L
 
     /**
      * Past listings for Xtream catch-up channels, the way TiviMate gets them: many providers'
@@ -730,6 +737,10 @@ class LiveTvRepository @Inject constructor(
         val wanted = channels.filter { it.catchup != null && it.key !in archiveFetched }
         if (wanted.isEmpty()) return
         wanted.forEach { archiveFetched += it.key }
+        if (System.currentTimeMillis() < archivePausedUntil) {
+            wanted.forEach { archiveFetched -= it.key }
+            return
+        }
         scope.launch {
             val playlists = prefs.currentPlaylists().associateBy { it.id }
             val settings = prefs.currentSettings()
@@ -738,6 +749,9 @@ class LiveTvRepository @Inject constructor(
                 val streamId = Regex("""/(\d+)(?:\.[a-z0-9]+)?(?:\?.*)?$""", RegexOption.IGNORE_CASE)
                     .find(ch.url)?.groupValues?.get(1) ?: return@forEach
                 archivePermits.withPermit {
+                    // The provider said "too many requests": leave it alone for a few minutes, so
+                    // these lookups never stand between you and playing something.
+                    if (System.currentTimeMillis() < archivePausedUntil) { archiveFetched -= ch.key; return@withPermit }
                     runCatching {
                         val url = "${pl.xtreamBase()}/player_api.php?username=" +
                             java.net.URLEncoder.encode(pl.xtreamUsername.trim(), "UTF-8") +
@@ -787,7 +801,14 @@ class LiveTvRepository @Inject constructor(
                         }
                         _programs.value = _programs.value + (ch.key to merged)
                         loadedFrom = minOf(loadedFrom, from)
-                    }.onFailure { Log.w(TAG, "Catch-up archive for ${ch.name} unavailable", it) }
+                    }.onFailure {
+                        Log.w(TAG, "Catch-up archive for ${ch.name} unavailable", it)
+                        if (it.message?.contains("429") == true) {
+                            archivePausedUntil = System.currentTimeMillis() + 5 * 60_000L
+                            archiveFetched -= ch.key
+                            LIVE_REPORT.add("Provider said too many requests (HTTP 429): catch-up lookups paused for 5 minutes")
+                        }
+                    }
                 }
             }
         }
@@ -1101,6 +1122,8 @@ class LiveTvRepository @Inject constructor(
             auto[key] = EpgAssignment(c.sourceId, c.xmltvId)
         }
         result.putAll(pinned)
+        // Unassigned in Assign EPG: no guide for these channels, automatic match included.
+        overrides.filterValues { it.isNone }.keys.forEach { key -> result.remove(key); auto.remove(key) }
         // Which guide channels ended up feeding a playlist channel (for "Unassigned" in Assign EPG).
         val usedBySource = HashMap<String, MutableSet<String>>()
         auto.values.forEach { usedBySource.getOrPut(it.sourceId) { HashSet() } += it.xmltvId }

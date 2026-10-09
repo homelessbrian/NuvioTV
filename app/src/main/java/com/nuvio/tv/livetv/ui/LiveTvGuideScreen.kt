@@ -67,6 +67,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -110,6 +112,19 @@ private data class GuideBlock(val startMs: Long, val stopMs: Long, val program: 
 private data class MenuTarget(val channel: LiveChannel, val block: GuideBlock?)
 
 private fun floorSlot(ms: Long) = ms - Math.floorMod(ms, SLOT_MS)
+
+/** "Today", "Tomorrow", "Yesterday", or the day ("Sat, Oct 10") for the guide's time ruler. */
+private fun guideDayLabel(windowStart: Long, now: Long): String {
+    val dayOf = { ms: Long -> java.util.Calendar.getInstance().apply { timeInMillis = ms }.let { it.get(java.util.Calendar.YEAR) * 1000 + it.get(java.util.Calendar.DAY_OF_YEAR) } }
+    val shown = dayOf(windowStart)
+    val today = dayOf(now)
+    return when (shown) {
+        today -> "Today"
+        dayOf(now + 24 * 3_600_000L) -> "Tomorrow"
+        dayOf(now - 24 * 3_600_000L) -> "Yesterday"
+        else -> java.text.SimpleDateFormat("EEE, MMM d", java.util.Locale.getDefault()).format(java.util.Date(windowStart))
+    }
+}
 
 /** The first midnight (device time) after [ms]. */
 private fun nextMidnight(ms: Long): Long = java.util.Calendar.getInstance().apply {
@@ -454,8 +469,16 @@ fun LiveTvGuideScreen(
     val headerProgramKey = headerChannel?.key to headerBlock?.program?.startMs
     val headerPoster by androidx.compose.runtime.produceState<String?>(initialValue = null, headerProgramKey) {
         value = null
-        val p = headerBlock?.program ?: return@produceState
         if (!settings.showProgramDetails) return@produceState
+        // 24/7 channels with no real listings (no guide, or one long block named after the
+        // channel): the show's poster, by the channel's name.
+        val ch = headerChannel
+        if (ch != null && com.nuvio.tv.livetv.data.LiveTvPosterResolver.isChannelFiller(ch, headerBlock?.program)) {
+            delay(250)
+            value = viewModel.channelPoster(ch, headerBlock?.program)
+            return@produceState
+        }
+        val p = headerBlock?.program ?: return@produceState
         // The guide's own image for the show (if it has one) straight away; your addon's
         // poster replaces it when found.
         if (LiveTvRepository.isPlaceholderTitle(p.title)) return@produceState // channel logo
@@ -597,7 +620,7 @@ fun LiveTvGuideScreen(
     var backPressStartedHere by remember { mutableStateOf(false) }
     androidx.compose.runtime.CompositionLocalProvider(
         LocalShowDetails provides { key, p -> viewModel.details(key, p) },
-        LocalChannelAbout provides { ch -> viewModel.channelAbout(ch) }
+        LocalChannelAbout provides { ch, title -> viewModel.channelAbout(ch, title) }
     ) {
     Box(
         modifier = Modifier
@@ -662,7 +685,8 @@ fun LiveTvGuideScreen(
     ) {
         // A soft glow in the theme color behind the info panel and preview (fades into the guide).
         if (settings.showProgramDetails || settings.showPreview) {
-            ThemeGlow(Modifier.fillMaxWidth().height(if (settings.smallHeader) 230.dp else 330.dp))
+            // Stops before the channel rows, so the guide itself keeps the theme's own colors.
+            ThemeGlow(Modifier.fillMaxWidth().height(if (settings.smallHeader) 150.dp else 220.dp))
         }
         Column(
             modifier = Modifier
@@ -705,6 +729,8 @@ fun LiveTvGuideScreen(
                 )
                 if (groupsWidth > 1.dp) GroupColumn(
                     width = groupsWidth,
+                    // A channel row's height minus its 3dp above and below.
+                    tileHeight = (if (settings.compactRows) 32.dp else 38.dp) - 6.dp,
                     groups = when {
                         groupVisibilityList != null -> groupVisibilityList!!
                         groupReorderId != null -> ui.groups.filter { it.special } + groupWorking
@@ -790,9 +816,7 @@ fun LiveTvGuideScreen(
                         // Date and time above the channels (like TiviMate), or the Unassigned filter.
                         Box(Modifier.width(channelColWidth).padding(start = 8.dp)) {
                             LiveText(
-                                if (epgUnassignedOnly) "Unassigned channels"
-                                else java.text.SimpleDateFormat("EEE, MMM d", java.util.Locale.getDefault()).format(java.util.Date(now)) +
-                                    ", " + formatClock(now, settings.use24HourClock),
+                                if (epgUnassignedOnly) "Unassigned channels" else guideDayLabel(windowStart, now),
                                 color = NuvioTheme.colors.TextPrimary,
                                 size = 13.sp,
                                 weight = FontWeight.Bold
@@ -816,6 +840,18 @@ fun LiveTvGuideScreen(
                                     size = 13.sp
                                 )
                             }
+                            // The current time at the right end (past the last time label).
+                            LiveText(
+                                formatClock(now, settings.use24HourClock),
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(guideSurface())
+                                    .padding(horizontal = 10.dp, vertical = 3.dp),
+                                color = NuvioTheme.colors.TextPrimary,
+                                size = 14.sp,
+                                weight = FontWeight.Bold
+                            )
                             if (showMidnight) {
                                 val dayName = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault()).format(java.util.Date(midnight))
                                 val isTomorrow = midnight - now in 0..(24 * 3_600_000L)
@@ -1116,6 +1152,41 @@ fun LiveTvGuideScreen(
             onAttached = { viewModel.playback.onSurfaceAttached() },
             aspectMode = if (fullscreen) aspectModeOf(settings.aspectMode) else null
         )
+        // Rounded corners for the preview. The video surface can't be clipped to a rounded
+        // shape on most TVs, so its four corners are painted over in exactly what's behind
+        // them (the background and the theme glow), which looks the same.
+        if (!fullscreen && pb != null && rb != null && pb.width > 1f) {
+            val bg = NuvioTheme.colors.Background
+            val accent = NuvioTheme.colors.Secondary
+            val glowTop = NuvioTheme.colors.BackgroundElevated
+            val showGlow = settings.showProgramDetails || settings.showPreview
+            val glowH = with(density) { (if (settings.smallHeader) 150.dp else 220.dp).toPx() }
+            val corner = with(density) { (if (settings.smallHeader) 12.dp else 16.dp).toPx() }
+            val left = pb.left - rb.left
+            val top = pb.top - rb.top
+            val rootW = rb.width
+            with(density) {
+                androidx.compose.foundation.Canvas(
+                    Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                        .size(pb.width.toDp(), pb.height.toDp())
+                        .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                ) {
+                    drawRect(bg)
+                    if (showGlow) {
+                        translate(-left, -top) {
+                            drawThemeGlow(accent, glowTop, rootW, glowH)
+                        }
+                    }
+                    // Cut the rounded window back out, leaving only the corners.
+                    drawRoundRect(
+                        color = Color.Black,
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner),
+                        blendMode = androidx.compose.ui.graphics.BlendMode.Clear
+                    )
+                }
+            }
+        }
         // The preview's own messages, drawn over the video.
         if (!fullscreen && pb != null && rb != null && pb.width > 1f) {
             val showLoading = rememberDelayedTrue(playback.isBuffering && playback.error == null, 1_200)
@@ -1260,7 +1331,7 @@ fun LiveTvGuideScreen(
                     scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                 },
                 onUnassign = {
-                    viewModel.resetChannelEpg(ch)
+                    viewModel.unassignChannelEpg(ch)
                     scope.launch { delay(60); runCatching { gridFocus.requestFocus() } }
                 },
                 onLeft = { runCatching { gridFocus.requestFocus() } },
@@ -1901,14 +1972,17 @@ private fun GuideRow(
                         .padding(horizontal = 3.dp)
                         .clip(cellShape)
                         .background(guideSurface().copy(alpha = 0.55f))
+                        .noGuideStripes(guideSurfaceVariant().copy(alpha = 0.45f))
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     // With names hidden, the channel's name is the only way to tell which it is.
-                    LiveText(
-                        if (settings.showChannelNames) "No guide info" else channel.name,
+                    androidx.compose.material3.Text(
+                        text = if (settings.showChannelNames) "No guide info" else channel.name,
                         color = NuvioTheme.colors.TextTertiary,
-                        size = 14.sp
+                        fontSize = 14.sp,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        maxLines = 1
                     )
                 }
             }
@@ -2094,7 +2168,9 @@ private fun GroupColumn(
     onToggleGroupVisible: (String) -> Unit = {},
     onHideAllGroups: () -> Unit = {},
     onShowAllGroups: () -> Unit = {},
-    onVisibilityDone: () -> Unit = {}
+    onVisibilityDone: () -> Unit = {},
+    /** Height of a group tile: the same as a channel tile, so the two lists line up. */
+    tileHeight: Dp = 32.dp
 ) {
     var focusedGroupId by remember { mutableStateOf<String?>(null) }
     Column(
@@ -2147,7 +2223,9 @@ private fun GroupColumn(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            // Each channel row has 3dp above its tile: the same here, so the lines run straight across.
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(top = 3.dp, bottom = 3.dp)
         ) {
             fun groupItem(g: ChannelGroup) {
                 item(key = g.id) {
@@ -2160,6 +2238,7 @@ private fun GroupColumn(
                         else -> selected
                     }
                     GroupItem(
+                        tileHeight = tileHeight,
                         group = g,
                         selected = selected || moving,
                         showCount = showCounts,
@@ -2276,6 +2355,7 @@ private fun GroupSearchButton(modifier: Modifier, onClick: () -> Unit) {
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun GroupItem(
+    tileHeight: Dp = 32.dp,
     group: ChannelGroup,
     selected: Boolean,
     showCount: Boolean,
@@ -2297,7 +2377,7 @@ private fun GroupItem(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(32.dp)
+            .height(tileHeight)
             .clip(shape)
             .background(colors.background)
             .border(
@@ -2592,7 +2672,7 @@ private fun EpgSidePanel(
         val filterName = sources.firstOrNull { it.sourceId == sourceFilter }?.name
         // What the channel uses now: your pick, or the automatic match (handy when a channel shows
         // the wrong listings, e.g. a guide's "Programming" placeholder).
-        val using = (current ?: automatic)?.let { a ->
+        val using = if (current?.isNone == true) "Unassigned: no guide (Automatic puts it back)" else (current ?: automatic)?.let { a ->
             val src = sources.firstOrNull { it.sourceId == a.sourceId }
             val name = src?.channels?.firstOrNull { it.id == a.xmltvId }?.displayName ?: a.xmltvId
             (if (current != null) "Assigned: " else "Automatic: ") + name + (src?.let { " · ${it.label}" } ?: "")
@@ -2613,7 +2693,7 @@ private fun EpgSidePanel(
             // Toggles the guide's channel list and this list between everything and unassigned only.
             Triple(Icons.Default.FilterAlt, if (unassignedOnly) "All channels" else "Unassigned") { onToggleUnassigned() },
             Triple(Icons.Default.Refresh, "Full scan") { onFullScan() },
-            Triple(Icons.Default.LinkOff, "Unassign") { onUnassign() }
+            Triple(Icons.Default.LinkOff, if (current?.isNone == true) "Automatic" else "Unassign") { onUnassign() }
         )
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -3121,3 +3201,26 @@ private const val OK_WITH_ARROW_MS = 250L
 
 /** OK held this long counts as a long press (also without key repeats, e.g. HDMI-CEC remotes). */
 internal const val LONG_PRESS_MS = 550L
+
+/**
+ * Diagonal stripes for a channel with no guide info, so an empty row reads as "nothing listed"
+ * rather than a missing show. Drawn in the theme's own surface colors.
+ */
+private fun Modifier.noGuideStripes(stripe: Color): Modifier = this.drawWithCache {
+    val gap = 10.dp.toPx()
+    val width = gap
+    val step = gap + width
+    onDrawBehind {
+        // Lines from bottom-left to top-right ("/"), spaced evenly across the whole tile.
+        var x = -size.height
+        while (x < size.width) {
+            drawLine(
+                color = stripe,
+                start = androidx.compose.ui.geometry.Offset(x, size.height),
+                end = androidx.compose.ui.geometry.Offset(x + size.height, 0f),
+                strokeWidth = width
+            )
+            x += step * 1.4142135f
+        }
+    }
+}

@@ -597,6 +597,36 @@ class LiveTvPosterResolver @Inject constructor(
                 TWENTY_FOUR_SEVEN.containsMatchIn(channel.key) || TWENTY_FOUR_SEVEN.containsMatchIn(channel.groupId) ||
                 (channel.tvgName?.let { TWENTY_FOUR_SEVEN.containsMatchIn(it) } ?: false)
 
+        private val SHOW_PREFIX = Regex("""(?i)^\s*[A-Z]{2,3}\s*[:|\-]\s*""") // "US: …"
+        private val SHOW_NOISE = Regex("""(?i)\b(fhd|uhd|hd|sd|4k|hevc|h265|live|tv|channel|marathon|non\s*-?\s*stop|all\s+episodes)\b""")
+        private val SHOW_PUNCT = Regex("""[\[\](){}|:•·\-]+""")
+        private val SPACES = Regex("""\s+""")
+
+        /** "US: 24/7 South Park HD" -> "South Park" (what a 24/7 channel plays). */
+        fun showNameOf(raw: String): String =
+            raw.replace(TWENTY_FOUR_SEVEN, " ")
+                .replace(SHOW_PREFIX, " ")
+                .replace(SHOW_NOISE, " ")
+                .replace(SHOW_PUNCT, " ")
+                .replace(SPACES, " ")
+                .trim()
+
+        /**
+         * True when a 24/7 channel's listing is really just the channel itself: no guide at all,
+         * a placeholder, one long block named after the channel ("24/7 South Park" all day), or a
+         * block of many hours. Then the channel's show (by its name) is what's on.
+         */
+        fun isChannelFiller(channel: LiveChannel, program: EpgProgram?): Boolean {
+            if (!is247(channel)) return false
+            if (program == null || LiveTvRepository.isPlaceholderTitle(program.title)) return true
+            if (TWENTY_FOUR_SEVEN.containsMatchIn(program.title)) return true
+            val t = LiveTvRepository.normalize(showNameOf(program.title))
+            val c = LiveTvRepository.normalize(showNameOf(channel.name))
+            if (t.isEmpty() || c.isEmpty()) return true
+            if (t == c || (t.length >= 4 && c.contains(t)) || (c.length >= 4 && t.contains(c))) return true
+            return program.stopMs - program.startMs >= 6 * 60 * 60_000L
+        }
+
         /** How much "it's a show" counts on 24/7 channels (enough to beat obscure same-named films). */
         const val SHOW_247_WEIGHT = 80.0
 
