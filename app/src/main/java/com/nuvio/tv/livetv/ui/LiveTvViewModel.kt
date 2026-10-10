@@ -728,6 +728,22 @@ class LiveTvViewModel @Inject constructor(
     fun setChannelEpg(channel: LiveChannel, sourceId: String, xmltvId: String) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, com.nuvio.tv.livetv.model.EpgAssignment(sourceId, xmltvId))
         epgChangesPending = true
+        scheduleEpgCommit()
+    }
+
+    private var epgCommitJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Applies Assign EPG changes a moment after the last one, so the guide shows them while the
+     * panel is still open (they used to wait for the panel to close, which looked like nothing
+     * happened). Several quick changes in a row still mean one rebuild.
+     */
+    private fun scheduleEpgCommit() {
+        epgCommitJob?.cancel()
+        epgCommitJob = viewModelScope.launch {
+            delay(1_500)
+            commitEpgChanges()
+        }
     }
 
     /**
@@ -751,6 +767,7 @@ class LiveTvViewModel @Inject constructor(
     fun resetChannelEpg(channel: LiveChannel) = viewModelScope.launch {
         prefs.setEpgOverride(channel.key, null)
         epgChangesPending = true
+        scheduleEpgCommit()
     }
 
     /**
@@ -762,6 +779,7 @@ class LiveTvViewModel @Inject constructor(
         val cur = prefs.userState.first().epgOverrides[channel.key]
         prefs.setEpgOverride(channel.key, if (cur?.isNone == true) null else com.nuvio.tv.livetv.model.EpgAssignment.None)
         epgChangesPending = true
+        scheduleEpgCommit()
     }
 
     /** The poster Nuvio's catalogs would show for this program, or null if there's no good match. */

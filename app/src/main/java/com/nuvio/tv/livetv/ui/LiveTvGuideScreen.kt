@@ -1998,7 +1998,9 @@ private fun GuideRow(
             val visible = programs.filter { it.stopMs > windowStart && it.startMs < windowEnd }
             // Highlighted in the program column: the whole empty row lights up, keeping its text
             // (in bold), instead of a small half-hour "No information" block.
-            val emptyRowFocused = visible.isEmpty() && focusColumn == GuideColumn.PROGRAM
+            // (Also while the highlight is on the channel itself: a show lights up then too, and
+            // the empty row showed a half-hour "No information" block instead.)
+            val emptyRowFocused = visible.isEmpty() && focusColumn != null
             if (visible.isEmpty()) {
                 val emptyColors = liveCellColors(focused = emptyRowFocused, idle = guideSurface().copy(alpha = 0.55f))
                 Box(
@@ -2674,6 +2676,25 @@ private fun EpgSidePanel(
     var focusIndex by remember { mutableIntStateOf(-1) }
     val itemFocus = remember { FocusRequester() }
     val buttonsFocus = remember { FocusRequester() }
+    val chipsFocus = remember { FocusRequester() }
+    val panelScope = rememberCoroutineScope()
+    // Where the highlight is: in this panel, or back on the guide's channels.
+    var panelFocused by remember { mutableStateOf(false) }
+    var initialFocusDone by remember { mutableStateOf(false) }
+
+    /** Into the list: the remembered row if it's on screen, otherwise the first one showing. */
+    fun focusList() {
+        if (rows.isEmpty()) return
+        panelScope.launch {
+            val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
+            if (focusIndex !in visible) {
+                if (visible.isEmpty()) listState.scrollToItem(0)
+                focusIndex = visible.firstOrNull() ?: 0
+            }
+            repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+            runCatching { itemFocus.requestFocus() }
+        }
+    }
     LaunchedEffect(focusTick) {
         if (focusTick == 0) return@LaunchedEffect
         delay(40)
@@ -2684,11 +2705,16 @@ private fun EpgSidePanel(
     LaunchedEffect(rows, jumpToken) {
         val idx = anchorIndex()
         focusIndex = idx
+        // Only takes the highlight when it opens, or while you're already in the panel: picking
+        // a guide channel changes this list too, and that used to pull the highlight back in
+        // here right after it had gone back to the guide.
+        val takeFocus = panelFocused || !initialFocusDone
+        initialFocusDone = true
         if (rows.isNotEmpty()) {
             listState.scrollToItem((idx - 4).coerceAtLeast(0))
             repeat(2) { androidx.compose.runtime.withFrameNanos { } }
-            runCatching { itemFocus.requestFocus() }
-        } else {
+            if (takeFocus) runCatching { itemFocus.requestFocus() }
+        } else if (takeFocus) {
             runCatching { buttonsFocus.requestFocus() }
         }
     }
@@ -2718,6 +2744,7 @@ private fun EpgSidePanel(
 
     Column(
         modifier = modifier
+            .onFocusChanged { panelFocused = it.hasFocus }
             .fillMaxHeight()
             .width(if (classic) 440.dp else 480.dp)
             .then(if (classic) Modifier else Modifier.padding(top = 24.dp, bottom = 16.dp, end = 20.dp))
@@ -2790,12 +2817,20 @@ private fun EpgSidePanel(
                         .weight(1f)
                         .then(if (i == 0) Modifier.focusRequester(buttonsFocus) else Modifier)
                         .onPreviewKeyEvent { e ->
-                            // Keep focus inside the panel.
-                            // Keep focus inside the panel; Down moves into the list normally.
-                            e.type == KeyEventType.KeyDown && (
-                                (e.key == Key.DirectionLeft && i == 0) ||
-                                    (e.key == Key.DirectionRight && i == buttons.lastIndex)
-                                )
+                            if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when {
+                                // Keep the highlight inside the panel.
+                                e.key == Key.DirectionLeft && i == 0 -> true
+                                e.key == Key.DirectionRight && i == buttons.lastIndex -> true
+                                e.key == Key.DirectionUp -> true
+                                // Down: to the guide choices, or straight to the list. (Left to
+                                // itself, Down could land on the guide behind the panel.)
+                                e.key == Key.DirectionDown -> {
+                                    if (sources.size > 1) runCatching { chipsFocus.requestFocus() } else focusList()
+                                    true
+                                }
+                                else -> false
+                            }
                         },
                     onClick = action
                 )
@@ -2817,11 +2852,16 @@ private fun EpgSidePanel(
                         style = style,
                         modifier = Modifier
                             .widthIn(min = 104.dp)
+                            .then(if (i == 0) Modifier.focusRequester(chipsFocus) else Modifier)
                             .onPreviewKeyEvent { e ->
-                                e.type == KeyEventType.KeyDown && (
-                                    (e.key == Key.DirectionLeft && i == 0) ||
-                                        (e.key == Key.DirectionRight && i == chips.lastIndex)
-                                    )
+                                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                when {
+                                    e.key == Key.DirectionLeft && i == 0 -> true
+                                    e.key == Key.DirectionRight && i == chips.lastIndex -> true
+                                    e.key == Key.DirectionUp -> { runCatching { buttonsFocus.requestFocus() }; true }
+                                    e.key == Key.DirectionDown -> { focusList(); true }
+                                    else -> false
+                                }
                             },
                         onClick = { sourceFilter = id }
                     )
@@ -2857,6 +2897,11 @@ private fun EpgSidePanel(
                 .onPreviewKeyEvent { e ->
                     if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     when (e.key) {
+                        // Up from the top row: back to the guide choices / buttons (not the guide).
+                        Key.DirectionUp -> if (focusIndex <= 0) {
+                            runCatching { if (sources.size > 1) chipsFocus.requestFocus() else buttonsFocus.requestFocus() }
+                            true
+                        } else false
                         // Left: back to the guide's channels, to pick the next one.
                         Key.DirectionLeft -> { onLeft(); true }
                         // Right: up to the buttons (Search first).
@@ -2874,7 +2919,8 @@ private fun EpgSidePanel(
                     row = r,
                     selected = selected,
                     style = style,
-                    modifier = if (index == focusIndex) Modifier.focusRequester(itemFocus) else Modifier,
+                    modifier = (if (index == focusIndex) Modifier.focusRequester(itemFocus) else Modifier)
+                        .onFocusChanged { if (it.isFocused) focusIndex = index },
                     onClick = { onPick(r.source, r.entry) }
                 )
             }

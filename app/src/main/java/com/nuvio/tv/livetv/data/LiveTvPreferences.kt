@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
@@ -34,7 +35,8 @@ import javax.inject.Singleton
 
 @Singleton
 class LiveTvPreferences @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext context: Context,
+    private val profileManager: com.nuvio.tv.core.profile.ProfileManager
 ) {
     private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create(
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -146,6 +148,73 @@ class LiveTvPreferences @Inject constructor(
         val epgOverrides = stringPreferencesKey("epg_overrides")
     }
 
+    // ---------- Nuvio profiles ----------
+    // Favorites, recents, hidden and arranged groups/channels, reminders and On Demand's hidden
+    // categories and order are kept per Nuvio profile. Playlists, guides, settings, renames,
+    // channel numbers, EPG choices and parental locks stay shared by every profile.
+    // The first profile uses the original keys (so nothing moves for it); the others use the same
+    // names with "_p<id>" on the end, the same way Nuvio names its own per-profile files.
+
+    private val currentProfile: Int get() = profileManager.activeProfileId.value
+
+    private val personalStringKeys: List<Preferences.Key<String>> = listOf(
+        Keys.favorites, Keys.recent, Keys.lastChannel, Keys.previousChannel, Keys.lastGroup,
+        Keys.groupOrder, Keys.customGroups, Keys.channelOrder, Keys.channelCopies, Keys.reminders,
+        Keys.vodGroupOrder
+    )
+    private val personalSetKeys: List<Preferences.Key<Set<String>>> = listOf(
+        Keys.hiddenChannels, Keys.hiddenGroups, Keys.vodHiddenCategories
+    )
+
+    @JvmName("myString")
+    private fun my(key: Preferences.Key<String>, id: Int = currentProfile): Preferences.Key<String> =
+        if (id <= 1) key else stringPreferencesKey("${key.name}_p$id")
+
+    @JvmName("mySet")
+    private fun my(key: Preferences.Key<Set<String>>, id: Int = currentProfile): Preferences.Key<Set<String>> =
+        if (id <= 1) key else stringSetPreferencesKey("${key.name}_p$id")
+
+    private fun seededKey(id: Int) = booleanPreferencesKey("profile_seeded_p$id")
+
+    /**
+     * The stored data as profile [id] sees it: its own copies of the personal keys put in place
+     * of the first profile's. A profile that hasn't been set up yet sees the first profile's.
+     */
+    private fun profileView(p: Preferences, id: Int): Preferences {
+        if (id <= 1) return p
+        val seeded = p[seededKey(id)] == true
+        val m = p.toMutablePreferences()
+        personalStringKeys.forEach { k ->
+            val own = p[my(k, id)]
+            if (own != null) m[k] = own else if (seeded) m.remove(k)
+        }
+        personalSetKeys.forEach { k ->
+            val own = p[my(k, id)]
+            if (own != null) m[k] = own else if (seeded) m.remove(k)
+        }
+        return m
+    }
+
+    /**
+     * The first time a profile uses Live TV, it starts with a copy of the first profile's
+     * favorites, hidden groups and so on; from then on each profile changes only its own.
+     */
+    private suspend fun seedProfile(id: Int) {
+        if (id <= 1) return
+        store.edit { p ->
+            if (p[seededKey(id)] == true) return@edit
+            personalStringKeys.forEach { k -> if (p[my(k, id)] == null) p[k]?.let { p[my(k, id)] = it } }
+            personalSetKeys.forEach { k -> if (p[my(k, id)] == null) p[k]?.let { p[my(k, id)] = it } }
+            p[seededKey(id)] = true
+        }
+    }
+
+    init {
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            profileManager.activeProfileId.collect { id -> runCatching { seedProfile(id) } }
+        }
+    }
+
     val playlists: Flow<List<PlaylistSource>> = store.data
         .map { decodePlaylists(it[Keys.playlists]) }
         .distinctUntilChanged()
@@ -230,7 +299,8 @@ class LiveTvPreferences @Inject constructor(
         )
     }.distinctUntilChanged()
 
-    val userState: Flow<LiveUserState> = kotlinx.coroutines.flow.combine(store.data, deviceStore.data) { p, d ->
+    val userState: Flow<LiveUserState> = kotlinx.coroutines.flow.combine(store.data, deviceStore.data, profileManager.activeProfileId) { p0, d, id ->
+        val p = profileView(p0, id)
         LiveUserState(
             hiddenChannels = p[Keys.hiddenChannels] ?: emptySet(),
             hiddenGroups = p[Keys.hiddenGroups] ?: emptySet(),
@@ -387,7 +457,7 @@ class LiveTvPreferences @Inject constructor(
         if (i < 0) return
         order.removeAt(i)
         order.add((i + delta).coerceIn(0, order.size), groupId)
-        store.edit { it[Keys.groupOrder] = encodeStringList(order) }
+        store.edit { it[my(Keys.groupOrder)] = encodeStringList(order) }
     }
 
     suspend fun createCustomGroup(name: String): String {
@@ -441,15 +511,15 @@ class LiveTvPreferences @Inject constructor(
 
     suspend fun addReminder(r: Reminder) {
         store.edit { p ->
-            val cur = decodeReminders(p[Keys.reminders]).filterNot { it.channelKey == r.channelKey && it.startMs == r.startMs }
-            p[Keys.reminders] = encodeReminders((cur + r).sortedBy { it.startMs })
+            val cur = decodeReminders(p[my(Keys.reminders)]).filterNot { it.channelKey == r.channelKey && it.startMs == r.startMs }
+            p[my(Keys.reminders)] = encodeReminders((cur + r).sortedBy { it.startMs })
         }
     }
 
     suspend fun removeReminder(channelKey: String, startMs: Long) {
         store.edit { p ->
-            p[Keys.reminders] = encodeReminders(
-                decodeReminders(p[Keys.reminders]).filterNot { it.channelKey == channelKey && it.startMs == startMs }
+            p[my(Keys.reminders)] = encodeReminders(
+                decodeReminders(p[my(Keys.reminders)]).filterNot { it.channelKey == channelKey && it.startMs == startMs }
             )
         }
     }
@@ -457,9 +527,9 @@ class LiveTvPreferences @Inject constructor(
     /** Drops reminders for shows that started more than [graceMs] ago. */
     suspend fun pruneReminders(now: Long, graceMs: Long = 30 * 60_000L) {
         store.edit { p ->
-            val cur = decodeReminders(p[Keys.reminders])
+            val cur = decodeReminders(p[my(Keys.reminders)])
             val kept = cur.filter { it.startMs + graceMs > now }
-            if (kept.size != cur.size) p[Keys.reminders] = encodeReminders(kept)
+            if (kept.size != cur.size) p[my(Keys.reminders)] = encodeReminders(kept)
         }
     }
 
@@ -478,16 +548,16 @@ class LiveTvPreferences @Inject constructor(
     /** Manage VOD Groups: which groups show, their order and names, saved together (Done). */
     suspend fun saveVodGroups(hidden: Set<String>, order: List<String>, names: Map<String, String>) {
         store.edit { p ->
-            p[Keys.vodHiddenCategories] = hidden
-            p[Keys.vodGroupOrder] = encodeStringList(order)
+            p[my(Keys.vodHiddenCategories)] = hidden
+            p[my(Keys.vodGroupOrder)] = encodeStringList(order)
             p[Keys.vodGroupNames] = encodeStringMap(names.filterValues { it.isNotBlank() })
         }
     }
 
     suspend fun updateVodHiddenCategories(show: Set<String>, hide: Set<String>) {
         store.edit { p ->
-            val cur = p[Keys.vodHiddenCategories] ?: emptySet()
-            p[Keys.vodHiddenCategories] = (cur - show) + hide
+            val cur = p[my(Keys.vodHiddenCategories)] ?: emptySet()
+            p[my(Keys.vodHiddenCategories)] = (cur - show) + hide
         }
     }
 
@@ -507,7 +577,7 @@ class LiveTvPreferences @Inject constructor(
     }
 
     suspend fun clearVodHiddenCategories() {
-        store.edit { it[Keys.vodHiddenCategories] = emptySet() }
+        store.edit { it[my(Keys.vodHiddenCategories)] = emptySet() }
     }
 
     private fun decodeReminders(raw: String?): List<Reminder> {
@@ -530,17 +600,17 @@ class LiveTvPreferences @Inject constructor(
     /** Saves the order of a playlist group or All channels (Reorder channels). */
     suspend fun setChannelOrder(groupId: String, keys: List<String>) {
         store.edit { p ->
-            val m = decodeListMap(p[Keys.channelOrder]).toMutableMap()
+            val m = decodeListMap(p[my(Keys.channelOrder)]).toMutableMap()
             m[groupId] = keys
-            p[Keys.channelOrder] = encodeListMap(m)
+            p[my(Keys.channelOrder)] = encodeListMap(m)
         }
     }
 
     suspend fun setFavoritesOrder(keys: List<String>) {
         store.edit { p ->
-            val cur = decodeStringList(p[Keys.favorites])
+            val cur = decodeStringList(p[my(Keys.favorites)])
             // Keep any favorites that weren't in the list (e.g. hidden ones) at the end.
-            p[Keys.favorites] = encodeStringList(keys.filter { it in cur } + cur.filter { it !in keys })
+            p[my(Keys.favorites)] = encodeStringList(keys.filter { it in cur } + cur.filter { it !in keys })
         }
     }
 
@@ -554,28 +624,28 @@ class LiveTvPreferences @Inject constructor(
     /** Copies a channel into another playlist group (it stays in its own group too). */
     suspend fun copyChannel(groupId: String, key: String) {
         store.edit { p ->
-            val m = decodeListMap(p[Keys.channelCopies]).toMutableMap()
+            val m = decodeListMap(p[my(Keys.channelCopies)]).toMutableMap()
             val cur = m[groupId].orEmpty()
             if (key !in cur) m[groupId] = cur + key
-            p[Keys.channelCopies] = encodeListMap(m)
+            p[my(Keys.channelCopies)] = encodeListMap(m)
         }
     }
 
     suspend fun removeChannelCopy(groupId: String, key: String) {
         store.edit { p ->
-            val m = decodeListMap(p[Keys.channelCopies]).toMutableMap()
+            val m = decodeListMap(p[my(Keys.channelCopies)]).toMutableMap()
             m[groupId] = m[groupId].orEmpty() - key
             if (m[groupId].isNullOrEmpty()) m.remove(groupId)
-            p[Keys.channelCopies] = encodeListMap(m)
+            p[my(Keys.channelCopies)] = encodeListMap(m)
         }
     }
 
     suspend fun resetChannelOrder() {
-        store.edit { it[Keys.channelOrder] = encodeListMap(emptyMap()) }
+        store.edit { it[my(Keys.channelOrder)] = encodeListMap(emptyMap()) }
     }
 
     suspend fun clearChannelCopies() {
-        store.edit { it[Keys.channelCopies] = encodeListMap(emptyMap()) }
+        store.edit { it[my(Keys.channelCopies)] = encodeListMap(emptyMap()) }
     }
 
     suspend fun resetChannelEdits() {
@@ -588,93 +658,93 @@ class LiveTvPreferences @Inject constructor(
     suspend fun resetGroupEdits() {
         store.edit {
             it[Keys.groupNames] = encodeStringMap(emptyMap())
-            it[Keys.groupOrder] = encodeStringList(emptyList())
+            it[my(Keys.groupOrder)] = encodeStringList(emptyList())
         }
     }
 
     private suspend fun updateCustomGroups(transform: (List<CustomGroup>) -> List<CustomGroup>) {
-        store.edit { p -> p[Keys.customGroups] = encodeCustomGroups(transform(decodeCustomGroups(p[Keys.customGroups]))) }
+        store.edit { p -> p[my(Keys.customGroups)] = encodeCustomGroups(transform(decodeCustomGroups(p[my(Keys.customGroups)]))) }
     }
 
     // ---------- per-channel state ----------
 
     suspend fun setChannelHidden(key: String, hidden: Boolean) {
         store.edit { p ->
-            val cur = p[Keys.hiddenChannels] ?: emptySet()
-            p[Keys.hiddenChannels] = if (hidden) cur + key else cur - key
+            val cur = p[my(Keys.hiddenChannels)] ?: emptySet()
+            p[my(Keys.hiddenChannels)] = if (hidden) cur + key else cur - key
         }
     }
 
     /** Applies a batch of group show/hide changes at once (Manage visibility for groups). */
     suspend fun updateHiddenGroups(show: Set<String>, hide: Set<String>) {
         store.edit { p ->
-            val cur = p[Keys.hiddenGroups] ?: emptySet()
-            p[Keys.hiddenGroups] = (cur - show) + hide
+            val cur = p[my(Keys.hiddenGroups)] ?: emptySet()
+            p[my(Keys.hiddenGroups)] = (cur - show) + hide
         }
     }
 
     /** Applies a batch of show/hide changes at once (Manage visibility). */
     suspend fun updateHiddenChannels(show: Set<String>, hide: Set<String>) {
         store.edit { p ->
-            val cur = p[Keys.hiddenChannels] ?: emptySet()
-            p[Keys.hiddenChannels] = (cur - show) + hide
+            val cur = p[my(Keys.hiddenChannels)] ?: emptySet()
+            p[my(Keys.hiddenChannels)] = (cur - show) + hide
         }
     }
 
     suspend fun clearHiddenChannels() {
-        store.edit { it[Keys.hiddenChannels] = emptySet() }
+        store.edit { it[my(Keys.hiddenChannels)] = emptySet() }
     }
 
     suspend fun setGroupHidden(groupId: String, hidden: Boolean) {
         store.edit { p ->
-            val cur = p[Keys.hiddenGroups] ?: emptySet()
-            p[Keys.hiddenGroups] = if (hidden) cur + groupId else cur - groupId
+            val cur = p[my(Keys.hiddenGroups)] ?: emptySet()
+            p[my(Keys.hiddenGroups)] = if (hidden) cur + groupId else cur - groupId
         }
     }
 
     suspend fun clearHiddenGroups() {
-        store.edit { it[Keys.hiddenGroups] = emptySet() }
+        store.edit { it[my(Keys.hiddenGroups)] = emptySet() }
     }
 
     suspend fun toggleFavorite(key: String) {
         store.edit { p ->
-            val cur = decodeStringList(p[Keys.favorites])
-            p[Keys.favorites] = encodeStringList(if (key in cur) cur - key else cur + key)
+            val cur = decodeStringList(p[my(Keys.favorites)])
+            p[my(Keys.favorites)] = encodeStringList(if (key in cur) cur - key else cur + key)
         }
     }
 
     suspend fun moveFavorite(key: String, delta: Int) {
         store.edit { p ->
-            val cur = decodeStringList(p[Keys.favorites]).toMutableList()
+            val cur = decodeStringList(p[my(Keys.favorites)]).toMutableList()
             val idx = cur.indexOf(key)
             if (idx < 0) return@edit
             val target = (idx + delta).coerceIn(0, cur.lastIndex)
             cur.removeAt(idx)
             cur.add(target, key)
-            p[Keys.favorites] = encodeStringList(cur)
+            p[my(Keys.favorites)] = encodeStringList(cur)
         }
     }
 
     suspend fun clearFavorites() {
-        store.edit { it[Keys.favorites] = encodeStringList(emptyList()) }
+        store.edit { it[my(Keys.favorites)] = encodeStringList(emptyList()) }
     }
 
     suspend fun clearRecent() {
-        store.edit { it[Keys.recent] = encodeStringList(emptyList()) }
+        store.edit { it[my(Keys.recent)] = encodeStringList(emptyList()) }
     }
 
     suspend fun recordWatched(key: String) {
         store.edit { p ->
-            val last = p[Keys.lastChannel]
-            if (last != null && last != key) p[Keys.previousChannel] = last
-            p[Keys.lastChannel] = key
-            val recent = decodeStringList(p[Keys.recent]).filter { it != key }
-            p[Keys.recent] = encodeStringList((listOf(key) + recent).take(30))
+            val last = p[my(Keys.lastChannel)]
+            if (last != null && last != key) p[my(Keys.previousChannel)] = last
+            p[my(Keys.lastChannel)] = key
+            val recent = decodeStringList(p[my(Keys.recent)]).filter { it != key }
+            p[my(Keys.recent)] = encodeStringList((listOf(key) + recent).take(30))
         }
     }
 
     suspend fun setLastGroup(groupId: String) {
-        store.edit { it[Keys.lastGroup] = groupId }
+        store.edit { it[my(Keys.lastGroup)] = groupId }
     }
 
     // ---------- Google Drive sync ----------
@@ -860,7 +930,14 @@ class LiveTvPreferences @Inject constructor(
     private companion object {
         const val EPG_SEP = "\u0001"
         /** Per-TV keys that Google Drive sync never copies. */
-        val SYNC_EXCLUDED = setOf("last_channel", "previous_channel", "last_group", "recent", "on_demand_imports", "channel_quality", "developer_tools")
+        private val SYNC_EXCLUDED_BASE = setOf("last_channel", "previous_channel", "last_group", "recent", "on_demand_imports", "channel_quality", "developer_tools")
+        private val PROFILE_SUFFIX = Regex("""_p\d+$""")
+        /** Also matches each profile's own copy ("recent_p2"). */
+        val SYNC_EXCLUDED = object : AbstractSet<String>() {
+            override val size get() = SYNC_EXCLUDED_BASE.size
+            override fun iterator() = SYNC_EXCLUDED_BASE.iterator()
+            override fun contains(element: String) = element.replace(PROFILE_SUFFIX, "") in SYNC_EXCLUDED_BASE
+        }
     }
 
     private fun decodeListMap(raw: String?): Map<String, List<String>> {
