@@ -9,6 +9,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -324,6 +325,30 @@ fun LiveTvGuideScreen(
         }
     }
 
+    // The group tiles line up with the channel rows: whenever either list stops moving, the
+    // group list is nudged (less than one row) to the same place within a row as the channels.
+    // Near the end of a long group list it used to stop wherever the list ran out, out of line.
+    val groupsUniform = !(settings.groupPlaylistHeadings && ui.groups.mapNotNull { it.sourceId }.distinct().size > 1)
+    val rowPitchPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+        (if (settings.compactRows) 32.dp else 38.dp).toPx()
+    }
+    LaunchedEffect(groupsUniform, rowPitchPx) {
+        if (!groupsUniform || rowPitchPx <= 0f) return@LaunchedEffect
+        val pitch = rowPitchPx.toDouble()
+        androidx.compose.runtime.snapshotFlow {
+            val busy = groupsListState.isScrollInProgress || listState.isScrollInProgress
+            val g = groupsListState.firstVisibleItemIndex * pitch + groupsListState.firstVisibleItemScrollOffset
+            val c = listState.firstVisibleItemIndex * pitch + listState.firstVisibleItemScrollOffset
+            Triple(busy, g, c)
+        }.collect { (busy, g, c) ->
+            if (busy) return@collect
+            var delta = ((c - g) % pitch + pitch) % pitch
+            if (delta > pitch / 2) delta -= pitch
+            if (g + delta < 0) delta += pitch
+            if (kotlin.math.abs(delta) > 1.0) runCatching { groupsListState.scrollBy(delta.toFloat()) }
+        }
+    }
+
     LaunchedEffect(windowStart < System.currentTimeMillis() - 6 * 3_600_000L, row / 6, channels.size) {
         if (windowStart >= System.currentTimeMillis() - 6 * 3_600_000L || channels.isEmpty()) return@LaunchedEffect
         delay(300)
@@ -447,11 +472,17 @@ fun LiveTvGuideScreen(
     fun blockAt(channel: LiveChannel, at: Long): GuideBlock {
         val list = programs[channel.key].orEmpty()
         list.firstOrNull { at >= it.startMs && at < it.stopMs }?.let { return GuideBlock(it.startMs, it.stopMs, it) }
-        // Gap / no data: a 30 minute slot trimmed against neighbouring programs.
+        // A gap between two listed shows: the whole gap is one block (one highlight, one press
+        // of Right to get past it), like a show with no information.
+        val before = list.lastOrNull { it.stopMs <= at }
+        val after = list.firstOrNull { it.startMs > at }
+        if (before != null && after != null) return GuideBlock(before.stopMs, after.startMs, null)
+        // Before the first or after the last listing (or no listings at all): 30 minute slots,
+        // trimmed against the neighbouring show.
         var s = floorSlot(at)
         var e = s + SLOT_MS
-        list.lastOrNull { it.stopMs <= at }?.let { if (it.stopMs > s) s = it.stopMs }
-        list.firstOrNull { it.startMs > at }?.let { if (it.startMs < e) e = it.startMs }
+        before?.let { if (it.stopMs > s) s = it.stopMs }
+        after?.let { if (it.startMs < e) e = it.startMs }
         return GuideBlock(s, e, null)
     }
 
@@ -1965,25 +1996,75 @@ private fun GuideRow(
             fun xOf(t: Long): Dp = totalW * ((t.coerceIn(windowStart, windowEnd) - windowStart) / WINDOW_MS.toFloat())
 
             val visible = programs.filter { it.stopMs > windowStart && it.startMs < windowEnd }
+            // Highlighted in the program column: the whole empty row lights up, keeping its text
+            // (in bold), instead of a small half-hour "No information" block.
+            val emptyRowFocused = visible.isEmpty() && focusColumn == GuideColumn.PROGRAM
             if (visible.isEmpty()) {
+                val emptyColors = liveCellColors(focused = emptyRowFocused, idle = guideSurface().copy(alpha = 0.55f))
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 3.dp)
                         .clip(cellShape)
-                        .background(guideSurface().copy(alpha = 0.55f))
-                        .noGuideStripes(guideSurfaceVariant().copy(alpha = 0.45f))
+                        .background(emptyColors.background)
+                        .noGuideStripes(
+                            if (emptyRowFocused) NuvioTheme.colors.Secondary.copy(alpha = 0.10f)
+                            else guideSurfaceVariant().copy(alpha = 0.45f)
+                        )
+                        .border(2.dp, emptyColors.border, cellShape)
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     // With names hidden, the channel's name is the only way to tell which it is.
                     androidx.compose.material3.Text(
                         text = if (settings.showChannelNames) "No guide info" else channel.name,
-                        color = NuvioTheme.colors.TextTertiary,
+                        color = if (emptyRowFocused) emptyColors.text else NuvioTheme.colors.TextTertiary,
                         fontSize = 14.sp,
                         fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        fontWeight = if (emptyRowFocused) FontWeight.Bold else FontWeight.Normal,
                         maxLines = 1
                     )
+                }
+            }
+            // Gaps in a channel's listings (nothing listed for a while, then shows again): the
+            // same striped tile as a channel with no guide at all, instead of empty background.
+            if (visible.isNotEmpty()) {
+                val sorted = visible.sortedBy { it.startMs }
+                val gaps = ArrayList<Pair<Long, Long>>()
+                var cursor = windowStart
+                for (p in sorted) {
+                    if (p.startMs - cursor > 60_000L) gaps += cursor to p.startMs
+                    cursor = maxOf(cursor, p.stopMs)
+                }
+                if (windowEnd - cursor > 60_000L) gaps += cursor to windowEnd
+                gaps.forEach { (from, to) ->
+                    val gx = xOf(from)
+                    val gw = xOf(to) - gx
+                    if (gw > 4.dp) {
+                        Box(
+                            modifier = Modifier
+                                .offset(x = gx)
+                                .width(gw)
+                                .fillMaxHeight()
+                                .padding(horizontal = 3.dp)
+                                .clip(cellShape)
+                                .background(guideSurface().copy(alpha = 0.55f))
+                                .noGuideStripes(guideSurfaceVariant().copy(alpha = 0.45f))
+                                .padding(horizontal = 12.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            // Something is on; the guide just doesn't say what.
+                            if (gw > 90.dp) {
+                                androidx.compose.material3.Text(
+                                    text = "No information",
+                                    color = NuvioTheme.colors.TextTertiary,
+                                    fontSize = 14.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
                 }
             }
             visible.forEach { p ->
@@ -2018,7 +2099,7 @@ private fun GuideRow(
                 )
             }
             // Highlight for an empty slot under the cursor.
-            if (focusColumn != null && focusedBlock != null && focusedBlock.program == null) {
+            if (focusColumn != null && focusedBlock != null && focusedBlock.program == null && !emptyRowFocused) {
                 val x = xOf(focusedBlock.startMs)
                 val w = (xOf(focusedBlock.stopMs) - x).coerceAtLeast(2.dp)
                 ProgramBlock(
@@ -2225,7 +2306,8 @@ private fun GroupColumn(
             modifier = Modifier.fillMaxSize(),
             // Each channel row has 3dp above its tile: the same here, so the lines run straight across.
             verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(top = 3.dp, bottom = 3.dp)
+            // Room for one more row at the end, so the list can always line up with the channels.
+            contentPadding = PaddingValues(top = 3.dp, bottom = 3.dp + tileHeight + 6.dp)
         ) {
             fun groupItem(g: ChannelGroup) {
                 item(key = g.id) {

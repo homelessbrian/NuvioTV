@@ -408,26 +408,49 @@ class LiveTvPosterResolver @Inject constructor(
      * What a title is (description, poster, year, rating) by its name alone, show or movie: for
      * 24/7 channels, which play one show (or one actor's films) around the clock with no guide.
      */
-    suspend fun aboutTitle(name: String): MetaPreview? {
+    suspend fun aboutTitle(name: String, urgent: Boolean = true): MetaPreview? {
         val key = normalize(name)
         if (key.length < 2 || key in aboutMisses) return null
         aboutCache[key]?.let { return it.meta }
-        val hit = requestPermitsAware {
-            val hint = TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT)
-            var found = lookup(name, hint, Clues(), Attempt())
-            // A brand in front ("OnePlay Paw Patrol"): without the first word, then two.
-            if (found == null) {
-                val w = name.split(' ').filter { it.isNotBlank() }
-                for (drop in 1..2) {
-                    val rest = w.drop(drop).joinToString(" ")
-                    if (w.size - drop < 1 || rest.length < 3) continue
-                    found = lookup(rest, hint, Clues(), Attempt())
-                    if (found != null) break
+        val attempt = Attempt()
+        var finished = false
+        // The channel on screen goes in the fast lane; fetching ahead for the rest of the group
+        // goes in the slow lane, one search at a time, so it never holds up the one you're on.
+        val hit = withContext(Urgency(urgent)) {
+            runCatching {
+                withTimeoutOrNull(if (urgent) 15_000L else 60_000L) {
+                    val hint = TypeHint(Kind.SERIES, strong = false, weight = SHOW_247_WEIGHT)
+                    var found = lookup(name, hint, Clues(), attempt)
+                    // A brand in front ("OnePlay Paw Patrol"): without the first word, then two.
+                    if (found == null) {
+                        val w = name.split(' ').filter { it.isNotBlank() }
+                        for (drop in 1..2) {
+                            val rest = w.drop(drop).joinToString(" ")
+                            if (w.size - drop < 1 || rest.length < 3) continue
+                            found = lookup(rest, hint, Clues(), attempt)
+                            if (found != null) break
+                        }
+                    }
+                    finished = true
+                    found
                 }
-            }
-            found
+            }.getOrNull()
         }
-        if (hit == null) aboutMisses += key else aboutCache[key] = hit
+        when {
+            hit != null -> aboutCache[key] = hit
+            // Only a real "your addons don't have it" is remembered. A lookup that ran out of time
+            // (busy addons, many channels at once) is tried again next time, instead of leaving
+            // the channel without a poster for the rest of the session.
+            finished && attempt.reached -> aboutMisses += key
+        }
+        if (urgent) com.nuvio.tv.livetv.model.LiveTvLoadReport.add(
+            "24/7 show \"$name\": " + when {
+                hit != null -> "found (${hit.meta.name})"
+                !finished -> "your addons took too long, will try again"
+                !attempt.reached -> "no addon answered"
+                else -> "not in your addons' catalogs"
+            }
+        )
         return hit?.meta
     }
 

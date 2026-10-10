@@ -67,7 +67,7 @@ fun LiveTvReminderHost(navController: NavController) {
         while (true) {
             // Load channels in the background once there's a reminder, so Watch can tune in.
             if (!loaded && runCatching { prefs.userState.first().reminders.isNotEmpty() }.getOrDefault(false)) {
-                entry.liveTvRepository().ensureLoaded()
+                entry.liveTvRepository().ensureLoaded(updateCheckDelayMs = 20_000)
                 loaded = true
             }
             val now = System.currentTimeMillis()

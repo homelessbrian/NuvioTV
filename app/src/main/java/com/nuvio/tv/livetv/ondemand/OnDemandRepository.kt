@@ -147,6 +147,11 @@ class OnDemandRepository @Inject constructor(
         scope.launch {
             // A failed check (database busy) keeps the current answer instead of hiding On Demand.
             _hasContent.value = runCatching { db.hasAny() }.getOrDefault(_hasContent.value)
+            // The heavier work below waits a little, so it never competes with Nuvio's own
+            // start-up (Continue watching looks up each title's details with a short time limit;
+            // a busy box made those lookups miss, leaving the home hero without year, genres
+            // and description).
+            kotlinx.coroutines.delay(START_DELAY_MS)
             // Learn each provider's title tags (for catalogs imported before this existed).
             runCatching {
                 db.loadPrefixes()
@@ -707,3 +712,6 @@ class OnDemandRepository @Inject constructor(
         private const val REFRESH_MS = 24L * 60 * 60 * 1000
     }
 }
+
+/** How long On Demand waits after the app starts before its heavier checks. */
+private const val START_DELAY_MS = 20_000L
